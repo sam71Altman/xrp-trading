@@ -51,7 +51,24 @@ In Replit:
 
 ### 4. Run the Bot
 
-Click the **Run** button or use the workflow to start the bot.
+In the Replit Shell, run:
+
+```bash
+python main.py
+```
+
+The bot will start and display:
+```
+==================================================
+XRP/USDT Signals Bot Started
+Symbol: XRPUSDT
+Timeframe: 1m
+Strategy: EMA20/EMA50 + Breakout
+TP: +0.4% | SL: -0.3%
+==================================================
+```
+
+Send `/start` to your bot on Telegram to confirm it's working.
 
 ## Telegram Commands
 
@@ -115,6 +132,11 @@ COOLDOWN_SECONDS = 60   # Minimum seconds between messages
 ## License
 
 MIT License - Feel free to modify and use as needed.
+
+## Notes
+
+- The bot uses multiple Binance API endpoints (including Binance US) to handle geographic restrictions
+- If running from Replit, the bot will automatically try alternative endpoints if the main API is blocked
 
 ## Disclaimer
 

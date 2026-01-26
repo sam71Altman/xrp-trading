@@ -43,8 +43,14 @@ COOLDOWN_SECONDS = 60  # Minimum seconds between messages
 # Polling interval (seconds)
 POLL_INTERVAL = 60
 
-# Binance API endpoint
-BINANCE_API = "https://api.binance.com/api/v3/klines"
+# Binance API endpoints (try multiple in case of geo-restrictions)
+BINANCE_APIS = [
+    "https://api.binance.us/api/v3/klines",      # Binance US
+    "https://api1.binance.com/api/v3/klines",    # Alternative endpoint
+    "https://api2.binance.com/api/v3/klines",    # Alternative endpoint
+    "https://api3.binance.com/api/v3/klines",    # Alternative endpoint
+    "https://api.binance.com/api/v3/klines",     # Main endpoint
+]
 
 # ============================================================================
 # LOGGING SETUP
@@ -84,32 +90,38 @@ def get_klines(symbol: str, interval: str, limit: int = 100) -> Optional[pd.Data
     """
     Fetch OHLCV candles from Binance public API.
     Returns DataFrame with columns: open, high, low, close, volume
+    Tries multiple endpoints in case of geo-restrictions.
     """
-    try:
-        params = {
-            "symbol": symbol,
-            "interval": interval,
-            "limit": limit
-        }
-        response = requests.get(BINANCE_API, params=params, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        
-        df = pd.DataFrame(data, columns=[
-            "open_time", "open", "high", "low", "close", "volume",
-            "close_time", "quote_volume", "trades", "taker_buy_base",
-            "taker_buy_quote", "ignore"
-        ])
-        
-        # Convert to numeric
-        for col in ["open", "high", "low", "close", "volume"]:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-        
-        return df
-        
-    except requests.RequestException as e:
-        logger.error(f"Binance API error: {e}")
-        return None
+    params = {
+        "symbol": symbol,
+        "interval": interval,
+        "limit": limit
+    }
+    
+    for api_url in BINANCE_APIS:
+        try:
+            response = requests.get(api_url, params=params, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            
+            df = pd.DataFrame(data, columns=[
+                "open_time", "open", "high", "low", "close", "volume",
+                "close_time", "quote_volume", "trades", "taker_buy_base",
+                "taker_buy_quote", "ignore"
+            ])
+            
+            # Convert to numeric
+            for col in ["open", "high", "low", "close", "volume"]:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+            
+            return df
+            
+        except requests.RequestException as e:
+            logger.debug(f"API {api_url} failed: {e}")
+            continue
+    
+    logger.error("All Binance API endpoints failed")
+    return None
 
 def calculate_ema(series: pd.Series, period: int) -> pd.Series:
     """Calculate Exponential Moving Average."""
