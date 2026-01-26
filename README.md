@@ -1,143 +1,139 @@
-# XRP/USDT Telegram Signals Bot
+# XRP/USDT Telegram Signals Bot | بوت إشارات التداول
 
-A Python-based Telegram bot that sends XRP/USDT trading signals based on EMA crossover and breakout strategy. **Signals only - no auto trading.**
+بوت تيليجرام لإرسال إشارات تداول زوج XRP/USDT باستخدام استراتيجية EMA + Breakout.
 
-## Features
+## المميزات
 
-- Real-time price data from Binance public API
-- EMA20/EMA50 crossover strategy with breakout confirmation
-- Virtual position tracking with TP/SL management
-- Arabic-formatted Telegram messages
-- Anti-spam protection (1 message per minute cooldown)
-- Runtime configuration via Telegram commands
+- سحب بيانات الشموع من Binance API (بدون WebSocket)
+- استراتيجية EMA20/EMA50 مع تأكيد الاختراق
+- تتبع صفقة افتراضية واحدة (Virtual Position)
+- رسائل عربية واضحة مع أزرار تفاعلية
+- حماية من التكرار مع Cooldown
+- دعم الفريمين: 1m و 5m
 
-## Strategy
+## الاستراتيجية
 
-### Entry (BUY) Signal
-- EMA20 > EMA50 (bullish trend)
-- Close price breaks above the highest high of the previous 5 candles
+### شروط الشراء (BUY)
+- EMA20 أعلى من EMA50 (اتجاه صاعد)
+- إغلاق الشمعة يكسر أعلى قمة لآخر 5 شموع (Breakout)
 
-### Exit Signal
-One of the following conditions:
-- Take Profit: +0.40% from entry
-- Stop Loss: -0.30% from entry
-- Protective Exit: Close drops below EMA20
+### شروط الخروج (EXIT)
+- جني الأرباح (TP): +0.40%
+- وقف الخسارة (SL): -0.30%
+- خروج وقائي: الإغلاق تحت EMA20
 
-## Setup
+## الإعداد
 
-### 1. Create a Telegram Bot
+### 1. إنشاء بوت تيليجرام
 
-1. Open Telegram and search for [@BotFather](https://t.me/BotFather)
-2. Send `/newbot` and follow the instructions
-3. Copy the **API token** (looks like `123456789:ABCdefGHIjklMNOpqrsTUVwxyz`)
+1. افتح تيليجرام وابحث عن [@BotFather](https://t.me/BotFather)
+2. أرسل `/newbot` واتبع التعليمات
+3. انسخ **التوكن** (مثل: `123456789:ABCdefGHI...`)
 
-### 2. Get Your Chat ID
+### 2. الحصول على Chat ID
 
-1. Start a chat with your new bot
-2. Send any message to the bot
-3. Visit: `https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates`
-4. Find `"chat":{"id":123456789}` - this is your Chat ID
+1. ابدأ محادثة مع البوت
+2. أرسل أي رسالة
+3. افتح: `https://api.telegram.org/bot<TOKEN>/getUpdates`
+4. ابحث عن `"chat":{"id":123456789}` - هذا هو الـ Chat ID
 
-### 3. Set Environment Variables
+### 3. إعداد المتغيرات في Replit
 
-In Replit:
-1. Click on **Secrets** (lock icon in the left sidebar)
-2. Add the following secrets:
+في Replit:
+1. اضغط على **Secrets** (قفل في الشريط الجانبي)
+2. أضف:
 
 | Key | Value |
 |-----|-------|
-| `TG_TOKEN` | Your Telegram bot token |
-| `TG_CHAT_ID` | Your Telegram chat ID |
+| `TG_TOKEN` | توكن البوت |
+| `TG_CHAT_ID` | رقم المحادثة |
 
-### 4. Run the Bot
-
-In the Replit Shell, run:
+### 4. تشغيل البوت
 
 ```bash
 python main.py
 ```
 
-The bot will start and display:
-```
-==================================================
-XRP/USDT Signals Bot Started
-Symbol: XRPUSDT
-Timeframe: 1m
-Strategy: EMA20/EMA50 + Breakout
-TP: +0.4% | SL: -0.3%
-==================================================
-```
+## أوامر تيليجرام
 
-Send `/start` to your bot on Telegram to confirm it's working.
+| الأمر | الوصف |
+|-------|-------|
+| `/start` | رسالة ترحيب مع الأزرار |
+| `/status` | عرض حالة البوت والصفقة |
+| `/settf 1m` | تغيير الفريم إلى 1 دقيقة |
+| `/settf 5m` | تغيير الفريم إلى 5 دقائق |
+| `/on` | تفعيل الإشارات |
+| `/off` | إيقاف الإشارات |
 
-## Telegram Commands
+## الأزرار التفاعلية
 
-| Command | Description |
-|---------|-------------|
-| `/start` | Confirm bot is running |
-| `/status` | Show current state (position, entry price, last close) |
-| `/settf 1m` | Change timeframe to 1 minute |
-| `/settf 5m` | Change timeframe to 5 minutes |
-| `/on` | Enable signal sending |
-| `/off` | Disable signal sending (bot keeps running) |
+| الزر | الوظيفة |
+|------|---------|
+| 🔥 تشغيل الإشارات | تفعيل إرسال الإشارات |
+| 🛑 إيقاف الإشارات | إيقاف مؤقت |
+| 📊 الحالة | عرض حالة البوت |
+| 🔄 تحديث الآن | فحص فوري للسوق |
+| ⏱ 1 دقيقة | تغيير الفريم |
+| ⏱ 5 دقائق | تغيير الفريم |
 
-## Configuration
+## الإعدادات
 
-Edit the variables at the top of `main.py` to customize:
+عدّل المتغيرات في `main.py`:
 
 ```python
-TIMEFRAME = "1m"        # Default timeframe: "1m" or "5m"
-TAKE_PROFIT_PCT = 0.40  # Take profit percentage
-STOP_LOSS_PCT = 0.30    # Stop loss percentage
-POLL_INTERVAL = 60      # Seconds between market checks
-COOLDOWN_SECONDS = 60   # Minimum seconds between messages
+TIMEFRAME = "1m"        # الفريم الافتراضي
+TAKE_PROFIT_PCT = 0.40  # نسبة جني الأرباح
+STOP_LOSS_PCT = 0.30    # نسبة وقف الخسارة
+POLL_INTERVAL = 10      # التحديث كل 10 ثواني
+COOLDOWN_SECONDS = 60   # الانتظار بين الرسائل
 ```
 
-## Message Format (Arabic)
+## شكل الرسائل
 
-### BUY Signal
+### إشارة شراء
 ```
-🟢 **إشارة شراء - XRPUSDT**
+🟢 إشارة شراء
 
-📊 **الإطار الزمني**: 1m
-💰 **سعر الدخول**: 2.1450
-🎯 **جني الأرباح**: 2.1536 (+0.40%)
-🛑 **وقف الخسارة**: 2.1386 (-0.30%)
+📈 الزوج: XRP/USDT
+📊 الإطار الزمني: 1m
+💰 سعر الدخول: 2.1450
+🎯 جني الأرباح: 2.1536 (+0.40%)
+🛑 وقف الخسارة: 2.1386 (-0.30%)
 
-📈 **السبب**: EMA20 > EMA50 + اختراق أعلى سعر
-```
-
-### EXIT Signal
-```
-🔴 **إغلاق المركز - XRPUSDT**
-
-💰 **سعر الخروج**: 2.1540
-📊 **الربح/الخسارة**: +0.42%
-✅ **السبب**: وصول الهدف
+📝 السبب: EMA20 > EMA50 + اختراق أعلى قمة
+🕐 الوقت: 2026-01-26 12:30:00 UTC
 ```
 
-## Error Handling
+### إشارة خروج
+```
+🔴 إشارة خروج
 
-- Network/API errors are logged and do not crash the bot
-- After 5 consecutive API failures, a warning is sent to Telegram
-- The bot automatically retries on the next polling cycle
+📈 الزوج: XRP/USDT
+💰 سعر الدخول: 2.1450
+💵 سعر الخروج: 2.1540
+📊 الربح/الخسارة: +0.42%
 
-## Dependencies
+✅ السبب: وصول الهدف (TP)
+🕐 الوقت: 2026-01-26 12:35:00 UTC
+```
 
-- `python-telegram-bot>=20.0` - Telegram bot framework
-- `requests` - HTTP client for Binance API
-- `pandas` - Data manipulation and EMA calculation
-- `numpy` - Numerical operations
+## معالجة الأخطاء
 
-## License
+- فشل API: البوت يحاول endpoints بديلة
+- بعد 5 أخطاء متتالية: إرسال تنبيه للمستخدم
+- لا يتوقف البوت عند الأخطاء
 
-MIT License - Feel free to modify and use as needed.
+## المتطلبات
 
-## Notes
+- `python-telegram-bot>=20.0`
+- `requests`
 
-- The bot uses multiple Binance API endpoints (including Binance US) to handle geographic restrictions
-- If running from Replit, the bot will automatically try alternative endpoints if the main API is blocked
+## ملاحظات
 
-## Disclaimer
+- البوت يستخدم عدة endpoints من Binance للتغلب على القيود الجغرافية
+- حساب EMA بدون مكتبات خارجية (بدون pandas)
+- Polling كل 10 ثواني
 
-This bot is for educational purposes only. Trading cryptocurrencies involves significant risk. Use at your own risk and never trade more than you can afford to lose.
+## تحذير
+
+هذا البوت للأغراض التعليمية فقط. التداول في العملات الرقمية ينطوي على مخاطر كبيرة. استخدمه على مسؤوليتك الخاصة.
