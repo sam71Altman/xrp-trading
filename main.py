@@ -671,8 +671,17 @@ def check_buy_signal(analysis: dict, candles: List[dict]) -> bool:
     if not analysis["volume_confirmed"]:
         return False
     
+    # Candle Body Filter (Anti-Fake Breakdown)
+    current_candle = candles[-1]
+    total_range = current_candle['high'] - current_candle['low']
+    body_size = abs(current_candle['close'] - current_candle['open'])
+    
+    if total_range > 0:
+        body_pct = (body_size / total_range) * 100
+        if body_pct < 60:
+            return False
+            
     score, reasons = calculate_signal_score(analysis, candles)
-    state.last_signal_score = score
     state.last_signal_reasons = reasons
     
     return score >= MIN_SIGNAL_SCORE
@@ -820,7 +829,7 @@ def update_cooldown_after_exit(reason: str):
         state.current_cooldown = COOLDOWN_NORMAL
 
 
-VERSION = "3.41 – Stable UI (Reply Keyboard)"
+VERSION = "3.4.1 – Anti Fake Breakdown Filter (Scalping Safe)"
 
 def get_main_keyboard():
     keyboard = [
@@ -1444,7 +1453,34 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                 update_cooldown_after_exit(exit_reason)
                 reset_position_state()
         else:
-            if check_buy_signal(analysis, candles):
+            # Momentum Confirmation Filter (Anti-Fake Breakdown)
+    if not analysis["ema_bullish"] and analysis["prev_ema_short"] > analysis["ema_long"]:
+        # Candle just closed below EMA20
+        logger.info("Bearish transition detected, waiting 20s for momentum confirmation...")
+        await asyncio.sleep(20)
+        
+        # Re-fetch data
+        new_candles = get_klines(SYMBOL, state.timeframe, limit=5)
+        if not new_candles:
+            return
+            
+        current_price = new_candles[-1]['close']
+        breakdown_candle = candles[-1]
+        
+        # 1. Quick Reclaim EMA20 Check
+        new_analysis = analyze_market(new_candles)
+        if new_analysis["ema_bullish"]:
+            logger.info("Fake Breakdown: Price quickly reclaimed EMA20. Alert cancelled.")
+            return
+
+        # 2. Lower Low Check
+        if current_price >= breakdown_candle['low']:
+            logger.info("Fake Breakdown: Price failed to print lower low. Alert cancelled.")
+            return
+
+        logger.info("Bearish momentum confirmed.")
+    
+    if check_buy_signal(analysis, candles):
                 entry_price = analysis["close"]
                 tp, sl = calculate_targets(entry_price, candles)
                 qty = execute_paper_buy(entry_price, state.last_signal_score, state.last_signal_reasons)
@@ -1513,7 +1549,7 @@ async def main() -> None:
     logger.info("Starting polling...")
     await application.updater.start_polling(drop_pending_updates=True)
     
-    print(f"🚀 بوت إشارات {SYMBOL_DISPLAY} V3.41 يعمل...")
+    print(f"🚀 بوت إشارات {SYMBOL_DISPLAY} V3.4.1 يعمل...")
     
     # Keep running
     try:
