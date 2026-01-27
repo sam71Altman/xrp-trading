@@ -1,0 +1,83 @@
+أنت مطوّر Python محترف. قم بتنفيذ فحص تشغيلي شامل (Runtime Diagnostic) لبوت تيليجرام XRP/USDT V3.2 (Paper Trading).
+الهدف
+التأكد هل البوت:
+يعمل فعليًا في الخلفية
+ينفّذ حلقة التحليل
+قادر على فتح صفقات Paper Trading
+أو متوقف بسبب منطق داخلي
+1️⃣ فحص Job التحليل (Critical)
+تحقق من التالي واطبع النتائج في Console:
+هل Job التحليل (JobQueue / asyncio task) نشط؟
+كم مرة تم تنفيذه منذ التشغيل؟
+آخر وقت تشغيل للـ Job
+اطبع:
+نسخ التعليمات البرمجية
+
+[CHECK] Analysis Job: RUNNING / STOPPED
+[CHECK] Last Run Timestamp
+[CHECK] Run Count
+2️⃣ فحص حالة التداول
+اطبع القيم الحالية:
+نسخ التعليمات البرمجية
+
+signals_enabled
+paper_trading_enabled
+kill_switch_active
+kill_switch_reason (إن وجد)
+cooldown_remaining
+3️⃣ فحص شروط الدخول (BUY CONDITIONS)
+في آخر دورة تحليل، اطبع حالة كل شرط بشكل صريح:
+نسخ التعليمات البرمجية
+
+EMA20 > EMA50 : True / False
+Breakout (High 5 candles) : True / False
+Volume Filter : True / False
+Range Filter : True / False
+Signal Score : X / 10
+❗ حتى لو False، اطبع القيم الفعلية (الأرقام).
+4️⃣ فحص Kill Switch Gate
+تحقق واطبع:
+نسخ التعليمات البرمجية
+
+Closed Trades Count
+Data Maturity Passed (>=5 trades): True / False
+Loss Streak
+Drawdown %
+Recent Win Rate
+ووضّح:
+هل Kill Switch يمنع التداول حاليًا؟ ولماذا؟
+5️⃣ فحص Paper Trading
+اطبع:
+نسخ التعليمات البرمجية
+
+Virtual Balance
+Open Position Exists: True / False
+Entry Price (إن وجد)
+paper_trades.csv exists: True / False
+Rows count in paper_trades.csv
+6️⃣ فحص البيانات السوقية
+تحقق من Binance API:
+هل يتم جلب الشموع بنجاح؟
+الفريم المستخدم فعليًا (1m أو 5m)
+عدد الشموع المسترجعة
+آخر سعر Close
+اطبع مثال:
+نسخ التعليمات البرمجية
+
+[MARKET] Timeframe: 1m
+[MARKET] Candles fetched: 200
+[MARKET] Last Close: XXXXX
+7️⃣ فحص السبب النهائي
+في نهاية الفحص اطبع خلاصة واحدة فقط:
+❌ البوت لا يتداول بسبب: (اذكر السبب الدقيق) أو
+⚠️ البوت يعمل لكن شروط الدخول غير متحققة حاليًا أو
+✅ البوت جاهز وسيدخل عند تحقق الشروط
+8️⃣ قيود
+لا تغيّر أي منطق
+لا تضف ميزات
+هذا فحص فقط
+اطبع النتائج في Console بشكل واضح
+9️⃣ المخرجات
+أعطني:
+مخرجات Console
+تفسير تقني مختصر (3–5 أسطر)
