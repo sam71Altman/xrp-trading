@@ -1384,21 +1384,22 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                 await asyncio.sleep(POLL_INTERVAL)
                 continue
             
-            if state.position_open:
+            if state.position_open and state.entry_price is not None:
                 exit_reason = check_exit_signal(analysis)
                 if exit_reason:
                     exit_price = analysis["close"]
                     duration = get_trade_duration_minutes()
+                    entry = state.entry_price
                     
                     pnl_pct, pnl_usdt, balance = execute_paper_exit(
-                        state.entry_price, exit_price, exit_reason,
+                        entry, exit_price, exit_reason,
                         state.last_signal_score, duration
                     )
                     
                     log_trade("EXIT", exit_reason.upper(), exit_price, pnl_pct)
                     
                     msg = format_exit_message(
-                        state.entry_price, exit_price, pnl_pct, pnl_usdt,
+                        entry, exit_price, pnl_pct, pnl_usdt,
                         exit_reason, duration, balance
                     )
                     sent = await send_signal_message(bot, chat_id, msg, "exit")
