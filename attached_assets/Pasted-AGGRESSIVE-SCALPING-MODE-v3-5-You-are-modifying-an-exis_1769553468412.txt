@@ -1,0 +1,98 @@
+AGGRESSIVE SCALPING MODE (v3.5)
+You are modifying an existing XRP/USDT Telegram bot.
+THIS UPDATE IS INTENTIONALLY AGGRESSIVE.
+The goal is to capture as many small price movements as possible
+by frequent BUY and SELL operations with very small profits.
+This is an experimental mode.
+⚠️ IMPORTANT – INTENT (READ CAREFULLY)
+This mode prioritizes frequency over accuracy
+Small profits are acceptable
+High trade count is expected
+Drawdowns are acceptable
+This is NOT trend trading
+This is NOT conservative
+This is pure scalping
+🔓 TRADING MODE
+Enable:
+BUY and SELL (LONG & SHORT)
+Very fast re-entries
+Multiple trades per hour (or per few minutes)
+Disable / Relax:
+Strict confirmation logic
+Heavy filters
+Delays
+⏱️ TIMEFRAME
+Primary: 1m
+No waiting for candle confirmation
+Intrabar logic allowed (last price / partial candle)
+📈 ENTRY LOGIC (SIMPLIFIED & AGGRESSIVE)
+BUY (Long)
+Enter BUY if ANY of the following is true:
+Price touches or slightly dips below EMA20 and rejects upward
+Price moves +0.05% to +0.10% within short time window
+Micro breakout of recent high (last 3 candles)
+NO volume confirmation required
+NO score system required
+SELL (Short)
+Enter SELL if ANY of the following is true:
+Price touches or slightly moves above EMA20 and rejects downward
+Price drops −0.05% to −0.10% within short time window
+Micro breakdown of recent low (last 3 candles)
+🎯 TAKE PROFIT (VERY SMALL)
+TP range:
+نسخ التعليمات البرمجية
+
++0.10% to +0.25%
+Exit immediately when TP is touched
+No trailing
+No holding
+🛑 STOP LOSS (TIGHT BUT FLEXIBLE)
+SL range:
+نسخ التعليمات البرمجية
+
+−0.20% to −0.35%
+SL hit = immediate exit
+No recovery logic
+🔁 RE-ENTRY BEHAVIOR
+Allow re-entry immediately after exit
+No cooldown between trades
+No “wait for reset”
+The bot may enter again in the same direction if conditions repeat
+🔥 TRADE FREQUENCY
+Expect:
+5–20 trades per hour (market dependent)
+High churn is intended
+Overtrading is acceptable for this experiment
+🧠 RISK CONTROLS (MINIMAL ONLY)
+Keep ONLY:
+Emergency Kill Switch (catastrophic loss)
+Disable:
+Win-rate based stops
+Loss streak protection
+Over-filtering
+📊 LOGGING (IMPORTANT)
+Log every trade with:
+Direction (BUY / SELL)
+Duration
+PnL %
+Reason (EMA bounce / Micro breakout / Momentum)
+This is required to evaluate if the mode is viable.
+🏷️ VERSION TAG
+نسخ التعليمات البرمجية
+
+VERSION = "3.5 – Aggressive Scalping Mode (Experimental)"
+🚫 STRICT RULES
+Do NOT try to “optimize”
+Do NOT add safety logic
+Do NOT reduce trade count
+Do NOT convert this to trend following
+Execute exactly as described
+🎯 SUCCESS CRITERIA (FOR EVALUATION)
+After testing:
+Total PnL
+Avg trade duration
+Win rate
+Max drawdown
+If:
+Profitable → keep mode
+Unstable → discard and revert

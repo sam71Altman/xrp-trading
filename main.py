@@ -28,36 +28,36 @@ last_analysis_time = None
 
 EMA_SHORT = 20
 EMA_LONG = 50
-BREAKOUT_CANDLES = 5
+BREAKOUT_CANDLES = 3  # AGGRESSIVE: 3 candles
 
-TAKE_PROFIT_PCT = 0.40
-STOP_LOSS_PCT = 0.30
-TRAILING_TRIGGER_PCT = 0.25
+TAKE_PROFIT_PCT = 0.15  # AGGRESSIVE: 0.10% to 0.25%
+STOP_LOSS_PCT = 0.25    # AGGRESSIVE: 0.20% to 0.35%
+TRAILING_TRIGGER_PCT = None # AGGRESSIVE: No trailing
 
-RANGE_FILTER_THRESHOLD = 0.001
-VOLUME_LOOKBACK = 20
-TREND_LOOKBACK = 30
+RANGE_FILTER_THRESHOLD = 0.0001 # Relaxed
+VOLUME_LOOKBACK = 10
+TREND_LOOKBACK = 10
 
-COOLDOWN_NORMAL = 60
-COOLDOWN_AFTER_SL = 180
-COOLDOWN_AFTER_LOSS_STREAK = 15
-COOLDOWN_STREAK_WIN = 30
-COOLDOWN_PAUSE_MINUTES = 10
+COOLDOWN_NORMAL = 0 # AGGRESSIVE: No cooldown
+COOLDOWN_AFTER_SL = 0
+COOLDOWN_AFTER_LOSS_STREAK = 0
+COOLDOWN_STREAK_WIN = 0
+COOLDOWN_PAUSE_MINUTES = 0
 
-MIN_WIN_RATE = 45.0
-MIN_SIGNAL_SCORE = 6
+MIN_WIN_RATE = 0.0
+MIN_SIGNAL_SCORE = 1 # Relaxed
 
-POLL_INTERVAL = 10
+POLL_INTERVAL = 5 # Faster polling
 KLINE_LIMIT = 200
 BACKTEST_DAYS = 30
 
 START_BALANCE = 1000.0
 FIXED_TRADE_SIZE = 100.0
 
-DATA_MATURITY_TRADES = 5
-LOSS_STREAK_LIMIT = 3
-DRAWDOWN_LIMIT_PERCENT = 3.0
-RECENT_WIN_RATE_MIN = 40.0
+DATA_MATURITY_TRADES = 0
+LOSS_STREAK_LIMIT = 999 # Disabled
+DRAWDOWN_LIMIT_PERCENT = 5.0 # Keep only catastrophic kill switch
+RECENT_WIN_RATE_MIN = 0.0 # Disabled
 RECENT_TRADES_WINDOW = 10
 AUTO_RESUME_MINUTES = 30
 
@@ -272,6 +272,7 @@ class BotState:
         self.backtest_warned: bool = False
         self.last_signal_score: int = 0
         self.last_signal_reasons: List[str] = []
+        self.last_signal_reason: str = ""
         self.backtest_stats: Dict = {}
         self.pending_reset: bool = False
         self.last_downtrend_alert_time: float = 0
@@ -658,48 +659,65 @@ def check_buy_signal(analysis: dict, candles: List[dict]) -> bool:
         return False
     if kill_switch.active:
         return False
-    if is_low_liquidity_session():
-        return False
-    if state.pause_until and datetime.now(timezone.utc) < state.pause_until:
-        return False
-    if not analysis["ema_bullish"]:
-        return False
-    if not analysis["breakout"]:
-        return False
-    if not analysis["range_confirmed"]:
-        return False
-    if not analysis["volume_confirmed"]:
-        return False
     
-    # Candle Body Filter (Anti-Fake Breakdown)
-    current_candle = candles[-1]
-    total_range = current_candle['high'] - current_candle['low']
-    body_size = abs(current_candle['close'] - current_candle['open'])
+    current_close = analysis["close"]
+    prev_close = analysis["prev_close"]
+    ema20 = analysis["ema_short"]
     
-    if total_range > 0:
-        body_pct = (body_size / total_range) * 100
-        if body_pct < 60:
-            return False
-            
-    score, reasons = calculate_signal_score(analysis, candles)
-    state.last_signal_reasons = reasons
+    # 1. Price touches/dips below EMA20 and rejects upward
+    low_hit = any(c["low"] <= ema20 for c in candles[-2:])
+    if low_hit and current_close > ema20:
+        state.last_signal_reason = "EMA bounce"
+        return True
     
-    return score >= MIN_SIGNAL_SCORE
+    # 2. Momentum: +0.05% to +0.10% within short window
+    price_change = (current_close - prev_close) / prev_close * 100
+    if price_change >= 0.05:
+        state.last_signal_reason = "Momentum"
+        return True
+        
+    # 3. Micro breakout of recent high (last 3 candles)
+    recent_high = max([c["high"] for c in candles[-4:-1]])
+    if current_close > recent_high:
+        state.last_signal_reason = "Micro breakout"
+        return True
+        
+    return False
+
+def check_sell_signal(analysis: dict, candles: List[dict]) -> bool:
+    if "error" in analysis:
+        return False
+    if kill_switch.active:
+        return False
+        
+    current_close = analysis["close"]
+    prev_close = analysis["prev_close"]
+    ema20 = analysis["ema_short"]
+    
+    # 1. Price touches/moves above EMA20 and rejects downward
+    high_hit = any(c["high"] >= ema20 for c in candles[-2:])
+    if high_hit and current_close < ema20:
+        state.last_signal_reason = "EMA bounce"
+        return True
+        
+    # 2. Momentum: -0.05% to -0.10% within short window
+    price_change = (current_close - prev_close) / prev_close * 100
+    if price_change <= -0.05:
+        state.last_signal_reason = "Momentum"
+        return True
+        
+    # 3. Micro breakdown of recent low (last 3 candles)
+    recent_low = min([c["low"] for c in candles[-4:-1]])
+    if current_close < recent_low:
+        state.last_signal_reason = "Micro breakdown"
+        return True
+        
+    return False
 
 
 def calculate_targets(entry_price: float, candles: List[dict]) -> tuple:
     tp = entry_price * (1 + TAKE_PROFIT_PCT / 100)
-    
-    # Smart Stop Loss (ATR)
-    atr = calculate_atr(candles)
-    fixed_sl = entry_price * (STOP_LOSS_PCT / 100)
-    
-    if atr:
-        sl_dist = max(fixed_sl, atr * ATR_MULTIPLIER)
-    else:
-        sl_dist = fixed_sl
-        
-    sl = entry_price - sl_dist
+    sl = entry_price * (1 - STOP_LOSS_PCT / 100)
     return tp, sl
 
 def check_exit_signal(analysis: dict, candles: List[dict]) -> Optional[str]:
@@ -829,7 +847,7 @@ def update_cooldown_after_exit(reason: str):
         state.current_cooldown = COOLDOWN_NORMAL
 
 
-VERSION = "3.4.1 – Anti Fake Breakdown Filter (Scalping Safe)"
+VERSION = "3.5 – Aggressive Scalping Mode (Experimental)"
 
 def get_main_keyboard():
     keyboard = [
@@ -1452,48 +1470,36 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                 await bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
                 update_cooldown_after_exit(exit_reason)
                 reset_position_state()
-        else:
-            # Momentum Confirmation Filter (Anti-Fake Breakdown)
-            if not analysis["ema_bullish"] and analysis["prev_ema_short"] > analysis["ema_long"]:
-                # Candle just closed below EMA20
-                logger.info("Bearish transition detected, waiting 20s for momentum confirmation...")
-                await asyncio.sleep(20)
-                
-                # Re-fetch data
-                new_candles = get_klines(SYMBOL, state.timeframe, limit=5)
-                if not new_candles:
-                    return
-                    
-                current_price = new_candles[-1]['close']
-                breakdown_candle = candles[-1]
-                
-                # 1. Quick Reclaim EMA20 Check
-                new_analysis = analyze_market(new_candles)
-                if new_analysis["ema_bullish"]:
-                    logger.info("Fake Breakdown: Price quickly reclaimed EMA20. Alert cancelled.")
-                    return
-
-                # 2. Lower Low Check
-                if current_price >= breakdown_candle['low']:
-                    logger.info("Fake Breakdown: Price failed to print lower low. Alert cancelled.")
-                    return
-
-                logger.info("Bearish momentum confirmed.")
-            
             if check_buy_signal(analysis, candles):
                 entry_price = analysis["close"]
                 tp, sl = calculate_targets(entry_price, candles)
-                qty = execute_paper_buy(entry_price, state.last_signal_score, state.last_signal_reasons)
-                log_trade("BUY", "SIGNAL", entry_price, None)
-                msg = format_buy_message(entry_price, tp, sl, state.timeframe, state.last_signal_score, qty)
+                qty = execute_paper_buy(entry_price, 1, [state.last_signal_reason])
+                log_trade("BUY", state.last_signal_reason, entry_price, None)
+                msg = format_buy_message(entry_price, tp, sl, state.timeframe, 1, qty)
                 await bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
+                
+                # Update State for New Long
                 state.position_open = True
                 state.entry_price = entry_price
                 state.entry_time = datetime.now(timezone.utc)
+                state.current_sl = sl
+                state.tp_triggered = False
+                state.risk_free_sl = None
                 state.trailing_activated = False
                 state.candles_below_ema = 0
-                state.current_sl = sl
-                state.entry_candles_snapshot = candles[-20:] # Keep snapshot for loss classification
+                state.entry_candles_snapshot = candles[-10:]
+            elif check_sell_signal(analysis, candles):
+                if state.position_open:
+                    exit_price = analysis["close"]
+                    duration = get_trade_duration_minutes()
+                    balance, pnl_pct, pnl_usdt, exit_reason = execute_paper_exit(state.entry_price, exit_price, "aggressive_flip", 1, duration)
+                    msg = format_exit_message(state.entry_price, exit_price, pnl_pct, pnl_usdt, exit_reason, duration, balance)
+                    await bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
+                    reset_position_state()
+                else:
+                    # Shorting not implemented in current paper system, but we log the signal
+                    log_trade("SELL_SIGNAL", state.last_signal_reason, analysis["close"], None)
+                    logger.info(f"Aggressive SELL signal: {state.last_signal_reason}")
 
     except Exception as e:
         logger.error(f"Error in signal loop: {e}")
@@ -1549,7 +1555,7 @@ async def main() -> None:
     logger.info("Starting polling...")
     await application.updater.start_polling(drop_pending_updates=True)
     
-    print(f"🚀 بوت إشارات {SYMBOL_DISPLAY} V3.4.1 يعمل...")
+    print(f"🚀 بوت إشارات {SYMBOL_DISPLAY} V3.5 يعمل...")
     
     # Keep running
     try:
