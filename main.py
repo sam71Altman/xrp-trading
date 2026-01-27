@@ -164,6 +164,90 @@ paper_state = PaperTradingState()
 
 DOWNTREND_ALERT_COOLDOWN = 300  # 5 minutes in seconds
 
+ATR_PERIOD = 14
+ATR_MULTIPLIER = 2.0
+VERSION = "3.4 – ATR SL + Loss Analysis Button"
+LOSS_EVENTS_FILE = "loss_events.csv"
+
+# --- In-memory counters for loss analysis ---
+loss_counters = {
+    "STOP_HUNT": 0,
+    "NOISE": 0,
+    "TREND_REVERSAL": 0,
+    "WEAK_ENTRY": 0,
+    "UNKNOWN": 0
+}
+
+def calculate_atr(candles: List[dict], period: int = ATR_PERIOD) -> Optional[float]:
+    if len(candles) < period + 1:
+        return None
+    
+    tr_values = []
+    for i in range(1, len(candles)):
+        high = candles[i]['high']
+        low = candles[i]['low']
+        prev_close = candles[i-1]['close']
+        tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+        tr_values.append(tr)
+    
+    if not tr_values:
+        return None
+        
+    return sum(tr_values[-period:]) / period
+
+def classify_loss(entry_price: float, exit_price: float, entry_candles: List[dict], exit_candles: List[dict]) -> str:
+    """
+    Classify the type of loss based on price action.
+    """
+    if not entry_candles or not exit_candles:
+        return "UNKNOWN"
+    
+    current_close = exit_candles[-1]['close']
+    
+    # 1. STOP_HUNT: SL hit then price reclaims EMA20 within N candles
+    # We check if the last few candles show a reclaim
+    ema20_vals = calculate_ema([c['close'] for c in exit_candles], EMA_SHORT)
+    if ema20_vals and current_close > ema20_vals[-1]:
+        return "STOP_HUNT"
+        
+    # 2. NOISE: Loss < X% and trade duration < Y candles
+    pnl_pct = abs((exit_price - entry_price) / entry_price) * 100
+    duration = len(exit_candles) # Approximation if exit_candles are those during trade
+    if pnl_pct < 0.15 and duration < 10:
+        return "NOISE"
+        
+    # 3. TREND_REVERSAL: Close below EMA20 & EMA50 with continuation
+    ema50_vals = calculate_ema([c['close'] for c in exit_candles], EMA_LONG)
+    if ema20_vals and ema50_vals:
+        if current_close < ema20_vals[-1] and current_close < ema50_vals[-1]:
+            return "TREND_REVERSAL"
+            
+    # 4. WEAK_ENTRY: Entry followed by immediate volume drop
+    if len(exit_candles) >= 2:
+        entry_vol = entry_candles[-1]['volume']
+        subsequent_vol = exit_candles[0]['volume'] if exit_candles else 0
+        if subsequent_vol < entry_vol * 0.5:
+            return "WEAK_ENTRY"
+            
+    return "UNKNOWN"
+
+def log_loss_event(loss_type: str, pnl_pct: float, entry_price: float, exit_price: float):
+    global loss_counters
+    loss_counters[loss_type] = loss_counters.get(loss_type, 0) + 1
+    
+    file_exists = os.path.exists(LOSS_EVENTS_FILE)
+    with open(LOSS_EVENTS_FILE, 'a', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        if not file_exists:
+            writer.writerow(['timestamp', 'loss_type', 'pnl_pct', 'entry_price', 'exit_price'])
+        writer.writerow([
+            datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+            loss_type,
+            f"{pnl_pct:.2f}",
+            f"{entry_price:.4f}",
+            f"{exit_price:.4f}"
+        ])
+
 class BotState:
     def __init__(self):
         self.position_open: bool = False
@@ -193,6 +277,8 @@ class BotState:
         self.last_downtrend_alert_time: float = 0
         self.tp_triggered: bool = False
         self.risk_free_sl: Optional[float] = None
+        self.current_sl: Optional[float] = None
+        self.entry_candles_snapshot: List[dict] = []
 
 state = BotState()
 
@@ -592,13 +678,22 @@ def check_buy_signal(analysis: dict, candles: List[dict]) -> bool:
     return score >= MIN_SIGNAL_SCORE
 
 
-def calculate_targets(entry_price: float) -> tuple:
+def calculate_targets(entry_price: float, candles: List[dict]) -> tuple:
     tp = entry_price * (1 + TAKE_PROFIT_PCT / 100)
-    sl = entry_price * (1 - STOP_LOSS_PCT / 100)
+    
+    # Smart Stop Loss (ATR)
+    atr = calculate_atr(candles)
+    fixed_sl = entry_price * (STOP_LOSS_PCT / 100)
+    
+    if atr:
+        sl_dist = max(fixed_sl, atr * ATR_MULTIPLIER)
+    else:
+        sl_dist = fixed_sl
+        
+    sl = entry_price - sl_dist
     return tp, sl
 
-
-def check_exit_signal(analysis: dict) -> Optional[str]:
+def check_exit_signal(analysis: dict, candles: List[dict]) -> Optional[str]:
     if not state.position_open or state.entry_price is None:
         return None
     
@@ -612,14 +707,18 @@ def check_exit_signal(analysis: dict) -> Optional[str]:
         state.risk_free_sl = entry_price * 1.001  # +0.1% Small profit
         return "tp_trigger"
 
-    # v3.3: Exit Conditions after TP Triggered or Normal SL
+    # v3.3: Exit Conditions after TP Triggered or Smart SL
     if state.tp_triggered:
         if current_price <= state.risk_free_sl:
             return "risk_free_sl_hit"
         if current_price < analysis["ema_short"]:
             return "ema_exit_post_tp"
     else:
-        if pnl_pct <= -STOP_LOSS_PCT:
+        # Check Smart SL
+        if state.current_sl and current_price <= state.current_sl:
+            return "sl"
+        # Fallback to fixed if for some reason current_sl is missing
+        if not state.current_sl and pnl_pct <= -STOP_LOSS_PCT:
             return "sl"
     
     # Trailing SL (Existing logic preserved but secondary to TP trigger)
@@ -668,6 +767,13 @@ def execute_paper_exit(entry_price: float, exit_price: float, reason: str,
         paper_state.loss_streak += 1
         state.consecutive_losses += 1
         state.consecutive_wins = 0
+        
+        # Classify and log loss
+        # We need current candles for classification
+        candles = get_klines(SYMBOL, state.timeframe)
+        if candles:
+            ltype = classify_loss(entry_price, exit_price, state.entry_candles_snapshot, candles)
+            log_loss_event(ltype, pnl_pct, entry_price, exit_price)
     else:
         paper_state.loss_streak = 0
         state.consecutive_wins += 1
@@ -697,6 +803,8 @@ def reset_position_state():
     state.candles_below_ema = 0
     state.tp_triggered = False
     state.risk_free_sl = None
+    state.current_sl = None
+    state.entry_candles_snapshot = []
 
 
 def get_trade_duration_minutes() -> int:
@@ -719,27 +827,91 @@ def get_main_keyboard():
     keyboard = [
         [
             InlineKeyboardButton("🔄 تحديث الحالة", callback_data="status"),
-            InlineKeyboardButton("🧪 تشخيص البوت", callback_data="diagnostic")
-        ],
-        [
-            InlineKeyboardButton("💰 الرصيد", callback_data="balance"),
             InlineKeyboardButton("📊 الإحصائيات", callback_data="stats")
         ],
         [
-            InlineKeyboardButton("📜 سجل الصفقات", callback_data="trades"),
-            InlineKeyboardButton("⚖️ القواعد", callback_data="rules")
+            InlineKeyboardButton("📉 تحليل الخسائر", callback_data="loss_analysis")
         ],
         [
-            InlineKeyboardButton("1m", callback_data="tf_1m"),
-            InlineKeyboardButton("5m", callback_data="tf_5m"),
-            InlineKeyboardButton("🔄 تصفير", callback_data="reset")
-        ],
-        [
-            InlineKeyboardButton("✅ تشغيل", callback_data="on"),
-            InlineKeyboardButton("⏸️ إيقاف", callback_data="off")
+            InlineKeyboardButton("⚙️ الإعدادات", callback_data="settings"),
+            InlineKeyboardButton("📜 السجل", callback_data="history")
         ]
     ]
     return InlineKeyboardMarkup(keyboard)
+
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data == "status":
+        candles = get_klines(SYMBOL, state.timeframe)
+        analysis = analyze_market(candles)
+        status_text = format_status_message()
+        await query.edit_message_text(text=status_text, reply_markup=get_main_keyboard(), parse_mode='Markdown')
+    
+    elif query.data == "loss_analysis":
+        summary = "📉 <b>تحليل الخسائر الأخير</b>\n\n"
+        total_losses = sum(loss_counters.values())
+        if total_losses == 0:
+            summary += "لا توجد بيانات خسائر كافية حالياً."
+        else:
+            for ltype, count in loss_counters.items():
+                pct = (count / total_losses) * 100
+                summary += f"• {ltype}: {count} ({pct:.1f}%)\n"
+            
+            # Find most frequent
+            most_frequent = max(loss_counters, key=loss_counters.get)
+            if loss_counters[most_frequent] > 0:
+                summary += f"\n⚠️ نقطة الضعف الأكثر تكراراً: <b>{most_frequent}</b>"
+        
+        await query.edit_message_text(text=summary, reply_markup=get_main_keyboard(), parse_mode='HTML')
+
+    elif query.data == "on":
+        state.signals_enabled = True
+        await query.edit_message_text("✅ تم تشغيل الإشارات\n\n" + format_status_message(), reply_markup=get_main_keyboard(), parse_mode="Markdown")
+    elif query.data == "off":
+        state.signals_enabled = False
+        await query.edit_message_text("⏸️ تم إيقاف الإشارات\n\n" + format_status_message(), reply_markup=get_main_keyboard(), parse_mode="Markdown")
+    elif query.data == "balance":
+        await query.edit_message_text(format_balance_message(), reply_markup=get_main_keyboard(), parse_mode="Markdown")
+    elif query.data == "trades":
+        await query.edit_message_text(format_trades_message(), reply_markup=get_main_keyboard(), parse_mode="Markdown")
+    elif query.data == "stats":
+        await query.edit_message_text(format_stats_message(), reply_markup=get_main_keyboard(), parse_mode="Markdown")
+    elif query.data == "rules":
+        await query.edit_message_text(format_rules_message(), reply_markup=get_main_keyboard(), parse_mode="Markdown")
+    elif query.data == "reset":
+        await query.edit_message_text("⚠️ *هل تريد تصفير الرصيد والسجل؟*\n\n", reply_markup=get_confirm_keyboard(), parse_mode="Markdown")
+    elif query.data == "confirm_reset":
+        paper_state.reset()
+        reset_position_state()
+        await query.edit_message_text(f"✅ تم تصفير الرصيد إلى {START_BALANCE:.0f} USDT\n\n" + format_status_message(), reply_markup=get_main_keyboard(), parse_mode="Markdown")
+    elif query.data == "cancel_reset":
+        await query.edit_message_text("❌ تم إلغاء التصفير\n\n" + format_status_message(), reply_markup=get_main_keyboard(), parse_mode="Markdown")
+    elif query.data in ["tf_1m", "tf_5m"]:
+        new_tf = "1m" if query.data == "tf_1m" else "5m"
+        state.timeframe = new_tf
+        logger.info(f"تم تغيير الفريم إلى {new_tf} عبر الأزرار")
+        
+        # Update Job
+        application = context.application
+        if application.job_queue:
+            for job in application.job_queue.get_jobs_by_name("signal_loop"):
+                job.schedule_removal()
+            
+            chat_id = os.environ.get("TG_CHAT_ID")
+            application.job_queue.run_repeating(
+                lambda ctx: asyncio.create_task(signal_loop(application.bot, chat_id)),
+                interval=POLL_INTERVAL,
+                first=1,
+                name="signal_loop"
+            )
+            
+        await query.edit_message_text(
+            f"✅ تم تغيير الفريم إلى {'1 دقيقة' if new_tf == '1m' else '5 دقائق'}\n\n" + format_status_message(),
+            reply_markup=get_main_keyboard(),
+            parse_mode="Markdown"
+        )
 
 
 def get_confirm_keyboard():
