@@ -16,11 +16,14 @@ import requests
 from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
-# --- Configuration ---
-MODE = "PAPER"
-TIMEFRAME = "1m"
-SYMBOL = "XRPUSDT"
-SYMBOL_DISPLAY = "XRP/USDT"
+    # --- Configuration ---
+    MODE = "PAPER"
+    TIMEFRAME = "1m"
+    SYMBOL = "XRPUSDT"
+    SYMBOL_DISPLAY = "XRP/USDT"
+    
+    analysis_count = 0
+    last_analysis_time = None
 
 EMA_SHORT = 20
 EMA_LONG = 50
@@ -474,6 +477,10 @@ def calculate_ema(prices: List[float], period: int) -> List[float]:
 
 
 def analyze_market(candles: List[dict]) -> dict:
+    global analysis_count, last_analysis_time
+    analysis_count += 1
+    last_analysis_time = datetime.now(timezone.utc)
+    
     if not candles or len(candles) < EMA_LONG + BREAKOUT_CANDLES:
         return {"error": "بيانات غير كافية"}
     
@@ -692,11 +699,11 @@ def get_main_keyboard():
     keyboard = [
         [
             InlineKeyboardButton("🔄 تحديث الحالة", callback_data="status"),
-            InlineKeyboardButton("💰 المحفظة", callback_data="balance")
+            InlineKeyboardButton("🧪 تشخيص البوت", callback_data="diagnostic")
         ],
         [
-            InlineKeyboardButton("📊 الصفقات", callback_data="trades"),
-            InlineKeyboardButton("📈 الإحصائيات", callback_data="stats")
+            InlineKeyboardButton("💰 المحفظة", callback_data="balance"),
+            InlineKeyboardButton("📊 الصفقات", callback_data="trades")
         ],
         [
             InlineKeyboardButton("⏱ فريم 1 دقيقة", callback_data="tf_1m"),
@@ -1137,6 +1144,7 @@ async def main() -> None:
     application.add_handler(CommandHandler("off", cmd_off))
     application.add_handler(CommandHandler("rules", cmd_rules))
     application.add_handler(CommandHandler("stats", cmd_stats))
+    application.add_handler(CommandHandler("تشخيص", cmd_diagnostic))
     application.add_handler(CommandHandler("frame", cmd_الفريم))
     application.add_handler(CallbackQueryHandler(button_callback))
     
