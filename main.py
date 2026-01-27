@@ -838,12 +838,12 @@ def format_stats_message() -> str:
 
 def format_rules_message() -> str:
     return (
-        f"⚖️ *قواعد التداول V3.2*\n"
+        f"⚖️ *قواعد التداول V3.3*\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"🔹 حجم الصفقة: {FIXED_TRADE_SIZE} USDT\n"
-        f"🔹 هدف الربح: {TAKE_PROFIT_PCT}%\n"
+        f"🔹 محفز الربح (Trigger): {TAKE_PROFIT_PCT}%\n"
         f"🔹 وقف الخسارة: {STOP_LOSS_PCT}%\n"
-        f"🔹 تفعيل Trailing: {TRAILING_TRIGGER_PCT}%\n"
+        f"🔹 تأمين الصفقة: رفع SL لـ +0.1%\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"🛡️ *قواعد الحماية (Kill Switch)*\n"
         f"• 3 خسائر متتالية = إيقاف\n"
@@ -877,7 +877,9 @@ def format_exit_message(entry: float, exit_price: float, pnl_pct: float,
         "tp": "Take Profit ✅",
         "sl": "Stop Loss ❌",
         "trailing_sl": "Trailing Stop 🔄",
-        "ema_confirmation": "EMA Exit 📉"
+        "ema_confirmation": "EMA Exit 📉",
+        "risk_free_sl_hit": "Trailing SL (Risk-Free) 🛡️",
+        "ema_exit_post_tp": "EMA Exit (Post-TP) 📈"
     }.get(reason, reason.upper())
     
     return (
