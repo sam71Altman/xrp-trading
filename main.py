@@ -820,33 +820,32 @@ def update_cooldown_after_exit(reason: str):
         state.current_cooldown = COOLDOWN_NORMAL
 
 
+VERSION = "3.41 – Stable UI (Reply Keyboard)"
+
 def get_main_keyboard():
     keyboard = [
-        [
-            InlineKeyboardButton("🔄 تحديث الحالة", callback_data="status"),
-            InlineKeyboardButton("📊 الإحصائيات", callback_data="stats")
-        ],
-        [
-            InlineKeyboardButton("📉 تحليل الخسائر", callback_data="loss_analysis")
-        ],
-        [
-            InlineKeyboardButton("⚙️ الإعدادات", callback_data="settings"),
-            InlineKeyboardButton("📜 السجل", callback_data="history")
-        ]
+        ["تحديث الحالة 🔄", "تشخيص البوت 🧪"],
+        ["الإحصائيات 📊", "الرصيد 💰"],
+        ["سجل الصفقات 📜", "تحليل الخسائر 📉"],
+        ["1m", "5m"],
+        ["تشغيل ✅", "إيقاف ⏸️"]
     ]
-    return InlineKeyboardMarkup(keyboard)
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, persistent=True)
 
-async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
     
-    if query.data == "status":
-        candles = get_klines(SYMBOL, state.timeframe)
-        analysis = analyze_market(candles)
-        status_text = format_status_message()
-        await query.edit_message_text(text=status_text, reply_markup=get_main_keyboard(), parse_mode='Markdown')
-    
-    elif query.data == "loss_analysis":
+    if text == "تحديث الحالة 🔄":
+        await cmd_status(update, context)
+    elif text == "تشخيص البوت 🧪":
+        await cmd_diagnostic(update, context)
+    elif text == "الإحصائيات 📊":
+        await cmd_stats(update, context)
+    elif text == "الرصيد 💰":
+        await cmd_balance(update, context)
+    elif text == "سجل الصفقات 📜":
+        await cmd_trades(update, context)
+    elif text == "تحليل الخسائر 📉":
         summary = "📉 <b>تحليل الخسائر الأخير</b>\n\n"
         total_losses = sum(loss_counters.values())
         if total_losses == 0:
@@ -861,54 +860,22 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if loss_counters[most_frequent] > 0:
                 summary += f"\n⚠️ نقطة الضعف الأكثر تكراراً: <b>{most_frequent}</b>"
         
-        await query.edit_message_text(text=summary, reply_markup=get_main_keyboard(), parse_mode='HTML')
-
-    elif query.data == "on":
+        await update.message.reply_text(text=summary, parse_mode='HTML')
+    elif text == "1m":
+        state.timeframe = "1m"
+        await update.message.reply_text("✅ تم تغيير الفريم إلى 1m", reply_markup=get_main_keyboard())
+    elif text == "5m":
+        state.timeframe = "5m"
+        await update.message.reply_text("✅ تم تغيير الفريم إلى 5m", reply_markup=get_main_keyboard())
+    elif text == "تشغيل ✅":
         state.signals_enabled = True
-        await query.edit_message_text("✅ تم تشغيل الإشارات\n\n" + format_status_message(), reply_markup=get_main_keyboard(), parse_mode="Markdown")
-    elif query.data == "off":
+        await update.message.reply_text("✅ تم تشغيل الإشارات", reply_markup=get_main_keyboard())
+    elif text == "إيقاف ⏸️":
         state.signals_enabled = False
-        await query.edit_message_text("⏸️ تم إيقاف الإشارات\n\n" + format_status_message(), reply_markup=get_main_keyboard(), parse_mode="Markdown")
-    elif query.data == "balance":
-        await query.edit_message_text(format_balance_message(), reply_markup=get_main_keyboard(), parse_mode="Markdown")
-    elif query.data == "trades":
-        await query.edit_message_text(format_trades_message(), reply_markup=get_main_keyboard(), parse_mode="Markdown")
-    elif query.data == "stats":
-        await query.edit_message_text(format_stats_message(), reply_markup=get_main_keyboard(), parse_mode="Markdown")
-    elif query.data == "rules":
-        await query.edit_message_text(format_rules_message(), reply_markup=get_main_keyboard(), parse_mode="Markdown")
-    elif query.data == "reset":
-        await query.edit_message_text("⚠️ *هل تريد تصفير الرصيد والسجل؟*\n\n", reply_markup=get_confirm_keyboard(), parse_mode="Markdown")
-    elif query.data == "confirm_reset":
-        paper_state.reset()
-        reset_position_state()
-        await query.edit_message_text(f"✅ تم تصفير الرصيد إلى {START_BALANCE:.0f} USDT\n\n" + format_status_message(), reply_markup=get_main_keyboard(), parse_mode="Markdown")
-    elif query.data == "cancel_reset":
-        await query.edit_message_text("❌ تم إلغاء التصفير\n\n" + format_status_message(), reply_markup=get_main_keyboard(), parse_mode="Markdown")
-    elif query.data in ["tf_1m", "tf_5m"]:
-        new_tf = "1m" if query.data == "tf_1m" else "5m"
-        state.timeframe = new_tf
-        logger.info(f"تم تغيير الفريم إلى {new_tf} عبر الأزرار")
-        
-        # Update Job
-        application = context.application
-        if application.job_queue:
-            for job in application.job_queue.get_jobs_by_name("signal_loop"):
-                job.schedule_removal()
-            
-            chat_id = os.environ.get("TG_CHAT_ID")
-            application.job_queue.run_repeating(
-                lambda ctx: asyncio.create_task(signal_loop(application.bot, chat_id)),
-                interval=POLL_INTERVAL,
-                first=1,
-                name="signal_loop"
-            )
-            
-        await query.edit_message_text(
-            f"✅ تم تغيير الفريم إلى {'1 دقيقة' if new_tf == '1m' else '5 دقائق'}\n\n" + format_status_message(),
-            reply_markup=get_main_keyboard(),
-            parse_mode="Markdown"
-        )
+        await update.message.reply_text("⏸️ تم إيقاف الإشارات", reply_markup=get_main_keyboard())
+    elif text == "الإعدادات ⚙️":
+        rules = format_rules_message()
+        await update.message.reply_text(rules, parse_mode="Markdown")
 
 
 def get_confirm_keyboard():
@@ -1545,7 +1512,7 @@ async def main() -> None:
     logger.info("Starting polling...")
     await application.updater.start_polling(drop_pending_updates=True)
     
-    print(f"🚀 بوت إشارات {SYMBOL_DISPLAY} V3.2 يعمل...")
+    print(f"🚀 بوت إشارات {SYMBOL_DISPLAY} V3.41 يعمل...")
     
     # Keep running
     try:
