@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
-XRP/USDT Telegram Signals Bot V3 + Paper Trading
+XRP/USDT Telegram Signals Bot V3.2 + Paper Trading
 بوت إشارات تداول يرسل إشارات دخول/خروج لزوج XRP/USDT
-V3: Backtesting + Signal Score + Adaptive Cooldown + Session Awareness
-Paper Trading: تداول افتراضي بدون اتصال بمنصة حقيقية
+V3.2: Kill Switch متعدد الطبقات لحماية رأس المال
 """
 
 import os
@@ -17,10 +16,6 @@ from typing import Optional, List, Dict
 import requests
 from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
-
-# ============================================================================
-# CONFIGURATION
-# ============================================================================
 
 MODE = "PAPER"
 
@@ -55,6 +50,14 @@ BACKTEST_DAYS = 30
 START_BALANCE = 1000.0
 FIXED_TRADE_SIZE = 100.0
 
+DATA_MATURITY_TRADES = 5
+LOSS_STREAK_LIMIT = 3
+DRAWDOWN_LIMIT_PERCENT = 3.0
+RECENT_WIN_RATE_MIN = 40.0
+RECENT_TRADES_WINDOW = 10
+AUTO_RESUME_MINUTES = 30
+COOLDOWN_AFTER_LOSS_STREAK = 15
+
 TRADES_FILE = "trades.csv"
 PAPER_TRADES_FILE = "paper_trades.csv"
 
@@ -66,56 +69,96 @@ BINANCE_APIS = [
     "https://api.binance.com/api/v3/klines",
 ]
 
-# ============================================================================
-# LOGGING
-# ============================================================================
-
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# ============================================================================
-# PAPER TRADING STATE
-# ============================================================================
+
+class KillSwitchState:
+    def __init__(self):
+        self.active: bool = False
+        self.reason: str = ""
+        self.triggered_at: Optional[datetime] = None
+        self.resume_at: Optional[datetime] = None
+        self.alert_sent: bool = False
+    
+    def activate(self, reason: str):
+        self.active = True
+        self.reason = reason
+        self.triggered_at = datetime.now(timezone.utc)
+        self.resume_at = self.triggered_at + timedelta(minutes=AUTO_RESUME_MINUTES)
+        self.alert_sent = False
+        logger.info(f"Kill Switch مفعّل: {reason}")
+    
+    def deactivate(self):
+        self.active = False
+        self.reason = ""
+        self.triggered_at = None
+        self.resume_at = None
+        self.alert_sent = False
+        logger.info("Kill Switch معطّل - تم استئناف التداول")
+    
+    def check_auto_resume(self) -> bool:
+        if self.active and self.resume_at:
+            if datetime.now(timezone.utc) >= self.resume_at:
+                return True
+        return False
+    
+    def get_remaining_minutes(self) -> int:
+        if self.resume_at:
+            remaining = self.resume_at - datetime.now(timezone.utc)
+            return max(0, int(remaining.total_seconds() / 60))
+        return 0
+
+kill_switch = KillSwitchState()
+
 
 class PaperTradingState:
     def __init__(self):
         self.balance: float = START_BALANCE
+        self.peak_balance: float = START_BALANCE
         self.position_qty: float = 0.0
         self.entry_reason: str = ""
+        self.loss_streak: int = 0
         self.load_balance()
     
     def load_balance(self):
-        """تحميل الرصيد من آخر صفقة"""
         if os.path.exists(PAPER_TRADES_FILE):
             try:
                 with open(PAPER_TRADES_FILE, 'r', encoding='utf-8') as f:
-                    reader = csv.reader(f)
-                    next(reader, None)
+                    reader = csv.DictReader(f)
                     rows = list(reader)
                     if rows:
                         last_row = rows[-1]
-                        if len(last_row) >= 7 and last_row[6]:
-                            self.balance = float(last_row[6])
+                        if last_row.get('balance_after'):
+                            self.balance = float(last_row['balance_after'])
+                        if last_row.get('balance_peak'):
+                            self.peak_balance = float(last_row['balance_peak'])
+                        if self.balance > self.peak_balance:
+                            self.peak_balance = self.balance
             except:
                 self.balance = START_BALANCE
+                self.peak_balance = START_BALANCE
+    
+    def update_peak(self):
+        if self.balance > self.peak_balance:
+            self.peak_balance = self.balance
     
     def reset(self):
-        """إعادة تعيين الرصيد"""
         self.balance = START_BALANCE
+        self.peak_balance = START_BALANCE
         self.position_qty = 0.0
         self.entry_reason = ""
+        self.loss_streak = 0
         if os.path.exists(PAPER_TRADES_FILE):
             os.remove(PAPER_TRADES_FILE)
         init_paper_trades_file()
+        kill_switch.deactivate()
 
 paper_state = PaperTradingState()
 
-# ============================================================================
-# BOT STATE
-# ============================================================================
 
 class BotState:
     def __init__(self):
@@ -146,26 +189,24 @@ class BotState:
 
 state = BotState()
 
-# ============================================================================
-# PAPER TRADES LOG
-# ============================================================================
 
 def init_paper_trades_file():
-    """إنشاء ملف سجل Paper Trading"""
     if not os.path.exists(PAPER_TRADES_FILE):
         with open(PAPER_TRADES_FILE, 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
             writer.writerow([
                 'timestamp', 'action', 'entry_price', 'exit_price',
                 'pnl_percent', 'pnl_usdt', 'balance_after', 'score',
-                'entry_reason', 'exit_reason', 'duration_minutes'
+                'entry_reason', 'exit_reason', 'duration_minutes',
+                'kill_switch_triggered', 'kill_switch_reason', 'balance_peak'
             ])
+
 
 def log_paper_trade(action: str, entry_price: float, exit_price: Optional[float],
                     pnl_pct: Optional[float], pnl_usdt: Optional[float],
                     balance_after: float, score: int, entry_reason: str,
-                    exit_reason: str, duration_min: int):
-    """تسجيل صفقة Paper Trading"""
+                    exit_reason: str, duration_min: int,
+                    ks_triggered: bool = False, ks_reason: str = ""):
     init_paper_trades_file()
     with open(PAPER_TRADES_FILE, 'a', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
@@ -180,86 +221,158 @@ def log_paper_trade(action: str, entry_price: float, exit_price: Optional[float]
             score,
             entry_reason,
             exit_reason,
-            duration_min
+            duration_min,
+            str(ks_triggered),
+            ks_reason,
+            f"{paper_state.peak_balance:.2f}"
         ])
 
-def get_paper_trades(limit: int = 5) -> List[Dict]:
-    """الحصول على آخر الصفقات"""
+
+def get_closed_trades() -> List[Dict]:
     trades = []
     if not os.path.exists(PAPER_TRADES_FILE):
         return trades
     
     with open(PAPER_TRADES_FILE, 'r', encoding='utf-8') as f:
-        reader = csv.reader(f)
-        next(reader, None)
+        reader = csv.DictReader(f)
+        for row in reader:
+            if row.get('action') == 'EXIT' and row.get('pnl_usdt'):
+                try:
+                    trades.append({
+                        'timestamp': row.get('timestamp', ''),
+                        'pnl_usdt': float(row['pnl_usdt']),
+                        'pnl_percent': float(row.get('pnl_percent', 0)),
+                        'result': 'WIN' if float(row['pnl_usdt']) >= 0 else 'LOSS'
+                    })
+                except:
+                    pass
+    return trades
+
+
+def get_recent_trades(n: int = 10) -> List[Dict]:
+    closed = get_closed_trades()
+    return closed[-n:] if len(closed) >= n else closed
+
+
+def get_paper_trades(limit: int = 5) -> List[Dict]:
+    trades = []
+    if not os.path.exists(PAPER_TRADES_FILE):
+        return trades
+    
+    with open(PAPER_TRADES_FILE, 'r', encoding='utf-8') as f:
+        reader = csv.DictReader(f)
         rows = list(reader)
-        
-        exit_trades = [r for r in rows if len(r) >= 11 and r[1] == 'EXIT']
+        exit_trades = [r for r in rows if r.get('action') == 'EXIT']
         
         for row in exit_trades[-limit:][::-1]:
             try:
                 trades.append({
-                    'timestamp': row[0],
-                    'entry_price': row[2],
-                    'exit_price': row[3],
-                    'pnl_pct': float(row[4]) if row[4] else 0,
-                    'pnl_usdt': float(row[5]) if row[5] else 0,
-                    'balance': float(row[6]) if row[6] else 0,
-                    'exit_reason': row[9]
+                    'timestamp': row.get('timestamp', ''),
+                    'entry_price': row.get('entry_price', ''),
+                    'exit_price': row.get('exit_price', ''),
+                    'pnl_pct': float(row['pnl_percent']) if row.get('pnl_percent') else 0,
+                    'pnl_usdt': float(row['pnl_usdt']) if row.get('pnl_usdt') else 0,
+                    'balance': float(row['balance_after']) if row.get('balance_after') else 0,
+                    'exit_reason': row.get('exit_reason', '')
                 })
             except:
                 pass
     
     return trades
 
+
 def get_paper_stats() -> Dict:
-    """إحصائيات Paper Trading"""
     stats = {
         'total': 0,
         'wins': 0,
         'losses': 0,
         'win_rate': 0.0,
         'total_pnl': 0.0,
-        'balance': paper_state.balance
+        'balance': paper_state.balance,
+        'peak_balance': paper_state.peak_balance,
+        'drawdown': 0.0,
+        'loss_streak': paper_state.loss_streak
     }
     
-    if not os.path.exists(PAPER_TRADES_FILE):
-        return stats
-    
-    with open(PAPER_TRADES_FILE, 'r', encoding='utf-8') as f:
-        reader = csv.reader(f)
-        next(reader, None)
-        for row in reader:
-            if len(row) >= 6 and row[1] == 'EXIT' and row[5]:
-                try:
-                    pnl = float(row[5])
-                    stats['total'] += 1
-                    stats['total_pnl'] += pnl
-                    if pnl >= 0:
-                        stats['wins'] += 1
-                    else:
-                        stats['losses'] += 1
-                except:
-                    pass
+    closed = get_closed_trades()
+    for trade in closed:
+        stats['total'] += 1
+        stats['total_pnl'] += trade['pnl_usdt']
+        if trade['result'] == 'WIN':
+            stats['wins'] += 1
+        else:
+            stats['losses'] += 1
     
     if stats['total'] > 0:
         stats['win_rate'] = (stats['wins'] / stats['total']) * 100
     
+    if paper_state.peak_balance > 0:
+        stats['drawdown'] = ((paper_state.peak_balance - paper_state.balance) / paper_state.peak_balance) * 100
+    
     return stats
 
-# ============================================================================
-# TRADES LOG (Original)
-# ============================================================================
+
+def calculate_recent_win_rate() -> float:
+    recent = get_recent_trades(RECENT_TRADES_WINDOW)
+    if len(recent) < RECENT_TRADES_WINDOW:
+        return 100.0
+    wins = sum(1 for t in recent if t['result'] == 'WIN')
+    return (wins / len(recent)) * 100
+
+
+def check_data_maturity() -> bool:
+    return len(get_closed_trades()) >= DATA_MATURITY_TRADES
+
+
+def check_loss_streak() -> bool:
+    return paper_state.loss_streak >= LOSS_STREAK_LIMIT
+
+
+def check_drawdown() -> bool:
+    if paper_state.peak_balance <= 0:
+        return False
+    drawdown_pct = ((paper_state.peak_balance - paper_state.balance) / paper_state.peak_balance) * 100
+    return drawdown_pct >= DRAWDOWN_LIMIT_PERCENT
+
+
+def check_recent_performance() -> bool:
+    closed = get_closed_trades()
+    if len(closed) < RECENT_TRADES_WINDOW:
+        return False
+    win_rate = calculate_recent_win_rate()
+    return win_rate < RECENT_WIN_RATE_MIN
+
+
+def evaluate_kill_switch() -> Optional[str]:
+    if not check_data_maturity():
+        return None
+    
+    if check_loss_streak():
+        return f"{LOSS_STREAK_LIMIT} خسائر متتالية"
+    
+    if check_drawdown():
+        return "تجاوز حد الخسارة الكلية (Drawdown)"
+    
+    if check_recent_performance():
+        return f"انخفاض Win Rate في آخر {RECENT_TRADES_WINDOW} صفقات"
+    
+    return None
+
+
+def resume_trading():
+    kill_switch.deactivate()
+    paper_state.loss_streak = 0
+    logger.info("تم استئناف التداول")
+
 
 def init_trades_file():
-    """إنشاء ملف السجل"""
     if not os.path.exists(TRADES_FILE):
         with open(TRADES_FILE, 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
             writer.writerow(['التاريخ', 'النوع', 'السبب', 'السعر', 'النتيجة%'])
 
+
 def log_trade(trade_type: str, reason: str, price: float, result_pct: Optional[float] = None):
-    """تسجيل صفقة"""
     init_trades_file()
     with open(TRADES_FILE, 'a', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
@@ -272,8 +385,8 @@ def log_trade(trade_type: str, reason: str, price: float, result_pct: Optional[f
             result_str
         ])
 
+
 def get_trade_stats() -> Dict:
-    """إحصائيات الصفقات"""
     stats = {
         'total': 0,
         'wins': 0,
@@ -314,12 +427,8 @@ def get_trade_stats() -> Dict:
     
     return stats
 
-# ============================================================================
-# BINANCE API (قراءة فقط)
-# ============================================================================
 
 def get_klines(symbol: str, interval: str, limit: int = KLINE_LIMIT) -> Optional[List[dict]]:
-    """جلب بيانات الشموع من Binance API"""
     params = {"symbol": symbol, "interval": interval, "limit": limit}
     
     for api_url in BINANCE_APIS:
@@ -347,8 +456,8 @@ def get_klines(symbol: str, interval: str, limit: int = KLINE_LIMIT) -> Optional
     logger.error("All Binance API endpoints failed")
     return None
 
+
 def get_historical_klines(symbol: str, interval: str, days: int = BACKTEST_DAYS) -> Optional[List[dict]]:
-    """جلب بيانات تاريخية"""
     if interval == "1m":
         limit = min(days * 24 * 60, 1000)
     elif interval == "5m":
@@ -358,12 +467,8 @@ def get_historical_klines(symbol: str, interval: str, days: int = BACKTEST_DAYS)
     
     return get_klines(symbol, interval, limit)
 
-# ============================================================================
-# EMA CALCULATION
-# ============================================================================
 
 def calculate_ema(prices: List[float], period: int) -> List[float]:
-    """حساب EMA"""
     if len(prices) < period:
         return []
     
@@ -379,12 +484,8 @@ def calculate_ema(prices: List[float], period: int) -> List[float]:
     
     return ema_values
 
-# ============================================================================
-# BACKTESTING
-# ============================================================================
 
 def run_backtest(candles: List[dict]) -> Dict:
-    """تشغيل Backtest"""
     if len(candles) < EMA_LONG + BREAKOUT_CANDLES + 10:
         return {"error": "بيانات غير كافية"}
     
@@ -472,12 +573,8 @@ def run_backtest(candles: List[dict]) -> Dict:
         "win_rate": win_rate, "expectancy": expectancy, "max_drawdown": max_dd
     }
 
-# ============================================================================
-# SIGNAL SCORE
-# ============================================================================
 
 def calculate_signal_score(analysis: dict, candles: List[dict]) -> tuple:
-    """حساب نقاط الإشارة"""
     score = 0
     reasons = []
     
@@ -501,12 +598,8 @@ def calculate_signal_score(analysis: dict, candles: List[dict]) -> tuple:
     
     return score, reasons
 
-# ============================================================================
-# SESSION AWARENESS
-# ============================================================================
 
 def is_low_liquidity_session() -> bool:
-    """فحص جلسة منخفضة السيولة"""
     now = datetime.now(timezone.utc)
     hour = now.hour
     
@@ -517,12 +610,8 @@ def is_low_liquidity_session() -> bool:
     
     return False
 
-# ============================================================================
-# STRATEGY LOGIC
-# ============================================================================
 
 def analyze_market(candles: List[dict]) -> dict:
-    """تحليل السوق"""
     if not candles or len(candles) < EMA_LONG + BREAKOUT_CANDLES:
         return {"error": "بيانات غير كافية"}
     
@@ -568,9 +657,12 @@ def analyze_market(candles: List[dict]) -> dict:
         "range_confirmed": ema_diff_pct >= RANGE_FILTER_THRESHOLD,
     }
 
+
 def check_buy_signal(analysis: dict, candles: List[dict]) -> bool:
-    """فحص شروط الدخول"""
     if "error" in analysis:
+        return False
+    
+    if kill_switch.active:
         return False
     
     if is_low_liquidity_session():
@@ -597,8 +689,8 @@ def check_buy_signal(analysis: dict, candles: List[dict]) -> bool:
     
     return True
 
+
 def check_exit_signal(analysis: dict) -> Optional[str]:
-    """فحص شروط الخروج"""
     if "error" in analysis or not state.position_open or state.entry_price is None:
         return None
     
@@ -630,13 +722,16 @@ def check_exit_signal(analysis: dict) -> Optional[str]:
     
     return None
 
+
 def calculate_targets(entry_price: float) -> tuple:
     tp = entry_price * (1 + TAKE_PROFIT_PCT / 100)
     sl = entry_price * (1 - STOP_LOSS_PCT / 100)
     return tp, sl
 
+
 def calculate_pnl(entry: float, exit_price: float) -> float:
     return ((exit_price - entry) / entry) * 100
+
 
 def get_trade_duration_minutes() -> int:
     if state.entry_time is None:
@@ -644,6 +739,7 @@ def get_trade_duration_minutes() -> int:
     now = datetime.now(timezone.utc)
     duration = now - state.entry_time
     return int(duration.total_seconds() / 60)
+
 
 def reset_position_state():
     state.position_open = False
@@ -655,12 +751,14 @@ def reset_position_state():
     paper_state.position_qty = 0.0
     paper_state.entry_reason = ""
 
+
 def update_cooldown_after_exit(exit_type: str):
     state.last_exit_type = exit_type
     
     if exit_type == "sl":
         state.consecutive_losses += 1
         state.consecutive_wins = 0
+        paper_state.loss_streak += 1
         state.current_cooldown = COOLDOWN_AFTER_SL
         
         if state.consecutive_losses >= 2:
@@ -670,30 +768,25 @@ def update_cooldown_after_exit(exit_type: str):
     elif exit_type == "tp":
         state.consecutive_wins += 1
         state.consecutive_losses = 0
+        paper_state.loss_streak = 0
         
-        if state.consecutive_wins >= 3:
+        if state.consecutive_wins >= 2:
             state.current_cooldown = COOLDOWN_STREAK_WIN
         else:
             state.current_cooldown = COOLDOWN_NORMAL
     
     else:
-        state.consecutive_losses = 0
-        state.consecutive_wins = 0
         state.current_cooldown = COOLDOWN_NORMAL
 
-# ============================================================================
-# PAPER TRADING EXECUTION
-# ============================================================================
 
-def execute_paper_buy(price: float, score: int, reasons: List[str]) -> float:
-    """تنفيذ شراء افتراضي"""
-    qty = FIXED_TRADE_SIZE / price
+def execute_paper_buy(entry_price: float, score: int, reasons: List[str]) -> float:
+    qty = FIXED_TRADE_SIZE / entry_price
     paper_state.position_qty = qty
-    paper_state.entry_reason = ", ".join([r.split(" (+")[0].replace("✅ ", "") for r in reasons[:2]])
+    paper_state.entry_reason = "; ".join(reasons) if reasons else "Signal"
     
     log_paper_trade(
         action="BUY",
-        entry_price=price,
+        entry_price=entry_price,
         exit_price=None,
         pnl_pct=None,
         pnl_usdt=None,
@@ -706,13 +799,18 @@ def execute_paper_buy(price: float, score: int, reasons: List[str]) -> float:
     
     return qty
 
-def execute_paper_exit(entry_price: float, exit_price: float, exit_reason: str, 
+
+def execute_paper_exit(entry_price: float, exit_price: float, exit_reason: str,
                        score: int, duration_min: int) -> tuple:
-    """تنفيذ خروج افتراضي"""
+    qty = paper_state.position_qty
     pnl_pct = ((exit_price - entry_price) / entry_price) * 100
-    pnl_usdt = paper_state.position_qty * (exit_price - entry_price)
+    pnl_usdt = qty * (exit_price - entry_price)
     
     paper_state.balance += pnl_usdt
+    paper_state.update_peak()
+    
+    ks_reason = evaluate_kill_switch()
+    ks_triggered = ks_reason is not None
     
     log_paper_trade(
         action="EXIT",
@@ -723,282 +821,256 @@ def execute_paper_exit(entry_price: float, exit_price: float, exit_reason: str,
         balance_after=paper_state.balance,
         score=score,
         entry_reason=paper_state.entry_reason,
-        exit_reason=exit_reason,
-        duration_min=duration_min
+        exit_reason=exit_reason.upper(),
+        duration_min=duration_min,
+        ks_triggered=ks_triggered,
+        ks_reason=ks_reason if ks_reason else ""
     )
     
     return pnl_pct, pnl_usdt, paper_state.balance
 
-# ============================================================================
-# MESSAGE FORMATTING (Paper Trading)
-# ============================================================================
-
-def get_current_time_str() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-
-def format_buy_message(entry: float, tp: float, sl: float, timeframe: str, score: int, qty: float) -> str:
-    score_label = "قوية 🔥" if score >= 8 else "عادية"
-    reasons_text = "\n".join(state.last_signal_reasons[:3]) if state.last_signal_reasons else ""
-    
-    return (
-        f"📥 *إشارة دخول (Paper)*\n\n"
-        f"📈 *الزوج:* {SYMBOL_DISPLAY}\n"
-        f"📊 *الفريم:* {timeframe}\n"
-        f"💰 *سعر الدخول:* {entry:.4f}\n"
-        f"📦 *الحجم:* {FIXED_TRADE_SIZE:.0f} USDT ({qty:.2f} XRP)\n"
-        f"🎯 *جني الأرباح:* {tp:.4f} (+{TAKE_PROFIT_PCT}%)\n"
-        f"🛑 *وقف الخسارة:* {sl:.4f} (-{STOP_LOSS_PCT}%)\n\n"
-        f"⭐ *Score:* {score}/10 ({score_label})\n\n"
-        f"📋 *أسباب الدخول:*\n{reasons_text}\n\n"
-        f"💵 *الرصيد:* {paper_state.balance:.2f} USDT\n"
-        f"🕐 *الوقت:* {get_current_time_str()}"
-    )
-
-def format_exit_message(entry: float, exit_price: float, pnl_pct: float, pnl_usdt: float,
-                        reason: str, duration_min: int, balance: float) -> str:
-    reason_text = {
-        "tp": "وصول الهدف (TP) ✅",
-        "sl": "وقف الخسارة (SL) ❌",
-        "trailing_sl": "Trailing Stop Loss 🔒",
-        "ema_confirmation": f"تأكيد كسر EMA{EMA_SHORT} 📊",
-    }.get(reason, "خروج يدوي")
-    
-    pnl_sign = "+" if pnl_pct >= 0 else ""
-    usdt_sign = "+" if pnl_usdt >= 0 else ""
-    status_emoji = "✅" if pnl_pct >= 0 else "❌"
-    
-    return (
-        f"📤 *إشارة خروج (Paper)*\n\n"
-        f"📈 *الزوج:* {SYMBOL_DISPLAY}\n"
-        f"💰 *سعر الدخول:* {entry:.4f}\n"
-        f"💵 *سعر الخروج:* {exit_price:.4f}\n"
-        f"📊 *النتيجة:* {pnl_sign}{pnl_pct:.2f}% ({usdt_sign}{pnl_usdt:.2f} USDT)\n\n"
-        f"{status_emoji} *السبب:* {reason_text}\n"
-        f"⏱️ *مدة الصفقة:* {duration_min} دقيقة\n"
-        f"💵 *الرصيد بعد الصفقة:* {balance:.2f} USDT\n"
-        f"🕐 *الوقت:* {get_current_time_str()}"
-    )
-
-def format_status_message() -> str:
-    """تنسيق رسالة الحالة"""
-    stats = get_paper_stats()
-    status = "✅ نشط" if state.signals_enabled else "⏸️ متوقف (Kill Switch)"
-    position = "📈 مفتوح" if state.position_open else "📉 مغلق"
-    
-    # إضافة سطر نضج البيانات (V3.1)
-    maturity_str = ""
-    if stats['total'] < 5:
-        maturity_str = f"\n🧪 وضع التعلّم: لم يكتمل نضج البيانات بعد ({stats['total']} / 5)"
-    
-    msg = (
-        f"ℹ️ *حالة البوت (V3.1 - Paper Trading)*\n\n"
-        f"🔔 *الإشارات:* {status}{maturity_str}\n"
-        f"📊 *الفريم:* {state.timeframe}\n"
-        f"📈 *المركز:* {position}\n"
-        f"💵 *الرصيد:* {paper_state.balance:.2f} USDT\n"
-    )
-    
-    if state.position_open and state.entry_price:
-        msg += f"💰 *سعر الدخول:* {state.entry_price:.4f}\n"
-        msg += f"📦 *الكمية:* {paper_state.position_qty:.2f} XRP\n"
-        if state.trailing_activated:
-            msg += f"🔒 *Trailing:* مفعّل\n"
-        if state.last_close:
-            pnl = calculate_pnl(state.entry_price, state.last_close)
-            pnl_sign = "+" if pnl >= 0 else ""
-            pnl_usdt = paper_state.position_qty * (state.last_close - state.entry_price)
-            msg += f"📉 *الربح الحالي:* {pnl_sign}{pnl:.2f}% ({pnl_usdt:+.2f} USDT)\n"
-        duration = get_trade_duration_minutes()
-        msg += f"⏱️ *مدة الصفقة:* {duration} دقيقة\n"
-    
-    if state.pause_until and datetime.now(timezone.utc) < state.pause_until:
-        remaining = (state.pause_until - datetime.now(timezone.utc)).seconds // 60
-        msg += f"⏳ *إيقاف مؤقت:* {remaining} دقيقة\n"
-    
-    if state.last_close:
-        msg += f"🕯️ *آخر سعر:* {state.last_close:.4f}\n"
-    
-    msg += f"\n🕐 *التحديث:* {get_current_time_str()}"
-    
-    return msg
-
-def format_welcome_message() -> str:
-    return (
-        f"🤖 *بوت إشارات {SYMBOL_DISPLAY} - Paper Trading*\n\n"
-        f"📊 *الاستراتيجية:* EMA{EMA_SHORT}/EMA{EMA_LONG} + Breakout\n"
-        f"🎯 *الهدف:* +{TAKE_PROFIT_PCT}%\n"
-        f"🛑 *وقف الخسارة:* -{STOP_LOSS_PCT}%\n\n"
-        f"💵 *رأس المال:* {START_BALANCE:.0f} USDT\n"
-        f"📦 *حجم الصفقة:* {FIXED_TRADE_SIZE:.0f} USDT\n"
-        f"💰 *الرصيد الحالي:* {paper_state.balance:.2f} USDT\n\n"
-        f"⚠️ *ملاحظة:* هذا تداول افتراضي للتعلم والاختبار\n\n"
-        f"استخدم الأزرار للتحكم 👇\n"
-    )
-
-def format_rules_message() -> str:
-    return (
-        f"📜 *قواعد التداول*\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"*شروط الدخول (BUY):*\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"1️⃣ EMA{EMA_SHORT} > EMA{EMA_LONG} (+3)\n"
-        f"2️⃣ كسر قمة {BREAKOUT_CANDLES} شموع (+3)\n"
-        f"3️⃣ حجم > متوسط {VOLUME_LOOKBACK} (+2)\n"
-        f"4️⃣ اتجاه صاعد (+2)\n"
-        f"⭐ الحد الأدنى: {MIN_SIGNAL_SCORE}/10\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"*شروط الخروج:*\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"✅ TP: +{TAKE_PROFIT_PCT}%\n"
-        f"❌ SL: -{STOP_LOSS_PCT}%\n"
-        f"🔒 Trailing: +{TRAILING_TRIGGER_PCT}%\n"
-        f"📊 EMA: شمعتين تحت EMA{EMA_SHORT}\n"
-    )
-
-def format_balance_message() -> str:
-    stats = get_paper_stats()
-    pnl_total = paper_state.balance - START_BALANCE
-    pnl_sign = "+" if pnl_total >= 0 else ""
-    
-    return (
-        f"💵 *الرصيد الافتراضي*\n\n"
-        f"💰 *الرصيد الحالي:* {paper_state.balance:.2f} USDT\n"
-        f"📈 *الربح/الخسارة:* {pnl_sign}{pnl_total:.2f} USDT\n"
-        f"📊 *نسبة التغير:* {pnl_sign}{(pnl_total/START_BALANCE)*100:.2f}%\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"*الإحصائيات:*\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"📊 *إجمالي الصفقات:* {stats['total']}\n"
-        f"✅ *رابحة:* {stats['wins']}\n"
-        f"❌ *خاسرة:* {stats['losses']}\n"
-        f"📉 *Win Rate:* {stats['win_rate']:.1f}%\n"
-    )
-
-def format_trades_message() -> str:
-    trades = get_paper_trades(5)
-    
-    if not trades:
-        return "📋 لا توجد صفقات مسجلة بعد"
-    
-    msg = "📋 *آخر 5 صفقات (Paper)*\n\n"
-    
-    for i, t in enumerate(trades, 1):
-        pnl_sign = "+" if t['pnl_pct'] >= 0 else ""
-        emoji = "✅" if t['pnl_pct'] >= 0 else "❌"
-        msg += (
-            f"{emoji} *{i}.* {pnl_sign}{t['pnl_pct']:.2f}% "
-            f"({pnl_sign}{t['pnl_usdt']:.2f} USDT)\n"
-            f"   {t['exit_reason']} | الرصيد: {t['balance']:.2f}\n\n"
-        )
-    
-    return msg
-
-def format_stats_message() -> str:
-    stats = get_trade_stats()
-    paper_stats = get_paper_stats()
-    
-    msg = (
-        f"📈 *إحصائيات الأداء (Paper)*\n\n"
-        f"💵 *الرصيد:* {paper_state.balance:.2f} USDT\n"
-        f"📊 *إجمالي الصفقات:* {paper_stats['total']}\n"
-        f"✅ *رابحة:* {paper_stats['wins']}\n"
-        f"❌ *خاسرة:* {paper_stats['losses']}\n"
-        f"📉 *Win Rate:* {paper_stats['win_rate']:.1f}%\n"
-        f"💰 *إجمالي PnL:* {paper_stats['total_pnl']:+.2f} USDT\n"
-    )
-    
-    trades = get_paper_trades(5)
-    if trades:
-        msg += "\n━━━━━━━━━━━━━━━━━━━━\n"
-        msg += "*آخر 5 صفقات:*\n"
-        msg += "━━━━━━━━━━━━━━━━━━━━\n"
-        for t in trades:
-            pnl_sign = "+" if t['pnl_pct'] >= 0 else ""
-            emoji = "✅" if t['pnl_pct'] >= 0 else "❌"
-            msg += f"{emoji} {pnl_sign}{t['pnl_pct']:.2f}% | {t['exit_reason']}\n"
-    
-    msg += f"\n🕐 *التحديث:* {get_current_time_str()}"
-    
-    return msg
-
-def format_signal_reasons_message() -> str:
-    if not state.last_signal_reasons:
-        return "❓ لا توجد إشارة حديثة"
-    
-    msg = (
-        f"🧠 *لماذا هذه الإشارة؟*\n\n"
-        f"⭐ *Score:* {state.last_signal_score}/10\n\n"
-    )
-    
-    for reason in state.last_signal_reasons:
-        msg += f"{reason}\n"
-    
-    return msg
-
-# ============================================================================
-# INLINE KEYBOARD
-# ============================================================================
 
 def get_main_keyboard() -> InlineKeyboardMarkup:
     keyboard = [
         [
-            InlineKeyboardButton("▶️ تشغيل", callback_data="on"),
-            InlineKeyboardButton("⏸ إيقاف", callback_data="off"),
-        ],
-        [
             InlineKeyboardButton("📊 الحالة", callback_data="status"),
-            InlineKeyboardButton("💵 الرصيد", callback_data="balance"),
+            InlineKeyboardButton("💰 الرصيد", callback_data="balance"),
         ],
         [
-            InlineKeyboardButton("📋 الصفقات", callback_data="trades"),
-            InlineKeyboardButton("📈 الإحصائيات", callback_data="stats"),
+            InlineKeyboardButton("📈 الصفقات", callback_data="trades"),
+            InlineKeyboardButton("📋 الإحصائيات", callback_data="stats"),
         ],
         [
-            InlineKeyboardButton("⏱ 1 دقيقة", callback_data="tf_1m"),
-            InlineKeyboardButton("⏱ 5 دقائق", callback_data="tf_5m"),
+            InlineKeyboardButton("▶️ تشغيل", callback_data="on"),
+            InlineKeyboardButton("⏸️ إيقاف", callback_data="off"),
         ],
         [
-            InlineKeyboardButton("📜 القواعد", callback_data="rules"),
+            InlineKeyboardButton("📖 القواعد", callback_data="rules"),
             InlineKeyboardButton("🔄 تصفير", callback_data="reset"),
+        ],
+        [
+            InlineKeyboardButton("1m", callback_data="tf_1m"),
+            InlineKeyboardButton("5m", callback_data="tf_5m"),
         ],
     ]
     return InlineKeyboardMarkup(keyboard)
 
+
 def get_confirm_keyboard() -> InlineKeyboardMarkup:
     keyboard = [
         [
-            InlineKeyboardButton("✅ نعم، تصفير", callback_data="confirm_reset"),
+            InlineKeyboardButton("✅ تأكيد", callback_data="confirm_reset"),
             InlineKeyboardButton("❌ إلغاء", callback_data="cancel_reset"),
         ],
     ]
     return InlineKeyboardMarkup(keyboard)
 
-# ============================================================================
-# ANTI-SPAM & MESSAGE SENDING
-# ============================================================================
 
-def can_send_message() -> bool:
-    return (time.time() - state.last_message_time) >= state.current_cooldown
+def format_welcome_message() -> str:
+    return (
+        f"🤖 *بوت إشارات {SYMBOL_DISPLAY} V3.2*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📊 نمط: Paper Trading\n"
+        f"💵 رأس المال: {START_BALANCE:.0f} USDT\n"
+        f"📦 حجم الصفقة: {FIXED_TRADE_SIZE:.0f} USDT\n"
+        f"🎯 TP: +{TAKE_PROFIT_PCT}% | SL: -{STOP_LOSS_PCT}%\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🛡️ *Kill Switch V3.2:*\n"
+        f"• {LOSS_STREAK_LIMIT} خسائر متتالية = إيقاف\n"
+        f"• Drawdown > {DRAWDOWN_LIMIT_PERCENT}% = إيقاف\n"
+        f"• Win Rate < {RECENT_WIN_RATE_MIN}% (آخر 10) = إيقاف\n"
+        f"• استئناف تلقائي بعد {AUTO_RESUME_MINUTES} دقيقة\n"
+        f"━━━━━━━━━━━━━━━━━━━━━"
+    )
 
-async def send_signal_message(bot: Bot, chat_id: str, message: str, signal_type: str) -> bool:
-    if not can_send_message():
-        return False
+
+def format_status_message() -> str:
+    stats = get_paper_stats()
     
-    if state.last_signal_type == signal_type and signal_type == "buy" and state.position_open:
-        return False
+    status = "✅ نشط" if state.signals_enabled and not kill_switch.active else "⏸️ متوقف"
+    position = "📈 مفتوحة" if state.position_open else "⚪ لا توجد"
     
+    msg = (
+        f"📊 *حالة البوت*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🔔 الإشارات: {status}\n"
+        f"📍 الصفقة: {position}\n"
+        f"⏱ الفريم: {state.timeframe}\n"
+        f"💰 الرصيد: {paper_state.balance:.2f} USDT\n"
+        f"🏔 أعلى رصيد: {paper_state.peak_balance:.2f} USDT\n"
+        f"📉 Drawdown: {stats['drawdown']:.2f}%\n"
+        f"🔴 سلسلة الخسائر: {paper_state.loss_streak}\n"
+    )
+    
+    if kill_switch.active:
+        remaining = kill_switch.get_remaining_minutes()
+        msg += (
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🛑 *Kill Switch مفعّل*\n"
+            f"📌 السبب: {kill_switch.reason}\n"
+            f"⏱ الاستئناف بعد: {remaining} دقيقة\n"
+        )
+    
+    if state.position_open and state.entry_price:
+        if state.last_close:
+            pnl = calculate_pnl(state.entry_price, state.last_close)
+            emoji = "🟢" if pnl >= 0 else "🔴"
+            msg += (
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                f"💹 سعر الدخول: {state.entry_price:.4f}\n"
+                f"📍 السعر الحالي: {state.last_close:.4f}\n"
+                f"{emoji} PnL: {pnl:+.2f}%\n"
+            )
+    
+    msg += f"━━━━━━━━━━━━━━━━━━━━━"
+    return msg
+
+
+def format_balance_message() -> str:
+    stats = get_paper_stats()
+    recent_win_rate = calculate_recent_win_rate()
+    
+    return (
+        f"💰 *رصيد Paper Trading*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"💵 الرصيد الحالي: {paper_state.balance:.2f} USDT\n"
+        f"🏔 أعلى رصيد: {paper_state.peak_balance:.2f} USDT\n"
+        f"📊 إجمالي الربح: {stats['total_pnl']:+.2f} USDT\n"
+        f"📈 نسبة النجاح: {stats['win_rate']:.1f}%\n"
+        f"📉 Drawdown: {stats['drawdown']:.2f}%\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🔴 سلسلة الخسائر: {paper_state.loss_streak}/{LOSS_STREAK_LIMIT}\n"
+        f"📊 Win Rate (آخر 10): {recent_win_rate:.1f}%\n"
+        f"━━━━━━━━━━━━━━━━━━━━━"
+    )
+
+
+def format_trades_message() -> str:
+    trades = get_paper_trades(5)
+    
+    if not trades:
+        return "📈 *آخر الصفقات*\n━━━━━━━━━━━━━━━━━━━━━\nلا توجد صفقات مسجلة"
+    
+    msg = "📈 *آخر الصفقات*\n━━━━━━━━━━━━━━━━━━━━━\n"
+    
+    for t in trades:
+        emoji = "🟢" if t['pnl_usdt'] >= 0 else "🔴"
+        msg += (
+            f"{emoji} {t['exit_reason']}: {t['pnl_pct']:+.2f}% ({t['pnl_usdt']:+.2f}$)\n"
+        )
+    
+    msg += f"━━━━━━━━━━━━━━━━━━━━━"
+    return msg
+
+
+def format_stats_message() -> str:
+    stats = get_paper_stats()
+    recent_win_rate = calculate_recent_win_rate()
+    closed_count = len(get_closed_trades())
+    
+    maturity_status = "✅ نشط" if closed_count >= DATA_MATURITY_TRADES else f"⏳ {closed_count}/{DATA_MATURITY_TRADES}"
+    
+    return (
+        f"📋 *إحصائيات التداول*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📊 إجمالي الصفقات: {stats['total']}\n"
+        f"✅ رابحة: {stats['wins']}\n"
+        f"❌ خاسرة: {stats['losses']}\n"
+        f"📈 نسبة النجاح: {stats['win_rate']:.1f}%\n"
+        f"💵 إجمالي الربح: {stats['total_pnl']:+.2f} USDT\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🛡️ *Kill Switch:*\n"
+        f"• نضج البيانات: {maturity_status}\n"
+        f"• سلسلة الخسائر: {paper_state.loss_streak}/{LOSS_STREAK_LIMIT}\n"
+        f"• Drawdown: {stats['drawdown']:.2f}% / {DRAWDOWN_LIMIT_PERCENT}%\n"
+        f"• Win Rate (آخر 10): {recent_win_rate:.1f}% / {RECENT_WIN_RATE_MIN}%\n"
+        f"━━━━━━━━━━━━━━━━━━━━━"
+    )
+
+
+def format_rules_message() -> str:
+    return (
+        f"📖 *قواعد الاستراتيجية V3.2*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"*شروط الدخول:*\n"
+        f"• EMA{EMA_SHORT} > EMA{EMA_LONG}\n"
+        f"• كسر قمة {BREAKOUT_CANDLES} شموع\n"
+        f"• حجم أعلى من المتوسط\n"
+        f"• Score >= {MIN_SIGNAL_SCORE}/10\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"*شروط الخروج:*\n"
+        f"• Take Profit: +{TAKE_PROFIT_PCT}%\n"
+        f"• Stop Loss: -{STOP_LOSS_PCT}%\n"
+        f"• Trailing @ +{TRAILING_TRIGGER_PCT}%\n"
+        f"• إغلاق تحت EMA{EMA_SHORT}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"*🛡️ Kill Switch V3.2:*\n"
+        f"1️⃣ {LOSS_STREAK_LIMIT} خسائر متتالية\n"
+        f"2️⃣ Drawdown > {DRAWDOWN_LIMIT_PERCENT}%\n"
+        f"3️⃣ Win Rate < {RECENT_WIN_RATE_MIN}% (آخر 10)\n"
+        f"• استئناف تلقائي: {AUTO_RESUME_MINUTES} دقيقة\n"
+        f"• /استئناف للاستئناف اليدوي\n"
+        f"━━━━━━━━━━━━━━━━━━━━━"
+    )
+
+
+def format_buy_message(entry: float, tp: float, sl: float, tf: str, score: int, qty: float) -> str:
+    return (
+        f"🟢 *إشارة شراء - Paper Trading*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📊 الزوج: {SYMBOL_DISPLAY}\n"
+        f"⏱ الفريم: {tf}\n"
+        f"💹 سعر الدخول: {entry:.4f}\n"
+        f"🎯 Take Profit: {tp:.4f} (+{TAKE_PROFIT_PCT}%)\n"
+        f"🛑 Stop Loss: {sl:.4f} (-{STOP_LOSS_PCT}%)\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📦 الكمية: {qty:.2f} XRP\n"
+        f"💵 القيمة: {FIXED_TRADE_SIZE:.0f} USDT\n"
+        f"⭐ Score: {score}/10\n"
+        f"━━━━━━━━━━━━━━━━━━━━━"
+    )
+
+
+def format_exit_message(entry: float, exit_price: float, pnl_pct: float,
+                        pnl_usdt: float, reason: str, duration: int, balance: float) -> str:
+    emoji = "🟢" if pnl_usdt >= 0 else "🔴"
+    reason_text = {
+        "tp": "Take Profit ✅",
+        "sl": "Stop Loss ❌",
+        "trailing_sl": "Trailing Stop 🔄",
+        "ema_confirmation": "EMA Exit 📉"
+    }.get(reason, reason.upper())
+    
+    return (
+        f"{emoji} *إغلاق صفقة - Paper Trading*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📊 الزوج: {SYMBOL_DISPLAY}\n"
+        f"📌 السبب: {reason_text}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"💹 سعر الدخول: {entry:.4f}\n"
+        f"💹 سعر الخروج: {exit_price:.4f}\n"
+        f"📈 النتيجة: {pnl_pct:+.2f}%\n"
+        f"💵 الربح/الخسارة: {pnl_usdt:+.2f} USDT\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"💰 الرصيد: {balance:.2f} USDT\n"
+        f"⏱ المدة: {duration} دقيقة\n"
+        f"━━━━━━━━━━━━━━━━━━━━━"
+    )
+
+
+async def send_signal_message(bot: Bot, chat_id: str, text: str, msg_type: str) -> bool:
     try:
-        await bot.send_message(chat_id=chat_id, text=message, parse_mode="Markdown")
+        await bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            parse_mode="Markdown"
+        )
         state.last_message_time = time.time()
-        state.last_signal_type = signal_type
         return True
     except Exception as e:
         logger.error(f"فشل إرسال الرسالة: {e}")
         return False
 
-# ============================================================================
-# COMMAND HANDLERS
-# ============================================================================
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
@@ -1007,12 +1079,22 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         parse_mode="Markdown"
     )
 
+
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         format_status_message(),
         reply_markup=get_main_keyboard(),
         parse_mode="Markdown"
     )
+
+
+async def cmd_الحالة(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text(
+        format_status_message(),
+        reply_markup=get_main_keyboard(),
+        parse_mode="Markdown"
+    )
+
 
 async def cmd_balance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
@@ -1021,12 +1103,14 @@ async def cmd_balance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         parse_mode="Markdown"
     )
 
+
 async def cmd_trades(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         format_trades_message(),
         reply_markup=get_main_keyboard(),
         parse_mode="Markdown"
     )
+
 
 async def cmd_rules(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
@@ -1035,12 +1119,22 @@ async def cmd_rules(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         parse_mode="Markdown"
     )
 
+
 async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         format_stats_message(),
         reply_markup=get_main_keyboard(),
         parse_mode="Markdown"
     )
+
+
+async def cmd_احصائيات(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text(
+        format_stats_message(),
+        reply_markup=get_main_keyboard(),
+        parse_mode="Markdown"
+    )
+
 
 async def cmd_on(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     state.signals_enabled = True
@@ -1050,12 +1144,31 @@ async def cmd_on(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         reply_markup=get_main_keyboard()
     )
 
+
 async def cmd_off(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     state.signals_enabled = False
     await update.message.reply_text(
         "⏸️ تم إيقاف الإشارات",
         reply_markup=get_main_keyboard()
     )
+
+
+async def cmd_استئناف(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not kill_switch.active:
+        await update.message.reply_text(
+            "✅ التداول نشط بالفعل",
+            reply_markup=get_main_keyboard()
+        )
+        return
+    
+    resume_trading()
+    state.signals_enabled = True
+    await update.message.reply_text(
+        "✅ تم استئناف التداول يدوياً\n\n" + format_status_message(),
+        reply_markup=get_main_keyboard(),
+        parse_mode="Markdown"
+    )
+
 
 async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
@@ -1064,6 +1177,7 @@ async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         reply_markup=get_confirm_keyboard(),
         parse_mode="Markdown"
     )
+
 
 async def cmd_timeframe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not context.args:
@@ -1082,9 +1196,6 @@ async def cmd_timeframe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         reply_markup=get_main_keyboard()
     )
 
-# ============================================================================
-# CALLBACK QUERY HANDLER
-# ============================================================================
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
@@ -1186,20 +1297,41 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             parse_mode="Markdown"
         )
 
-# ============================================================================
-# BACKGROUND SIGNAL LOOP
-# ============================================================================
 
 async def signal_loop(bot: Bot, chat_id: str) -> None:
-    """حلقة فحص الإشارات - Paper Trading"""
-    logger.info(f"بدء حلقة الإشارات (Paper Trading)")
+    logger.info(f"بدء حلقة الإشارات (Paper Trading V3.2)")
     
     init_trades_file()
     init_paper_trades_file()
     
     while True:
         try:
+            if kill_switch.check_auto_resume():
+                resume_trading()
+                try:
+                    await bot.send_message(
+                        chat_id=chat_id,
+                        text="✅ تم استئناف التداول تلقائياً بعد انتهاء فترة الإيقاف",
+                        parse_mode="Markdown"
+                    )
+                except:
+                    pass
+            
             if not state.signals_enabled:
+                await asyncio.sleep(POLL_INTERVAL)
+                continue
+            
+            if kill_switch.active:
+                if not kill_switch.alert_sent:
+                    try:
+                        await bot.send_message(
+                            chat_id=chat_id,
+                            text=f"🛑 تم إيقاف التداول مؤقتًا بسبب {kill_switch.reason}",
+                            parse_mode="Markdown"
+                        )
+                        kill_switch.alert_sent = True
+                    except:
+                        pass
                 await asyncio.sleep(POLL_INTERVAL)
                 continue
             
@@ -1208,7 +1340,7 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                     try:
                         await bot.send_message(
                             chat_id=chat_id,
-                            text="🛑 تم إيقاف الإشارات مؤقتًا بعد خسارتين متتاليتين",
+                            text="⏸️ إيقاف مؤقت بعد خسارتين متتاليتين",
                             parse_mode="Markdown"
                         )
                         state.pause_alerted = True
@@ -1240,36 +1372,15 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
             state.consecutive_errors = 0
             state.error_alerted = False
             
-            if not state.position_open and not state.backtest_warned:
-                # V3.1: Kill Switch logic moved below and modified for maturity
-                pass
-            
             analysis = analyze_market(candles)
             
             if "error" in analysis:
                 await asyncio.sleep(POLL_INTERVAL)
                 continue
-
-            # ============================================================================
-            # KILL SWITCH (V3.1)
-            # ============================================================================
-            stats = get_paper_stats()
-            if stats['total'] >= 5:
-                # أعد تفعيل منطق V3 الأصلي كما هو بعد نضج البيانات
-                if stats['win_rate'] < MIN_WIN_RATE:
-                    if state.signals_enabled:
-                        state.signals_enabled = False
-                        try:
-                            await bot.send_message(
-                                chat_id=chat_id,
-                                text=f"⚠️ **Kill Switch Activated**\n\nWin Rate ({stats['win_rate']:.1f}%) < {MIN_WIN_RATE}%\nتم إيقاف الإشارات التلقائية لحماية الرصيد.",
-                                parse_mode="Markdown"
-                            )
-                        except:
-                            pass
-                        continue
             
-            if not state.signals_enabled:
+            ks_reason = evaluate_kill_switch()
+            if ks_reason and not state.position_open:
+                kill_switch.activate(ks_reason)
                 await asyncio.sleep(POLL_INTERVAL)
                 continue
             
@@ -1296,6 +1407,10 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                         update_cooldown_after_exit(exit_reason)
                         reset_position_state()
                         logger.info(f"إغلاق المركز: {exit_reason} @ {exit_price:.4f} (PnL: {pnl_pct:.2f}%)")
+                        
+                        ks_reason = evaluate_kill_switch()
+                        if ks_reason:
+                            kill_switch.activate(ks_reason)
             
             else:
                 if check_buy_signal(analysis, candles):
@@ -1326,9 +1441,6 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
         
         await asyncio.sleep(POLL_INTERVAL)
 
-# ============================================================================
-# MAIN ENTRY POINT
-# ============================================================================
 
 async def main() -> None:
     tg_token = os.environ.get("TG_TOKEN")
@@ -1344,18 +1456,21 @@ async def main() -> None:
         print("❌ الرجاء تعيين TG_CHAT_ID في Replit Secrets")
         return
     
-    logger.info(f"بدء بوت إشارات {SYMBOL_DISPLAY} - Paper Trading")
+    logger.info(f"بدء بوت إشارات {SYMBOL_DISPLAY} V3.2 - Paper Trading")
     
     application = Application.builder().token(tg_token).build()
     
     application.add_handler(CommandHandler("start", cmd_start))
     application.add_handler(CommandHandler("status", cmd_status))
+    application.add_handler(CommandHandler("الحالة", cmd_الحالة))
     application.add_handler(CommandHandler("balance", cmd_balance))
     application.add_handler(CommandHandler("trades", cmd_trades))
     application.add_handler(CommandHandler("on", cmd_on))
     application.add_handler(CommandHandler("off", cmd_off))
     application.add_handler(CommandHandler("rules", cmd_rules))
     application.add_handler(CommandHandler("stats", cmd_stats))
+    application.add_handler(CommandHandler("احصائيات", cmd_احصائيات))
+    application.add_handler(CommandHandler("استئناف", cmd_استئناف))
     application.add_handler(CommandHandler("reset", cmd_reset))
     application.add_handler(CommandHandler("settf", cmd_timeframe))
     application.add_handler(CallbackQueryHandler(button_callback))
@@ -1367,7 +1482,8 @@ async def main() -> None:
     await application.updater.start_polling(drop_pending_updates=True)
     
     print("=" * 50)
-    print(f"🚀 بوت إشارات {SYMBOL_DISPLAY} - Paper Trading")
+    print(f"🚀 بوت إشارات {SYMBOL_DISPLAY} V3.2 - Paper Trading")
+    print(f"🛡️ Kill Switch: متعدد الطبقات")
     print(f"💵 رأس المال: {START_BALANCE:.0f} USDT")
     print(f"📦 حجم الصفقة: {FIXED_TRADE_SIZE:.0f} USDT")
     print(f"💰 الرصيد الحالي: {paper_state.balance:.2f} USDT")
