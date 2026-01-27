@@ -717,10 +717,7 @@ def check_exit_signal(analysis: dict, candles: List[dict]) -> Optional[str]:
         # Check Smart SL
         if state.current_sl and current_price <= state.current_sl:
             return "sl"
-        # Fallback to fixed if for some reason current_sl is missing
-        if not state.current_sl and pnl_pct <= -STOP_LOSS_PCT:
-            return "sl"
-    
+        
     # Trailing SL (Existing logic preserved but secondary to TP trigger)
     if not state.tp_triggered:
         if pnl_pct >= TRAILING_TRIGGER_PCT:
@@ -1469,7 +1466,7 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
             return
         
         if state.position_open and state.entry_price is not None:
-            exit_reason = check_exit_signal(analysis)
+            exit_reason = check_exit_signal(analysis, candles)
             if exit_reason:
                 exit_price = analysis["close"]
                 duration = get_trade_duration_minutes()
@@ -1482,7 +1479,7 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
         else:
             if check_buy_signal(analysis, candles):
                 entry_price = analysis["close"]
-                tp, sl = calculate_targets(entry_price)
+                tp, sl = calculate_targets(entry_price, candles)
                 qty = execute_paper_buy(entry_price, state.last_signal_score, state.last_signal_reasons)
                 log_trade("BUY", "SIGNAL", entry_price, None)
                 msg = format_buy_message(entry_price, tp, sl, state.timeframe, state.last_signal_score, qty)
@@ -1492,6 +1489,11 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                 state.entry_time = datetime.now(timezone.utc)
                 state.trailing_activated = False
                 state.candles_below_ema = 0
+                state.current_sl = sl
+                state.entry_candles_snapshot = candles[-20:] # Keep snapshot for loss classification
+
+    except Exception as e:
+        logger.error(f"Error in signal loop: {e}")
 
     except Exception as e:
         logger.error(f"Error in signal loop: {e}")
@@ -1519,7 +1521,7 @@ async def main() -> None:
     application.add_handler(CommandHandler("stats", cmd_stats))
     application.add_handler(CommandHandler("diagnostic", cmd_diagnostic))
     application.add_handler(CommandHandler("frame", cmd_الفريم))
-    application.add_handler(CallbackQueryHandler(button_callback))
+    application.add_handler(CallbackQueryHandler(handle_callback))
     
     # Initialize the application
     await application.initialize()
