@@ -830,7 +830,7 @@ def get_main_keyboard():
         ["1m", "5m"],
         ["تشغيل ✅", "إيقاف ⏸️"]
     ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, persistent=True)
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
@@ -1474,7 +1474,8 @@ async def main() -> None:
     # Initialize application
     application = Application.builder().token(tg_token).build()
     
-    # Handlers
+    # Remove obsolete CallbackQueryHandler as we switched to MessageHandler for ReplyKeyboard
+    # application.add_handler(CallbackQueryHandler(handle_callback))
     application.add_handler(CommandHandler("start", cmd_start))
     application.add_handler(CommandHandler("status", cmd_status))
     application.add_handler(CommandHandler("balance", cmd_balance))
