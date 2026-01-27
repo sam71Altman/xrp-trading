@@ -917,10 +917,10 @@ def get_confirm_keyboard():
 
 def format_welcome_message() -> str:
     return (
-        f"🤖 *بوت إشارات {SYMBOL_DISPLAY} V3.2*\n"
+        f"🤖 *بوت إشارات {SYMBOL_DISPLAY} V3.5*\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"✅ تم تفعيل نظام Paper Trading\n"
-        f"💰 الرصيد الابتدائي: {START_BALANCE} USDT\n"
+        f"🔥 نمط المضاربة العنيف: مفعّل (Aggressive Mode)\n"
+        f"💰 الرصيد الحالي: {paper_state.balance:.2f} USDT\n"
         f"🛡️ نظام Kill Switch مفعّل للحماية\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"استخدم الأزرار أدناه للتحكم"
@@ -933,25 +933,20 @@ def format_status_message() -> str:
     if kill_switch.active:
         ks_status = f"🛑 متوقف ({kill_switch.reason})"
     
-    cooldown = 0
-    if state.pause_until:
-        rem = (state.pause_until - datetime.now(timezone.utc)).total_seconds()
-        cooldown = max(0, int(rem))
-    
     pos_status = "❌ لا توجد صفقة"
     if state.position_open:
         pnl = ((state.last_close - state.entry_price) / state.entry_price) * 100 if state.last_close and state.entry_price else 0
         pos_status = f"✅ صفقة مفتوحة ({pnl:+.2f}%)"
     
     return (
-        f"📊 *حالة البوت الحالية*\n"
+        f"📊 *حالة البوت الحالية V3.5*\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"🤖 الحالة: {status}\n"
         f"🛡️ Kill Switch: {ks_status}\n"
         f"⏱️ الفريم: {state.timeframe}\n"
         f"💰 الرصيد: {paper_state.balance:.2f} USDT\n"
         f"📍 الصفقة: {pos_status}\n"
-        f"⏳ Cooldown: {cooldown} ثانية\n"
+        f"🚀 النمط: Aggressive Scalping\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"آخر سعر: {state.last_close if state.last_close else '---'}"
     )
