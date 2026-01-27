@@ -1463,24 +1463,17 @@ async def main() -> None:
     
     application.add_handler(CommandHandler("start", cmd_start))
     application.add_handler(CommandHandler("status", cmd_status))
-    application.add_handler(CommandHandler("الحالة", cmd_الحالة))
     application.add_handler(CommandHandler("balance", cmd_balance))
     application.add_handler(CommandHandler("trades", cmd_trades))
     application.add_handler(CommandHandler("on", cmd_on))
     application.add_handler(CommandHandler("off", cmd_off))
     application.add_handler(CommandHandler("rules", cmd_rules))
     application.add_handler(CommandHandler("stats", cmd_stats))
-    application.add_handler(CommandHandler("احصائيات", cmd_احصائيات))
-    application.add_handler(CommandHandler("استئناف", cmd_استئناف))
     application.add_handler(CommandHandler("reset", cmd_reset))
     application.add_handler(CommandHandler("settf", cmd_timeframe))
     application.add_handler(CallbackQueryHandler(button_callback))
     
     bot = application.bot
-    
-    await application.initialize()
-    await application.start()
-    await application.updater.start_polling(drop_pending_updates=True)
     
     print("=" * 50)
     print(f"🚀 بوت إشارات {SYMBOL_DISPLAY} V3.2 - Paper Trading")
@@ -1492,14 +1485,60 @@ async def main() -> None:
     print(f"🎯 TP: +{TAKE_PROFIT_PCT}% | SL: -{STOP_LOSS_PCT}%")
     print("=" * 50)
     
-    try:
-        await signal_loop(bot, chat_id)
-    except asyncio.CancelledError:
-        logger.info("تم إيقاف البوت")
-    finally:
-        await application.updater.stop()
-        await application.stop()
-        await application.shutdown()
+    await application.run_polling(drop_pending_updates=True)
+
+async def signal_loop_task(application: Application, chat_id: str) -> None:
+    bot = application.bot
+    await signal_loop(bot, chat_id)
+
+async def main() -> None:
+    tg_token = os.environ.get("TG_TOKEN")
+    chat_id = os.environ.get("TG_CHAT_ID")
+    
+    if not tg_token:
+        logger.error("TG_TOKEN غير موجود!")
+        print("❌ الرجاء تعيين TG_TOKEN في Replit Secrets")
+        return
+    
+    if not chat_id:
+        logger.error("TG_CHAT_ID غير موجود!")
+        print("❌ الرجاء تعيين TG_CHAT_ID في Replit Secrets")
+        return
+    
+    logger.info(f"بدء بوت إشارات {SYMBOL_DISPLAY} V3.2 - Paper Trading")
+    
+    application = Application.builder().token(tg_token).build()
+    
+    application.add_handler(CommandHandler("start", cmd_start))
+    application.add_handler(CommandHandler("status", cmd_status))
+    application.add_handler(CommandHandler("balance", cmd_balance))
+    application.add_handler(CommandHandler("trades", cmd_trades))
+    application.add_handler(CommandHandler("on", cmd_on))
+    application.add_handler(CommandHandler("off", cmd_off))
+    application.add_handler(CommandHandler("rules", cmd_rules))
+    application.add_handler(CommandHandler("stats", cmd_stats))
+    application.add_handler(CommandHandler("reset", cmd_reset))
+    application.add_handler(CommandHandler("settf", cmd_timeframe))
+    application.add_handler(CallbackQueryHandler(button_callback))
+    
+    print("=" * 50)
+    print(f"🚀 بوت إشارات {SYMBOL_DISPLAY} V3.2 - Paper Trading")
+    print(f"🛡️ Kill Switch: متعدد الطبقات")
+    print(f"💵 رأس المال: {START_BALANCE:.0f} USDT")
+    print(f"📦 حجم الصفقة: {FIXED_TRADE_SIZE:.0f} USDT")
+    print(f"💰 الرصيد الحالي: {paper_state.balance:.2f} USDT")
+    print(f"📊 الفريم: {state.timeframe}")
+    print(f"🎯 TP: +{TAKE_PROFIT_PCT}% | SL: -{STOP_LOSS_PCT}%")
+    print("=" * 50)
+    
+    # Start the signal loop in the background
+    asyncio.create_task(signal_loop(application.bot, chat_id))
+    
+    # Start polling
+    await application.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass
