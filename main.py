@@ -250,6 +250,7 @@ def log_loss_event(loss_type: str, pnl_pct: float, entry_price: float, exit_pric
 
 class BotState:
     def __init__(self):
+        self.mode: str = "AGGRESSIVE"  # Force Aggressive Mode
         self.position_open: bool = False
         self.entry_price: Optional[float] = None
         self.entry_time: Optional[datetime] = None
@@ -264,15 +265,15 @@ class BotState:
         self.trailing_activated: bool = False
         self.candles_below_ema: int = 0
         self.last_exit_type: Optional[str] = None
-        self.current_cooldown: int = COOLDOWN_NORMAL
+        self.current_cooldown: int = 0  # Disable cooldowns
         self.consecutive_losses: int = 0
         self.consecutive_wins: int = 0
         self.pause_until: Optional[datetime] = None
         self.pause_alerted: bool = False
         self.backtest_warned: bool = False
-        self.last_signal_score: int = 0
+        self.last_signal_score: int = 10  # Bypass score
         self.last_signal_reasons: List[str] = []
-        self.last_signal_reason: str = ""
+        self.last_signal_reason: str = "Aggressive Entry"
         self.backtest_stats: Dict = {}
         self.pending_reset: bool = False
         self.last_downtrend_alert_time: float = 0
@@ -657,7 +658,9 @@ def is_low_liquidity_session() -> bool:
 def check_buy_signal(analysis: dict, candles: List[dict]) -> bool:
     if "error" in analysis:
         return False
-    if kill_switch.active:
+    
+    # Kill Switch Check (Disabled for Aggressive)
+    if kill_switch.active and state.mode != "AGGRESSIVE":
         return False
     
     current_close = analysis["close"]
@@ -687,7 +690,9 @@ def check_buy_signal(analysis: dict, candles: List[dict]) -> bool:
 def check_sell_signal(analysis: dict, candles: List[dict]) -> bool:
     if "error" in analysis:
         return False
-    if kill_switch.active:
+    
+    # Kill Switch Check (Disabled for Aggressive)
+    if kill_switch.active and state.mode != "AGGRESSIVE":
         return False
         
     current_close = analysis["close"]
@@ -917,11 +922,11 @@ def get_confirm_keyboard():
 
 def format_welcome_message() -> str:
     return (
-        f"🤖 *بوت إشارات {SYMBOL_DISPLAY} V3.5*\n"
+        f"🤖 *بوت إشارات {SYMBOL_DISPLAY} V3.5.1*\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"🔥 نمط المضاربة العنيف: مفعّل (Aggressive Mode)\n"
         f"💰 الرصيد الحالي: {paper_state.balance:.2f} USDT\n"
-        f"🛡️ نظام Kill Switch مفعّل للحماية\n"
+        f"🛡️ نظام Kill Switch: مُعطل (Aggressive Mode)\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"استخدم الأزرار أدناه للتحكم"
     )
@@ -929,9 +934,7 @@ def format_welcome_message() -> str:
 
 def format_status_message() -> str:
     status = "🟢 يعمل" if state.signals_enabled else "⏸️ متوقف"
-    ks_status = "✅ آمن"
-    if kill_switch.active:
-        ks_status = f"🛑 متوقف ({kill_switch.reason})"
+    ks_status = "⚠️ معطل (Aggressive Mode)"
     
     pos_status = "❌ لا توجد صفقة"
     if state.position_open:
@@ -939,7 +942,7 @@ def format_status_message() -> str:
         pos_status = f"✅ صفقة مفتوحة ({pnl:+.2f}%)"
     
     return (
-        f"📊 *حالة البوت الحالية V3.5*\n"
+        f"📊 *حالة البوت الحالية V3.5.1*\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"🤖 الحالة: {status}\n"
         f"🛡️ Kill Switch: {ks_status}\n"
@@ -1425,19 +1428,43 @@ async def check_downtrend_alerts(bot: Bot, chat_id: str, analysis: dict, candles
             state.last_downtrend_alert_time = now
 
 
+def get_binance_ticker():
+    try:
+        url = f"https://api.binance.com/api/v3/ticker/price?symbol={SYMBOL}"
+        response = requests.get(url, timeout=5)
+        if response.status_code == 200:
+            data = response.json()
+            return {"price": float(data["price"])}
+    except Exception as e:
+        logger.error(f"Error fetching ticker: {e}")
+    return None
+
+
 async def signal_loop(bot: Bot, chat_id: str) -> None:
-    logger.info("حلقة الإشارات تعمل...")
+    if state.mode == "AGGRESSIVE":
+        print("[AGG] checking entry conditions")
+        
     try:
         if kill_switch.check_auto_resume():
             resume_trading()
             await bot.send_message(chat_id=chat_id, text="✅ تم استئناف التداول تلقائياً", parse_mode="Markdown")
         
-        if not state.signals_enabled or kill_switch.active:
+        # Disable Kill Switch check for Aggressive Mode
+        if not state.signals_enabled or (kill_switch.active and state.mode != "AGGRESSIVE"):
             return
         
-        if state.pause_until and datetime.now(timezone.utc) < state.pause_until:
-            return
+        # Disable Cooldown for Aggressive Mode
+        if state.mode != "AGGRESSIVE":
+            if state.pause_until and datetime.now(timezone.utc) < state.pause_until:
+                return
         
+        # Use Real-time Price for Aggressive Mode
+        ticker = get_binance_ticker()
+        if ticker:
+            current_price = ticker["price"]
+        else:
+            return
+
         candles = get_klines(SYMBOL, state.timeframe)
         if candles is None:
             return
@@ -1446,30 +1473,50 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
         if "error" in analysis:
             return
             
+        # Override analysis price with real-time ticker price
+        analysis["close"] = current_price
+        state.last_close = current_price
+            
         # Downtrend Alerts (Monitoring Only)
         await check_downtrend_alerts(bot, chat_id, analysis, candles)
         
-        ks_reason = evaluate_kill_switch()
-        if ks_reason and not state.position_open:
-            kill_switch.activate(ks_reason)
-            return
+        # Disable Kill Switch evaluation for Aggressive Mode
+        if state.mode != "AGGRESSIVE":
+            ks_reason = evaluate_kill_switch()
+            if ks_reason and not state.position_open:
+                kill_switch.activate(ks_reason)
+                return
         
         if state.position_open and state.entry_price is not None:
             exit_reason = check_exit_signal(analysis, candles)
             if exit_reason:
                 exit_price = analysis["close"]
                 duration = get_trade_duration_minutes()
-                pnl_pct, pnl_usdt, balance = execute_paper_exit(state.entry_price, exit_price, exit_reason, state.last_signal_score, duration)
+                pnl_pct, pnl_usdt, balance = execute_paper_exit(state.entry_price, exit_price, exit_reason, 10 if state.mode == "AGGRESSIVE" else state.last_signal_score, duration)
                 log_trade("EXIT", exit_reason.upper(), exit_price, pnl_pct)
                 msg = format_exit_message(state.entry_price, exit_price, pnl_pct, pnl_usdt, exit_reason, duration, balance)
                 await bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
-                update_cooldown_after_exit(exit_reason)
+                if state.mode != "AGGRESSIVE":
+                    update_cooldown_after_exit(exit_reason)
                 reset_position_state()
+            
+            # Additional Aggressive Flip check
+            elif state.mode == "AGGRESSIVE" and check_sell_signal(analysis, candles):
+                exit_price = analysis["close"]
+                duration = get_trade_duration_minutes()
+                pnl_pct, pnl_usdt, balance = execute_paper_exit(state.entry_price, exit_price, "aggressive_flip", 10, duration)
+                log_trade("EXIT", "AGGRESSIVE_FLIP", exit_price, pnl_pct)
+                msg = format_exit_message(state.entry_price, exit_price, pnl_pct, pnl_usdt, "aggressive_flip", duration, balance)
+                await bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
+                reset_position_state()
+
+        # Re-check entry (Allow immediate re-entry for aggressive mode)
+        if not state.position_open:
             if check_buy_signal(analysis, candles):
                 entry_price = analysis["close"]
                 tp, sl = calculate_targets(entry_price, candles)
-                qty = execute_paper_buy(entry_price, 1, [state.last_signal_reason])
-                log_trade("BUY", state.last_signal_reason, entry_price, None)
+                qty = execute_paper_buy(entry_price, 1, ["Aggressive Entry" if state.mode == "AGGRESSIVE" else state.last_signal_reason])
+                log_trade("BUY", "Aggressive Entry" if state.mode == "AGGRESSIVE" else state.last_signal_reason, entry_price, None)
                 msg = format_buy_message(entry_price, tp, sl, state.timeframe, 1, qty)
                 await bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
                 
@@ -1483,18 +1530,6 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                 state.trailing_activated = False
                 state.candles_below_ema = 0
                 state.entry_candles_snapshot = candles[-10:]
-            elif check_sell_signal(analysis, candles):
-                if state.position_open:
-                    exit_price = analysis["close"]
-                    duration = get_trade_duration_minutes()
-                    balance, pnl_pct, pnl_usdt, exit_reason = execute_paper_exit(state.entry_price, exit_price, "aggressive_flip", 1, duration)
-                    msg = format_exit_message(state.entry_price, exit_price, pnl_pct, pnl_usdt, exit_reason, duration, balance)
-                    await bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
-                    reset_position_state()
-                else:
-                    # Shorting not implemented in current paper system, but we log the signal
-                    log_trade("SELL_SIGNAL", state.last_signal_reason, analysis["close"], None)
-                    logger.info(f"Aggressive SELL signal: {state.last_signal_reason}")
 
     except Exception as e:
         logger.error(f"Error in signal loop: {e}")
@@ -1550,7 +1585,7 @@ async def main() -> None:
     logger.info("Starting polling...")
     await application.updater.start_polling(drop_pending_updates=True)
     
-    print(f"🚀 بوت إشارات {SYMBOL_DISPLAY} V3.5 يعمل...")
+    print(f"🚀 بوت إشارات {SYMBOL_DISPLAY} V3.5.1 يعمل...")
     
     # Keep running
     try:
