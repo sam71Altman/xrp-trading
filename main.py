@@ -14,8 +14,8 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict
 
 import requests
-from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 # --- Configuration ---
 MODE = "PAPER"
@@ -1507,7 +1507,7 @@ async def main() -> None:
     # Initialize application
     application = Application.builder().token(tg_token).build()
     
-    # Add handlers
+    # Handlers
     application.add_handler(CommandHandler("start", cmd_start))
     application.add_handler(CommandHandler("status", cmd_status))
     application.add_handler(CommandHandler("balance", cmd_balance))
@@ -1518,7 +1518,9 @@ async def main() -> None:
     application.add_handler(CommandHandler("stats", cmd_stats))
     application.add_handler(CommandHandler("diagnostic", cmd_diagnostic))
     application.add_handler(CommandHandler("frame", cmd_الفريم))
-    application.add_handler(CallbackQueryHandler(handle_callback))
+    
+    # Handle ReplyKeyboard text commands
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     # Initialize the application
     await application.initialize()
