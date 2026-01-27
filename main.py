@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-XRP/USDT Telegram Signals Bot
+XRP/USDT Telegram Signals Bot V2
 بوت إشارات تداول يرسل إشارات دخول/خروج لزوج XRP/USDT
 باستخدام استراتيجية EMA20/EMA50 مع تأكيد الاختراق
+V2: فلاتر متقدمة + Trailing Stop + تأكيد EMA + Cooldown تكيفي
 """
 
 import os
@@ -30,8 +31,14 @@ BREAKOUT_CANDLES = 5
 
 TAKE_PROFIT_PCT = 0.40
 STOP_LOSS_PCT = 0.30
+TRAILING_TRIGGER_PCT = 0.25
 
-COOLDOWN_SECONDS = 60
+RANGE_FILTER_THRESHOLD = 0.001
+VOLUME_LOOKBACK = 20
+
+COOLDOWN_NORMAL = 60
+COOLDOWN_AFTER_SL = 180
+
 POLL_INTERVAL = 10
 KLINE_LIMIT = 200
 
@@ -70,6 +77,10 @@ class BotState:
         self.last_signal_type: Optional[str] = None
         self.consecutive_errors: int = 0
         self.error_alerted: bool = False
+        self.trailing_activated: bool = False
+        self.candles_below_ema: int = 0
+        self.last_exit_type: Optional[str] = None
+        self.current_cooldown: int = COOLDOWN_NORMAL
 
 state = BotState()
 
@@ -128,7 +139,7 @@ def calculate_ema(prices: List[float], period: int) -> List[float]:
     return ema_values
 
 # ============================================================================
-# STRATEGY LOGIC
+# STRATEGY LOGIC V2
 # ============================================================================
 
 def analyze_market(candles: List[dict]) -> dict:
@@ -138,6 +149,7 @@ def analyze_market(candles: List[dict]) -> dict:
     
     closes = [c["close"] for c in candles]
     highs = [c["high"] for c in candles]
+    volumes = [c["volume"] for c in candles]
     
     ema_short_vals = calculate_ema(closes, EMA_SHORT)
     ema_long_vals = calculate_ema(closes, EMA_LONG)
@@ -146,42 +158,89 @@ def analyze_market(candles: List[dict]) -> dict:
         return {"error": "فشل حساب EMA"}
     
     current_close = closes[-1]
+    prev_close = closes[-2] if len(closes) >= 2 else current_close
     current_ema_short = ema_short_vals[-1]
+    prev_ema_short = ema_short_vals[-2] if len(ema_short_vals) >= 2 else current_ema_short
     current_ema_long = ema_long_vals[-1]
     
     prev_highs = highs[-(BREAKOUT_CANDLES + 1):-1]
     highest_high = max(prev_highs) if prev_highs else current_close
     
+    current_volume = volumes[-1]
+    avg_volume = sum(volumes[-VOLUME_LOOKBACK:]) / VOLUME_LOOKBACK if len(volumes) >= VOLUME_LOOKBACK else current_volume
+    
+    ema_diff_pct = abs(current_ema_short - current_ema_long) / current_ema_long if current_ema_long != 0 else 0
+    
     state.last_close = current_close
     
     return {
         "close": current_close,
+        "prev_close": prev_close,
         "ema_short": current_ema_short,
+        "prev_ema_short": prev_ema_short,
         "ema_long": current_ema_long,
         "highest_high": highest_high,
         "ema_bullish": current_ema_short > current_ema_long,
         "breakout": current_close > highest_high,
+        "current_volume": current_volume,
+        "avg_volume": avg_volume,
+        "volume_confirmed": current_volume > avg_volume,
+        "ema_diff_pct": ema_diff_pct,
+        "range_confirmed": ema_diff_pct >= RANGE_FILTER_THRESHOLD,
     }
 
 def check_buy_signal(analysis: dict) -> bool:
+    """فحص شروط الدخول مع الفلاتر الجديدة"""
     if "error" in analysis:
         return False
-    return analysis["ema_bullish"] and analysis["breakout"]
+    
+    if not analysis["ema_bullish"]:
+        return False
+    if not analysis["breakout"]:
+        return False
+    
+    if not analysis["range_confirmed"]:
+        logger.debug("فشل فلتر التذبذب - EMA متقاربة جداً")
+        return False
+    
+    if not analysis["volume_confirmed"]:
+        logger.debug("فشل فلتر الحجم - الحجم أقل من المتوسط")
+        return False
+    
+    return True
 
 def check_exit_signal(analysis: dict) -> Optional[str]:
+    """فحص شروط الخروج مع Smart Exit"""
     if "error" in analysis or not state.position_open or state.entry_price is None:
         return None
     
     current_close = analysis["close"]
+    prev_close = analysis["prev_close"]
     entry = state.entry_price
     pnl_pct = ((current_close - entry) / entry) * 100
     
     if pnl_pct >= TAKE_PROFIT_PCT:
         return "tp"
+    
     if pnl_pct <= -STOP_LOSS_PCT:
         return "sl"
+    
+    if not state.trailing_activated:
+        if pnl_pct >= TRAILING_TRIGGER_PCT:
+            state.trailing_activated = True
+            logger.info(f"تم تفعيل Trailing Stop @ {current_close:.4f}")
+    
+    if state.trailing_activated:
+        if current_close <= entry:
+            return "trailing_sl"
+    
     if current_close < analysis["ema_short"]:
-        return "ema"
+        state.candles_below_ema += 1
+    else:
+        state.candles_below_ema = 0
+    
+    if state.candles_below_ema >= 2:
+        return "ema_confirmation"
     
     return None
 
@@ -193,8 +252,35 @@ def calculate_targets(entry_price: float) -> tuple:
 def calculate_pnl(entry: float, exit_price: float) -> float:
     return ((exit_price - entry) / entry) * 100
 
+def get_trade_duration_minutes() -> int:
+    """حساب مدة الصفقة بالدقائق"""
+    if state.entry_time is None:
+        return 0
+    now = datetime.now(timezone.utc)
+    duration = now - state.entry_time
+    return int(duration.total_seconds() / 60)
+
+def reset_position_state():
+    """إعادة تعيين حالة المركز"""
+    state.position_open = False
+    state.entry_price = None
+    state.entry_time = None
+    state.entry_timeframe = None
+    state.trailing_activated = False
+    state.candles_below_ema = 0
+
+def update_cooldown_after_exit(exit_type: str):
+    """تحديث Cooldown بناءً على نوع الخروج"""
+    state.last_exit_type = exit_type
+    if exit_type == "sl":
+        state.current_cooldown = COOLDOWN_AFTER_SL
+        logger.info(f"Cooldown بعد SL: {COOLDOWN_AFTER_SL} ثانية")
+    else:
+        state.current_cooldown = COOLDOWN_NORMAL
+        logger.info(f"Cooldown عادي: {COOLDOWN_NORMAL} ثانية")
+
 # ============================================================================
-# MESSAGE FORMATTING (Arabic)
+# MESSAGE FORMATTING (Arabic) V2
 # ============================================================================
 
 def get_current_time_str() -> str:
@@ -209,14 +295,17 @@ def format_buy_message(entry: float, tp: float, sl: float, timeframe: str) -> st
         f"🎯 *جني الأرباح:* {tp:.4f} (+{TAKE_PROFIT_PCT}%)\n"
         f"🛑 *وقف الخسارة:* {sl:.4f} (-{STOP_LOSS_PCT}%)\n\n"
         f"📝 *السبب:* EMA{EMA_SHORT} > EMA{EMA_LONG} + اختراق أعلى قمة\n"
+        f"🔥 *تقييم الإشارة:* قوية\n"
+        f"📋 *ملاحظة:* تم تفعيل فلتر التذبذب والحجم\n"
         f"🕐 *الوقت:* {get_current_time_str()}"
     )
 
-def format_exit_message(entry: float, exit_price: float, pnl: float, reason: str) -> str:
+def format_exit_message(entry: float, exit_price: float, pnl: float, reason: str, duration_min: int) -> str:
     reason_text = {
         "tp": "وصول الهدف (TP)",
         "sl": "وصول وقف الخسارة (SL)",
-        "ema": f"الإغلاق تحت EMA{EMA_SHORT}"
+        "trailing_sl": "Trailing Stop Loss",
+        "ema_confirmation": f"تأكيد الإغلاق تحت EMA{EMA_SHORT} (شمعتين)",
     }.get(reason, "خروج يدوي")
     
     pnl_sign = "+" if pnl >= 0 else ""
@@ -228,7 +317,8 @@ def format_exit_message(entry: float, exit_price: float, pnl: float, reason: str
         f"💰 *سعر الدخول:* {entry:.4f}\n"
         f"💵 *سعر الخروج:* {exit_price:.4f}\n"
         f"📊 *الربح/الخسارة:* {pnl_sign}{pnl:.2f}%\n\n"
-        f"{status_emoji} *السبب:* {reason_text}\n"
+        f"{status_emoji} *نوع الخروج:* {reason_text}\n"
+        f"⏱️ *مدة الصفقة:* {duration_min} دقيقة\n"
         f"🕐 *الوقت:* {get_current_time_str()}"
     )
 
@@ -245,25 +335,60 @@ def format_status_message() -> str:
     
     if state.position_open and state.entry_price:
         msg += f"💰 *سعر الدخول:* {state.entry_price:.4f}\n"
+        if state.trailing_activated:
+            msg += f"🔒 *Trailing Stop:* مفعّل (Break-even)\n"
         if state.last_close:
             pnl = calculate_pnl(state.entry_price, state.last_close)
             pnl_sign = "+" if pnl >= 0 else ""
             msg += f"📉 *الربح الحالي:* {pnl_sign}{pnl:.2f}%\n"
+        duration = get_trade_duration_minutes()
+        msg += f"⏱️ *مدة الصفقة:* {duration} دقيقة\n"
     
     if state.last_close:
         msg += f"🕯️ *آخر إغلاق:* {state.last_close:.4f}\n"
     
+    msg += f"⏳ *Cooldown الحالي:* {state.current_cooldown} ثانية\n"
     msg += f"🕐 *التحديث:* {get_current_time_str()}"
     
     return msg
 
 def format_welcome_message() -> str:
     return (
-        f"🤖 *مرحباً بك في بوت إشارات {SYMBOL_DISPLAY}*\n\n"
+        f"🤖 *مرحباً بك في بوت إشارات {SYMBOL_DISPLAY} V2*\n\n"
         f"📊 *الاستراتيجية:* EMA{EMA_SHORT}/EMA{EMA_LONG} + Breakout\n"
         f"🎯 *الهدف:* +{TAKE_PROFIT_PCT}%\n"
-        f"🛑 *وقف الخسارة:* -{STOP_LOSS_PCT}%\n\n"
+        f"🛑 *وقف الخسارة:* -{STOP_LOSS_PCT}%\n"
+        f"🔒 *Trailing:* +{TRAILING_TRIGGER_PCT}% → Break-even\n\n"
+        f"✨ *ميزات V2:*\n"
+        f"• فلتر التذبذب والحجم\n"
+        f"• Trailing Stop ذكي\n"
+        f"• تأكيد كسر EMA20 (شمعتين)\n"
+        f"• Cooldown تكيفي\n\n"
         f"استخدم الأزرار أدناه للتحكم في البوت:\n"
+    )
+
+def format_rules_message() -> str:
+    return (
+        f"📜 *قواعد التداول V2*\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"*شروط الدخول (BUY):*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"1️⃣ EMA{EMA_SHORT} > EMA{EMA_LONG}\n"
+        f"2️⃣ اختراق أعلى قمة آخر {BREAKOUT_CANDLES} شموع\n"
+        f"3️⃣ فرق EMA > {RANGE_FILTER_THRESHOLD * 100:.1f}% (فلتر التذبذب)\n"
+        f"4️⃣ حجم الشمعة > متوسط آخر {VOLUME_LOOKBACK} شمعة\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"*شروط الخروج (EXIT):*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"✅ *TP:* +{TAKE_PROFIT_PCT}%\n"
+        f"❌ *SL:* -{STOP_LOSS_PCT}%\n"
+        f"🔒 *Trailing SL:* عند +{TRAILING_TRIGGER_PCT}% يتحرك SL إلى الدخول\n"
+        f"📊 *EMA{EMA_SHORT}:* إغلاق شمعتين متتاليتين تحته\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"*Cooldown:*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"• بعد TP/Trailing/EMA: {COOLDOWN_NORMAL} ثانية\n"
+        f"• بعد SL: {COOLDOWN_AFTER_SL} ثانية\n"
     )
 
 # ============================================================================
@@ -284,6 +409,9 @@ def get_main_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton("⏱ 1 دقيقة", callback_data="tf_1m"),
             InlineKeyboardButton("⏱ 5 دقائق", callback_data="tf_5m"),
         ],
+        [
+            InlineKeyboardButton("📜 القواعد", callback_data="rules"),
+        ],
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -292,7 +420,7 @@ def get_main_keyboard() -> InlineKeyboardMarkup:
 # ============================================================================
 
 def can_send_message() -> bool:
-    return (time.time() - state.last_message_time) >= COOLDOWN_SECONDS
+    return (time.time() - state.last_message_time) >= state.current_cooldown
 
 async def send_signal_message(bot: Bot, chat_id: str, message: str, signal_type: str) -> bool:
     if not can_send_message():
@@ -327,6 +455,13 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         format_status_message(),
+        reply_markup=get_main_keyboard(),
+        parse_mode="Markdown"
+    )
+
+async def cmd_rules(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text(
+        format_rules_message(),
         reply_markup=get_main_keyboard(),
         parse_mode="Markdown"
     )
@@ -370,7 +505,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await query.answer()
     
     data = query.data
-    chat_id = query.message.chat_id
     
     if data == "on":
         state.signals_enabled = True
@@ -391,6 +525,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     elif data == "status":
         await query.edit_message_text(
             format_status_message(),
+            reply_markup=get_main_keyboard(),
+            parse_mode="Markdown"
+        )
+    
+    elif data == "rules":
+        await query.edit_message_text(
+            format_rules_message(),
             reply_markup=get_main_keyboard(),
             parse_mode="Markdown"
         )
@@ -428,7 +569,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     f"💰 *السعر الحالي:* {analysis['close']:.4f}\n"
                     f"📊 *EMA{EMA_SHORT}:* {analysis['ema_short']:.4f}\n"
                     f"📊 *EMA{EMA_LONG}:* {analysis['ema_long']:.4f}\n"
-                    f"📈 *أعلى قمة (5 شموع):* {analysis['highest_high']:.4f}\n\n"
+                    f"📈 *أعلى قمة ({BREAKOUT_CANDLES} شموع):* {analysis['highest_high']:.4f}\n"
+                    f"📊 *فرق EMA:* {analysis['ema_diff_pct']*100:.3f}%\n"
+                    f"📊 *الحجم الحالي:* {analysis['current_volume']:.0f}\n"
+                    f"📊 *متوسط الحجم:* {analysis['avg_volume']:.0f}\n\n"
                 )
                 
                 if analysis["ema_bullish"]:
@@ -440,6 +584,16 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     result_msg += f"✅ اختراق صاعد\n"
                 else:
                     result_msg += f"❌ لا يوجد اختراق\n"
+                
+                if analysis["range_confirmed"]:
+                    result_msg += f"✅ فلتر التذبذب (>{RANGE_FILTER_THRESHOLD*100:.1f}%)\n"
+                else:
+                    result_msg += f"❌ فلتر التذبذب (<{RANGE_FILTER_THRESHOLD*100:.1f}%)\n"
+                
+                if analysis["volume_confirmed"]:
+                    result_msg += f"✅ فلتر الحجم\n"
+                else:
+                    result_msg += f"❌ فلتر الحجم\n"
             else:
                 result_msg += f"❌ {analysis['error']}\n"
             
@@ -459,7 +613,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def signal_loop(bot: Bot, chat_id: str) -> None:
     """حلقة فحص الإشارات في الخلفية"""
-    logger.info(f"بدء حلقة الإشارات - التحديث كل {POLL_INTERVAL} ثانية")
+    logger.info(f"بدء حلقة الإشارات V2 - التحديث كل {POLL_INTERVAL} ثانية")
     
     while True:
         try:
@@ -502,15 +656,14 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                 if exit_reason:
                     exit_price = analysis["close"]
                     pnl = calculate_pnl(state.entry_price, exit_price)
+                    duration = get_trade_duration_minutes()
                     
-                    msg = format_exit_message(state.entry_price, exit_price, pnl, exit_reason)
+                    msg = format_exit_message(state.entry_price, exit_price, pnl, exit_reason, duration)
                     sent = await send_signal_message(bot, chat_id, msg, "exit")
                     
                     if sent:
-                        state.position_open = False
-                        state.entry_price = None
-                        state.entry_time = None
-                        state.entry_timeframe = None
+                        update_cooldown_after_exit(exit_reason)
+                        reset_position_state()
                         logger.info(f"تم إغلاق المركز: {exit_reason} @ {exit_price:.4f} (PnL: {pnl:.2f}%)")
             
             else:
@@ -526,6 +679,8 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                         state.entry_price = entry_price
                         state.entry_time = datetime.now(timezone.utc)
                         state.entry_timeframe = state.timeframe
+                        state.trailing_activated = False
+                        state.candles_below_ema = 0
                         logger.info(f"تم فتح مركز @ {entry_price:.4f}")
         
         except Exception as e:
@@ -551,12 +706,13 @@ async def main() -> None:
         print("❌ الرجاء تعيين TG_CHAT_ID في Replit Secrets")
         return
     
-    logger.info(f"بدء بوت إشارات {SYMBOL_DISPLAY} على الفريم {state.timeframe}")
+    logger.info(f"بدء بوت إشارات {SYMBOL_DISPLAY} V2 على الفريم {state.timeframe}")
     
     application = Application.builder().token(tg_token).build()
     
     application.add_handler(CommandHandler("start", cmd_start))
     application.add_handler(CommandHandler("status", cmd_status))
+    application.add_handler(CommandHandler("rules", cmd_rules))
     application.add_handler(CommandHandler("settf", cmd_settf))
     application.add_handler(CommandHandler("on", cmd_on))
     application.add_handler(CommandHandler("off", cmd_off))
@@ -569,10 +725,11 @@ async def main() -> None:
     await application.updater.start_polling(drop_pending_updates=True)
     
     print("=" * 50)
-    print(f"🚀 بوت إشارات {SYMBOL_DISPLAY}")
+    print(f"🚀 بوت إشارات {SYMBOL_DISPLAY} V2")
     print(f"📊 الإطار الزمني: {state.timeframe}")
-    print(f"📈 الاستراتيجية: EMA{EMA_SHORT}/EMA{EMA_LONG} + Breakout")
+    print(f"📈 الاستراتيجية: EMA{EMA_SHORT}/EMA{EMA_LONG} + Breakout + Filters")
     print(f"🎯 TP: +{TAKE_PROFIT_PCT}% | SL: -{STOP_LOSS_PCT}%")
+    print(f"🔒 Trailing: +{TRAILING_TRIGGER_PCT}% → Break-even")
     print(f"⏱️ Polling: كل {POLL_INTERVAL} ثواني")
     print("=" * 50)
     
