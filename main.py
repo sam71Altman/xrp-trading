@@ -1190,33 +1190,42 @@ async def check_downtrend_alerts(bot: Bot, chat_id: str, analysis: dict, candles
     if now - state.last_downtrend_alert_time < DOWNTREND_ALERT_COOLDOWN:
         return
 
-    reasons = []
+    reason = ""
+    target = 0.0
     current_close = analysis["close"]
     
+    # 1. Check conditions and set reason/target (Single primary reason as requested)
     if current_close < analysis["ema_short"]:
-        reasons.append("- كسر EMA20")
-    
-    if current_close < analysis["ema_long"]:
-        reasons.append("- كسر EMA50")
-    
-    # Lowest of previous 5 candles (excluding current)
-    prev_lows = [c["low"] for c in candles[-6:-1]]
-    lowest_low = min(prev_lows) if prev_lows else current_close
-    
-    if current_close < lowest_low:
-        reasons.append("- كسر قاع آخر 5 شموع")
+        reason = "كسر المتوسط المتحرك EMA20"
+        target = analysis["ema_long"]
+    elif current_close < analysis["ema_long"]:
+        reason = "كسر المتوسط المتحرك EMA50"
+        # Previous swing low logic: find lowest low in a larger lookback excluding current 5
+        swing_lookback = candles[-30:-5]
+        target = min(c["low"] for c in swing_lookback) if swing_lookback else current_close
+    else:
+        # Lowest of previous 5 candles (excluding current)
+        prev_lows = [c["low"] for c in candles[-6:-1]]
+        lowest_low = min(prev_lows) if prev_lows else current_close
+        
+        if current_close < lowest_low:
+            reason = "كسر قاع آخر 5 شموع"
+            # Next recent low before those 5 candles
+            recent_lows = [c["low"] for c in candles[-20:-6]]
+            target = min(recent_lows) if recent_lows else current_close
 
-    if reasons:
+    if reason:
         msg = (
             "⚠️ *تنبيه هبوط (مراقبة فقط)*\n\n"
             f"الزوج: {SYMBOL_DISPLAY}\n"
             f"الفريم: {state.timeframe}\n"
             f"السعر الحالي: {current_close:.4f}\n\n"
-            "السبب:\n"
-            f"{chr(10).join(reasons)}\n\n"
+            "سبب التنبيه:\n"
+            f"{reason}\n\n"
+            "الهدف المحتمل للكسر:\n"
+            f"{target:.4f}\n\n"
             f"⏱ الوقت: {datetime.now(timezone.utc).strftime('%H:%M:%S')} UTC\n\n"
-            "❌ هذا تنبيه فقط\n"
-            "❌ لا يوجد تنفيذ تداول"
+            "❌ تنبيه فقط – لا يوجد أي تنفيذ تداول"
         )
         if await send_signal_message(bot, chat_id, msg, "downtrend_alert"):
             state.last_downtrend_alert_time = now

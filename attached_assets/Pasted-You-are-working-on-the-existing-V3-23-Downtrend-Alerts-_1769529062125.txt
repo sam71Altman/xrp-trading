@@ -1,0 +1,71 @@
+You are working on the existing V3.23 Downtrend Alerts (Monitoring Only) for the XRP/USDT Telegram bot.
+IMPORTANT (DO NOT IGNORE)
+This update is MESSAGE ENHANCEMENT ONLY.
+❌ Do NOT add trading
+❌ Do NOT add BUY / SELL / EXIT
+❌ Do NOT modify any strategy logic
+❌ Do NOT modify filters, cooldowns, or Kill Switch
+❌ Do NOT change alert frequency
+❌ Do NOT affect Paper Trading
+Only improve the content of the alert message.
+GOAL
+Enhance the downtrend alert message so it includes:
+Current price
+Clear Arabic reason for the break
+Estimated downside target (price level)
+1️⃣ Current Price (Mandatory)
+In every downtrend alert, explicitly show:
+السعر الحالي = آخر سعر إغلاق (Last Close)
+This value must already exist in the analysis data.
+2️⃣ Break Reason (Arabic, Explicit)
+Replace generic wording with clear Arabic trading terminology.
+Use only one primary reason, based on the condition that triggered the alert:
+كسر المتوسط المتحرك EMA20
+كسر المتوسط المتحرك EMA50
+كسر قاع آخر 5 شموع
+Do NOT mix reasons.
+3️⃣ Downside Target (Estimated, Informational)
+Add an estimated target for the break, calculated as follows:
+If break reason is:
+EMA20 break
+→ Target = EMA50 level
+EMA50 break
+→ Target = أدنى قاع سابق (Previous Swing Low)
+Low of last 5 candles break
+→ Target = قاع الدعم التالي (Next recent low before those 5 candles)
+This target is:
+Informational only
+Not a trade signal
+Not a TP or SL
+4️⃣ Alert Message Format (Arabic)
+The final alert message must look like this:
+نسخ التعليمات البرمجية
+
+⚠️ تنبيه هبوط (مراقبة فقط)
+
+الزوج: XRP/USDT
+الفريم: الفريم الحالي
+السعر الحالي: XXXXX
+
+سبب التنبيه:
+كسر المتوسط المتحرك EMA20
+
+الهدف المحتمل للكسر:
+XXXX
+
+⏱ الوقت: UTC timestamp
+
+❌ تنبيه فقط – لا يوجد أي تنفيذ تداول
+5️⃣ Scope Limitation (Strict)
+Do NOT add new indicators
+Do NOT change alert trigger conditions
+Do NOT store or act on the target price
+Target is display-only
+6️⃣ Files to Update
+main.py
+README.md (add 1–2 lines explaining “هدف محتمل للكسر – تقديري فقط”)
+OUTPUT
+Return updated files only.
+No explanations.
+No refactoring.
+No additional logic.
