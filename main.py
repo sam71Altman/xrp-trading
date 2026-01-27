@@ -1137,7 +1137,7 @@ async def main() -> None:
     application.add_handler(CommandHandler("off", cmd_off))
     application.add_handler(CommandHandler("rules", cmd_rules))
     application.add_handler(CommandHandler("stats", cmd_stats))
-    application.add_handler(CommandHandler("الفريم", cmd_الفريم))
+    application.add_handler(CommandHandler("frame", cmd_الفريم))
     application.add_handler(CallbackQueryHandler(button_callback))
     
     # Initialize the application
