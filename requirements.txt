@@ -6,3 +6,4 @@ telegram
 python-telegram-bot
 requests
 telegram
+python-telegram-bot[job-queue]

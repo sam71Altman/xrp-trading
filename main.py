@@ -1057,8 +1057,10 @@ async def main() -> None:
         print("❌ الرجاء تعيين TG_TOKEN و TG_CHAT_ID")
         return
     
+    # Initialize application
     application = Application.builder().token(tg_token).build()
     
+    # Add handlers
     application.add_handler(CommandHandler("start", cmd_start))
     application.add_handler(CommandHandler("status", cmd_status))
     application.add_handler(CommandHandler("balance", cmd_balance))
@@ -1070,20 +1072,45 @@ async def main() -> None:
     application.add_handler(CommandHandler("settf", cmd_timeframe))
     application.add_handler(CallbackQueryHandler(button_callback))
     
-    # Use JobQueue for signal loop
+    # Initialize the application
+    await application.initialize()
+    
+    # Use JobQueue for signal loop if available, else use create_task
     if application.job_queue:
         application.job_queue.run_repeating(
             lambda context: asyncio.create_task(signal_loop(application.bot, chat_id)),
             interval=POLL_INTERVAL,
             first=1
         )
+        logger.info("Signal loop started via JobQueue")
+    else:
+        asyncio.create_task(signal_loop(application.bot, chat_id))
+        logger.info("Signal loop started via create_task (JobQueue missing)")
+    
+    # Start the application
+    await application.start()
+    
+    # Start polling
+    logger.info("Starting polling...")
+    await application.updater.start_polling(drop_pending_updates=True)
     
     print(f"🚀 بوت إشارات {SYMBOL_DISPLAY} V3.2 يعمل...")
-    await application.run_polling(drop_pending_updates=True)
-
+    
+    # Keep the loop running
+    try:
+        while True:
+            await asyncio.sleep(3600)
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Stopping...")
+    finally:
+        if application.updater.running:
+            await application.updater.stop()
+        await application.stop()
+        await application.shutdown()
 
 if __name__ == "__main__":
     try:
+        # Use simple run since we're in the main entry point
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         pass
