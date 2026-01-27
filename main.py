@@ -699,8 +699,8 @@ def get_main_keyboard():
             InlineKeyboardButton("📈 الإحصائيات", callback_data="stats")
         ],
         [
-            InlineKeyboardButton("⚙️ القواعد", callback_data="rules"),
-            InlineKeyboardButton("❓ مساعدة", callback_data="help")
+            InlineKeyboardButton("⏱ فريم 1 دقيقة", callback_data="tf_1m"),
+            InlineKeyboardButton("⏱ فريم 5 دقائق", callback_data="tf_5m")
         ],
         [
             InlineKeyboardButton("🟢 تشغيل", callback_data="on"),
@@ -737,6 +737,8 @@ def format_status_message() -> str:
     if kill_switch.active:
         status = f"🛑 متوقف (Kill Switch: {kill_switch.reason})"
     
+    tf_display = "1 دقيقة" if state.timeframe == "1m" else "5 دقائق"
+    
     pos_status = "📉 لا يوجد مركز مفتوح"
     if state.position_open:
         pnl = 0
@@ -752,7 +754,7 @@ def format_status_message() -> str:
         f"*📊 حالة البوت - V3.2*\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"🤖 الحالة: {status}\n"
-        f"⏱ الفريم: {state.timeframe}\n"
+        f"🕒 الفريم الحالي: {tf_display}\n"
         f"🪙 الزوج: {SYMBOL_DISPLAY}\n"
         f"💵 السعر الحالي: {state.last_close if state.last_close else '---'}\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
@@ -964,10 +966,52 @@ async def cmd_timeframe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     )
 
 
+async def cmd_الفريم(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not context.args:
+        await update.message.reply_text("❌ استخدم: /الفريم 1 أو /الفريم 5")
+        return
+    
+    val = context.args[0]
+    new_tf = ""
+    if val == "1":
+        new_tf = "1m"
+    elif val == "5":
+        new_tf = "5m"
+    else:
+        await update.message.reply_text("❌ الفريم غير صحيح (1 أو 5 فقط)")
+        return
+    
+    state.timeframe = new_tf
+    logger.info(f"تم تغيير الفريم إلى {new_tf} عبر الأمر العربي")
+    
+    # Update Job if exists
+    application = context.application
+    if application.job_queue:
+        # Remove old jobs
+        for job in application.job_queue.get_jobs_by_name("signal_loop"):
+            job.schedule_removal()
+        
+        # Add new job
+        chat_id = os.environ.get("TG_CHAT_ID")
+        application.job_queue.run_repeating(
+            lambda ctx: asyncio.create_task(signal_loop(application.bot, chat_id)),
+            interval=POLL_INTERVAL,
+            first=1,
+            name="signal_loop"
+        )
+    
+    await update.message.reply_text(
+        f"✅ تم تغيير الفريم إلى {val} دقيقة\n\n" + format_status_message(),
+        reply_markup=get_main_keyboard(),
+        parse_mode="Markdown"
+    )
+
+
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
     data = query.data
+    
     if data == "on":
         state.signals_enabled = True
         await query.edit_message_text("✅ تم تشغيل الإشارات\n\n" + format_status_message(), reply_markup=get_main_keyboard(), parse_mode="Markdown")
@@ -992,6 +1036,30 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.edit_message_text(f"✅ تم تصفير الرصيد إلى {START_BALANCE:.0f} USDT\n\n" + format_status_message(), reply_markup=get_main_keyboard(), parse_mode="Markdown")
     elif data == "cancel_reset":
         await query.edit_message_text("❌ تم إلغاء التصفير\n\n" + format_status_message(), reply_markup=get_main_keyboard(), parse_mode="Markdown")
+    elif data in ["tf_1m", "tf_5m"]:
+        new_tf = "1m" if data == "tf_1m" else "5m"
+        state.timeframe = new_tf
+        logger.info(f"تم تغيير الفريم إلى {new_tf} عبر الأزرار")
+        
+        # Update Job
+        application = context.application
+        if application.job_queue:
+            for job in application.job_queue.get_jobs_by_name("signal_loop"):
+                job.schedule_removal()
+            
+            chat_id = os.environ.get("TG_CHAT_ID")
+            application.job_queue.run_repeating(
+                lambda ctx: asyncio.create_task(signal_loop(application.bot, chat_id)),
+                interval=POLL_INTERVAL,
+                first=1,
+                name="signal_loop"
+            )
+            
+        await query.edit_message_text(
+            f"✅ تم تغيير الفريم إلى {'1 دقيقة' if new_tf == '1m' else '5 دقائق'}\n\n" + format_status_message(),
+            reply_markup=get_main_keyboard(),
+            parse_mode="Markdown"
+        )
 
 
 async def signal_loop(bot: Bot, chat_id: str) -> None:
@@ -1069,7 +1137,7 @@ async def main() -> None:
     application.add_handler(CommandHandler("off", cmd_off))
     application.add_handler(CommandHandler("rules", cmd_rules))
     application.add_handler(CommandHandler("stats", cmd_stats))
-    application.add_handler(CommandHandler("settf", cmd_timeframe))
+    application.add_handler(CommandHandler("الفريم", cmd_الفريم))
     application.add_handler(CallbackQueryHandler(button_callback))
     
     # Initialize the application
@@ -1080,7 +1148,8 @@ async def main() -> None:
         application.job_queue.run_repeating(
             lambda context: asyncio.create_task(signal_loop(application.bot, chat_id)),
             interval=POLL_INTERVAL,
-            first=1
+            first=1,
+            name="signal_loop"
         )
         logger.info("Signal loop started via JobQueue")
     else:
