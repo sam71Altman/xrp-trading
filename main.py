@@ -1454,33 +1454,33 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                 reset_position_state()
         else:
             # Momentum Confirmation Filter (Anti-Fake Breakdown)
-    if not analysis["ema_bullish"] and analysis["prev_ema_short"] > analysis["ema_long"]:
-        # Candle just closed below EMA20
-        logger.info("Bearish transition detected, waiting 20s for momentum confirmation...")
-        await asyncio.sleep(20)
-        
-        # Re-fetch data
-        new_candles = get_klines(SYMBOL, state.timeframe, limit=5)
-        if not new_candles:
-            return
+            if not analysis["ema_bullish"] and analysis["prev_ema_short"] > analysis["ema_long"]:
+                # Candle just closed below EMA20
+                logger.info("Bearish transition detected, waiting 20s for momentum confirmation...")
+                await asyncio.sleep(20)
+                
+                # Re-fetch data
+                new_candles = get_klines(SYMBOL, state.timeframe, limit=5)
+                if not new_candles:
+                    return
+                    
+                current_price = new_candles[-1]['close']
+                breakdown_candle = candles[-1]
+                
+                # 1. Quick Reclaim EMA20 Check
+                new_analysis = analyze_market(new_candles)
+                if new_analysis["ema_bullish"]:
+                    logger.info("Fake Breakdown: Price quickly reclaimed EMA20. Alert cancelled.")
+                    return
+
+                # 2. Lower Low Check
+                if current_price >= breakdown_candle['low']:
+                    logger.info("Fake Breakdown: Price failed to print lower low. Alert cancelled.")
+                    return
+
+                logger.info("Bearish momentum confirmed.")
             
-        current_price = new_candles[-1]['close']
-        breakdown_candle = candles[-1]
-        
-        # 1. Quick Reclaim EMA20 Check
-        new_analysis = analyze_market(new_candles)
-        if new_analysis["ema_bullish"]:
-            logger.info("Fake Breakdown: Price quickly reclaimed EMA20. Alert cancelled.")
-            return
-
-        # 2. Lower Low Check
-        if current_price >= breakdown_candle['low']:
-            logger.info("Fake Breakdown: Price failed to print lower low. Alert cancelled.")
-            return
-
-        logger.info("Bearish momentum confirmed.")
-    
-    if check_buy_signal(analysis, candles):
+            if check_buy_signal(analysis, candles):
                 entry_price = analysis["close"]
                 tp, sl = calculate_targets(entry_price, candles)
                 qty = execute_paper_buy(entry_price, state.last_signal_score, state.last_signal_reasons)
