@@ -26,7 +26,7 @@ stack = "EXPO"
 expertMode = true
 
 [workflows]
-runButton = "Project"
+runButton = "Trading Bot"
 
 [[workflows.workflow]]
 name = "Project"
