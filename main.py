@@ -1197,12 +1197,23 @@ async def check_downtrend_alerts(bot: Bot, chat_id: str, analysis: dict, candles
     # 1. Check conditions and set reason/target (Single primary reason as requested)
     if current_close < analysis["ema_short"]:
         reason = "كسر المتوسط المتحرك EMA20"
-        target = analysis["ema_long"]
+        if analysis["ema_long"] < current_close:
+            target = analysis["ema_long"]
+        else:
+            # Lowest of last 10 candles
+            last_10 = candles[-10:]
+            target = min(c["low"] for c in last_10) if last_10 else current_close
+            
     elif current_close < analysis["ema_long"]:
         reason = "كسر المتوسط المتحرك EMA50"
-        # Previous swing low logic: find lowest low in a larger lookback excluding current 5
-        swing_lookback = candles[-30:-5]
-        target = min(c["low"] for c in swing_lookback) if swing_lookback else current_close
+        # Nearest previous swing low that is < current_price
+        # Search back up to 50 candles
+        target = 0.0
+        lookback = candles[-50:-1]
+        for c in reversed(lookback):
+            if c["low"] < current_close:
+                target = c["low"]
+                break
     else:
         # Lowest of previous 5 candles (excluding current)
         prev_lows = [c["low"] for c in candles[-6:-1]]
@@ -1210,11 +1221,17 @@ async def check_downtrend_alerts(bot: Bot, chat_id: str, analysis: dict, candles
         
         if current_close < lowest_low:
             reason = "كسر قاع آخر 5 شموع"
-            # Next recent low before those 5 candles
-            recent_lows = [c["low"] for c in candles[-20:-6]]
-            target = min(recent_lows) if recent_lows else current_close
+            # Lowest LOW before those 5 candles
+            before_5 = candles[-20:-6]
+            target = min(c["low"] for c in before_5) if before_5 else 0.0
 
     if reason:
+        # Final safety check
+        if target >= current_close or target == 0.0:
+            target_text = "الهدف غير واضح حاليًا"
+        else:
+            target_text = f"{target:.4f}"
+
         msg = (
             "⚠️ *تنبيه هبوط (مراقبة فقط)*\n\n"
             f"الزوج: {SYMBOL_DISPLAY}\n"
@@ -1223,7 +1240,7 @@ async def check_downtrend_alerts(bot: Bot, chat_id: str, analysis: dict, candles
             "سبب التنبيه:\n"
             f"{reason}\n\n"
             "الهدف المحتمل للكسر:\n"
-            f"{target:.4f}\n\n"
+            f"{target_text}\n\n"
             f"⏱ الوقت: {datetime.now(timezone.utc).strftime('%H:%M:%S')} UTC\n\n"
             "❌ تنبيه فقط – لا يوجد أي تنفيذ تداول"
         )
