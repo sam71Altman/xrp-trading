@@ -1,0 +1,77 @@
+You are a Python developer working on an existing Telegram bot project
+XRP/USDT – V3.2 (Paper Trading) using python-telegram-bot v20+.
+IMPORTANT
+This update must NOT change or affect any existing trading logic.
+❌ Do NOT add trading
+❌ Do NOT add SELL / SHORT
+❌ Do NOT open or close positions
+❌ Do NOT modify BUY logic
+❌ Do NOT modify EXIT logic
+❌ Do NOT modify Kill Switch
+❌ Do NOT modify Paper Trading
+❌ Do NOT modify balance or trades
+This update is alerts only.
+GOAL
+Add downward market alerts (informational only) so the user can see when price is moving down, even if the bot did not enter a trade.
+1) Downward Alert Conditions (READ-ONLY)
+Send an alert if ANY of the following is true:
+Last candle CLOSE < EMA20
+Last candle CLOSE < EMA50
+Last candle CLOSE < lowest LOW of the previous 5 candles
+These checks are monitoring only.
+2) Alert Rules (Critical)
+Send alerts ONLY if no position is open
+Do NOT send alerts if Kill Switch is active
+Do NOT send repeated alerts
+Add a dedicated cooldown:
+نسخ التعليمات البرمجية
+
+DOWNTREND_ALERT_COOLDOWN = 5 minutes
+3) Alert Behavior
+Alerts must be informational only
+Alerts must NOT:
+change bot state
+change trading state
+trigger exits
+block future buys
+affect statistics
+4) Alert Message Format (Arabic)
+Send a single message:
+نسخ التعليمات البرمجية
+
+⚠️ تنبيه هبوط (مراقبة فقط)
+
+الزوج: XRP/USDT
+الفريم: current timeframe
+السعر الحالي: last close
+
+السبب:
+- كسر EMA20
+OR
+- كسر EMA50
+OR
+- كسر قاع آخر 5 شموع
+
+⏱ الوقت: UTC timestamp
+
+❌ هذا تنبيه فقط
+❌ لا يوجد تنفيذ تداول
+5) Diagnostic Integration
+Update the existing /تشخيص command to include:
+نسخ التعليمات البرمجية
+
+آخر تنبيه هبوط: timestamp or "لا يوجد"
+6) Scope Limitation (MANDATORY)
+Only ADD the alert logic
+Do NOT refactor existing code
+Do NOT rename variables
+Do NOT touch trading execution
+Do NOT add new features
+7) Files to Update
+main.py
+README.md (add a short section: "V3.23 – Downtrend Alerts (Monitoring Only)")
+OUTPUT REQUIREMENT
+Return updated files only.
+No explanations.
+No summaries.
+No additional suggestions.

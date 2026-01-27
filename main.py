@@ -9,6 +9,7 @@ import os
 import csv
 import asyncio
 import logging
+import time
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict
 
@@ -39,6 +40,7 @@ TREND_LOOKBACK = 30
 
 COOLDOWN_NORMAL = 60
 COOLDOWN_AFTER_SL = 180
+COOLDOWN_AFTER_LOSS_STREAK = 15
 COOLDOWN_STREAK_WIN = 30
 COOLDOWN_PAUSE_MINUTES = 10
 
@@ -58,7 +60,6 @@ DRAWDOWN_LIMIT_PERCENT = 3.0
 RECENT_WIN_RATE_MIN = 40.0
 RECENT_TRADES_WINDOW = 10
 AUTO_RESUME_MINUTES = 30
-COOLDOWN_AFTER_LOSS_STREAK = 15
 
 TRADES_FILE = "trades.csv"
 PAPER_TRADES_FILE = "paper_trades.csv"
@@ -161,6 +162,7 @@ class PaperTradingState:
 
 paper_state = PaperTradingState()
 
+DOWNTREND_ALERT_COOLDOWN = 300  # 5 minutes in seconds
 
 class BotState:
     def __init__(self):
@@ -188,6 +190,7 @@ class BotState:
         self.last_signal_reasons: List[str] = []
         self.backtest_stats: Dict = {}
         self.pending_reset: bool = False
+        self.last_downtrend_alert_time: float = 0
 
 state = BotState()
 
@@ -702,149 +705,146 @@ def get_main_keyboard():
             InlineKeyboardButton("🧪 تشخيص البوت", callback_data="diagnostic")
         ],
         [
-            InlineKeyboardButton("💰 المحفظة", callback_data="balance"),
-            InlineKeyboardButton("📊 الصفقات", callback_data="trades")
+            InlineKeyboardButton("💰 الرصيد", callback_data="balance"),
+            InlineKeyboardButton("📊 الإحصائيات", callback_data="stats")
         ],
         [
-            InlineKeyboardButton("⏱ فريم 1 دقيقة", callback_data="tf_1m"),
-            InlineKeyboardButton("⏱ فريم 5 دقائق", callback_data="tf_5m")
+            InlineKeyboardButton("📜 سجل الصفقات", callback_data="trades"),
+            InlineKeyboardButton("⚖️ القواعد", callback_data="rules")
         ],
         [
-            InlineKeyboardButton("🟢 تشغيل", callback_data="on"),
+            InlineKeyboardButton("1m", callback_data="tf_1m"),
+            InlineKeyboardButton("5m", callback_data="tf_5m"),
+            InlineKeyboardButton("🔄 تصفير", callback_data="reset")
+        ],
+        [
+            InlineKeyboardButton("✅ تشغيل", callback_data="on"),
             InlineKeyboardButton("⏸️ إيقاف", callback_data="off")
-        ],
-        [
-            InlineKeyboardButton("🔴 تصفير البيانات", callback_data="reset")
         ]
     ]
     return InlineKeyboardMarkup(keyboard)
 
 
 def get_confirm_keyboard():
-    keyboard = [[
-        InlineKeyboardButton("✅ نعم، متأكد", callback_data="confirm_reset"),
-        InlineKeyboardButton("❌ إلغاء", callback_data="cancel_reset")
-    ]]
+    keyboard = [
+        [
+            InlineKeyboardButton("✅ نعم، متأكد", callback_data="confirm_reset"),
+            InlineKeyboardButton("❌ إلغاء", callback_data="cancel_reset")
+        ]
+    ]
     return InlineKeyboardMarkup(keyboard)
 
 
 def format_welcome_message() -> str:
     return (
-        f"🚀 *مرحباً بك في بوت إشارات {SYMBOL_DISPLAY} V3.2*\n\n"
-        "هذا البوت يقوم بتحليل السوق وإرسال إشارات شراء/بيع "
-        "بناءً على استراتيجية الـ Breakout و EMA.\n\n"
-        "⚠️ *نظام Paper Trading مفعل حالياً*\n"
-        "يتم محاكاة الصفقات برصيد وهمي 1000 USDT.\n\n"
-        "استخدم الأزرار أدناه للتحكم."
+        f"🤖 *بوت إشارات {SYMBOL_DISPLAY} V3.2*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"✅ تم تفعيل نظام Paper Trading\n"
+        f"💰 الرصيد الابتدائي: {START_BALANCE} USDT\n"
+        f"🛡️ نظام Kill Switch مفعّل للحماية\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"استخدم الأزرار أدناه للتحكم"
     )
 
 
 def format_status_message() -> str:
-    status = "🟢 نشط" if state.signals_enabled else "⏸️ متوقف"
+    status = "🟢 يعمل" if state.signals_enabled else "⏸️ متوقف"
+    ks_status = "✅ آمن"
     if kill_switch.active:
-        status = f"🛑 متوقف (Kill Switch: {kill_switch.reason})"
+        ks_status = f"🛑 متوقف ({kill_switch.reason})"
     
-    tf_display = "1 دقيقة" if state.timeframe == "1m" else "5 دقائق"
+    cooldown = 0
+    if state.pause_until:
+        rem = (state.pause_until - datetime.now(timezone.utc)).total_seconds()
+        cooldown = max(0, int(rem))
     
-    pos_status = "📉 لا يوجد مركز مفتوح"
+    pos_status = "❌ لا توجد صفقة"
     if state.position_open:
-        pnl = 0
-        if state.last_close and state.entry_price:
-            pnl = ((state.last_close - state.entry_price) / state.entry_price) * 100
-        pos_status = (
-            f"📈 مركز مفتوح @ {state.entry_price:.4f}\n"
-            f"🕒 منذ: {get_trade_duration_minutes()} دقيقة\n"
-            f"📊 PnL الحالي: {pnl:+.2f}%"
-        )
+        pnl = ((state.last_close - state.entry_price) / state.entry_price) * 100 if state.last_close and state.entry_price else 0
+        pos_status = f"✅ صفقة مفتوحة ({pnl:+.2f}%)"
     
     return (
-        f"*📊 حالة البوت - V3.2*\n"
+        f"📊 *حالة البوت الحالية*\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"🤖 الحالة: {status}\n"
-        f"🕒 الفريم الحالي: {tf_display}\n"
-        f"🪙 الزوج: {SYMBOL_DISPLAY}\n"
-        f"💵 السعر الحالي: {state.last_close if state.last_close else '---'}\n"
+        f"🛡️ Kill Switch: {ks_status}\n"
+        f"⏱️ الفريم: {state.timeframe}\n"
+        f"💰 الرصيد: {paper_state.balance:.2f} USDT\n"
+        f"📍 الصفقة: {pos_status}\n"
+        f"⏳ Cooldown: {cooldown} ثانية\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"{pos_status}\n"
-        f"━━━━━━━━━━━━━━━━━━━━━"
+        f"آخر سعر: {state.last_close if state.last_close else '---'}"
     )
 
 
 def format_balance_message() -> str:
     stats = get_paper_stats()
     return (
-        f"*💰 محفظة Paper Trading*\n"
+        f"💰 *تفاصيل الرصيد - Paper Trading*\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"💵 الرصيد الحالي: {stats['balance']:.2f} USDT\n"
         f"📈 أعلى رصيد: {stats['peak_balance']:.2f} USDT\n"
-        f"📉 Drawdown: {stats['drawdown']:.2f}%\n"
+        f"📉 أقصى تراجع: {stats['drawdown']:.2f}%\n"
+        f"📊 إجمالي الربح/الخسارة: {stats['total_pnl']:+.2f} USDT\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📊 إجمالي الصفقات: {stats['total']}\n"
-        f"✅ رابحة: {stats['wins']} | ❌ خاسرة: {stats['losses']}\n"
-        f"⭐ Win Rate: {stats['win_rate']:.1f}%\n"
-        f"━━━━━━━━━━━━━━━━━━━━━"
+        f"رأس المال الابتدائي: {START_BALANCE} USDT"
     )
 
 
 def format_trades_message() -> str:
     trades = get_paper_trades(5)
     if not trades:
-        return "📭 لا توجد صفقات مسجلة بعد."
+        return "📜 *لا توجد صفقات مغلقة بعد*"
     
-    text = "*📊 آخر 5 صفقات منفذة:*\n\n"
+    msg = "📜 *آخر 5 صفقات منفذة*\n━━━━━━━━━━━━━━━━━━━━━\n"
     for t in trades:
-        emoji = "✅" if t['pnl_usdt'] >= 0 else "❌"
-        text += (
-            f"{emoji} {t['timestamp']}\n"
-            f"💰 PnL: {t['pnl_pct']:+.2f}% ({t['pnl_usdt']:+.2f} USDT)\n"
-            f"📌 {t['exit_reason']}\n"
-            f"━━━━━━━━━━━━━━━━━━━━━\n"
-        )
-    return text
+        emoji = "🟢" if t['pnl_usdt'] >= 0 else "🔴"
+        msg += f"{emoji} {t['timestamp'].split(' ')[1]} | {t['pnl_pct']:+.2f}% | {t['pnl_usdt']:+.2f} $\n"
+    
+    return msg
 
 
 def format_stats_message() -> str:
     stats = get_paper_stats()
     return (
-        f"*📈 إحصائيات الأداء الكاملة*\n"
+        f"📊 *إحصائيات الأداء الكاملة*\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"💵 صافي الربح: {stats['total_pnl']:+.2f} USDT\n"
-        f"⭐ Win Rate: {stats['win_rate']:.1f}%\n"
-        f"📊 إجمالي الصفقات: {stats['total']}\n"
-        f"🔥 أطول سلسلة خسائر: {stats['loss_streak']}\n"
-        f"━━━━━━━━━━━━━━━━━━━━━"
+        f"🔢 إجمالي الصفقات: {stats['total']}\n"
+        f"✅ الصفقات الناجحة: {stats['wins']}\n"
+        f"❌ الصفقات الخاسرة: {stats['losses']}\n"
+        f"🎯 نسبة النجاح: {stats['win_rate']:.1f}%\n"
+        f"🔥 سلسلة الخسائر: {stats['loss_streak']}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"Win Rate (آخر 10): {calculate_recent_win_rate():.1f}%"
     )
 
 
 def format_rules_message() -> str:
     return (
-        f"*⚙️ قواعد التداول V3.2*\n"
+        f"⚖️ *قواعد التداول V3.2*\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"• الرافعة المالية: 1x (Spot)\n"
-        f"• حجم الصفقة: {FIXED_TRADE_SIZE} USDT\n"
-        f"• Take Profit: +{TAKE_PROFIT_PCT}%\n"
-        f"• Stop Loss: -{STOP_LOSS_PCT}%\n"
-        f"• Trailing @ +{TRAILING_TRIGGER_PCT}%\n"
-        f"• إغلاق تحت EMA{EMA_SHORT}\n"
+        f"🔹 حجم الصفقة: {FIXED_TRADE_SIZE} USDT\n"
+        f"🔹 هدف الربح: {TAKE_PROFIT_PCT}%\n"
+        f"🔹 وقف الخسارة: {STOP_LOSS_PCT}%\n"
+        f"🔹 تفعيل Trailing: {TRAILING_TRIGGER_PCT}%\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"*🛡️ Kill Switch V3.2:*\n"
-        f"1️⃣ {LOSS_STREAK_LIMIT} خسائر متتالية\n"
-        f"2️⃣ Drawdown > {DRAWDOWN_LIMIT_PERCENT}%\n"
-        f"3️⃣ Win Rate < {RECENT_WIN_RATE_MIN}% (آخر 10)\n"
-        f"• استئناف تلقائي: {AUTO_RESUME_MINUTES} دقيقة\n"
-        f"━━━━━━━━━━━━━━━━━━━━━"
+        f"🛡️ *قواعد الحماية (Kill Switch)*\n"
+        f"• 3 خسائر متتالية = إيقاف\n"
+        f"• تراجع 3% من أعلى رصيد = إيقاف\n"
+        f"• أقل من 40% نجاح (آخر 10) = إيقاف"
     )
 
 
-def format_buy_message(entry: float, tp: float, sl: float, tf: str, score: int, qty: float) -> str:
+def format_buy_message(price: float, tp: float, sl: float, tf: str, score: int, qty: float) -> str:
     return (
-        f"🟢 *إشارة شراء - Paper Trading*\n"
+        f"🚀 *إشارة شراء جديدة - Paper Trading*\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"📊 الزوج: {SYMBOL_DISPLAY}\n"
         f"⏱ الفريم: {tf}\n"
-        f"💹 سعر الدخول: {entry:.4f}\n"
-        f"🎯 Take Profit: {tp:.4f} (+{TAKE_PROFIT_PCT}%)\n"
-        f"🛑 Stop Loss: {sl:.4f} (-{STOP_LOSS_PCT}%)\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🟢 الدخول: {price:.4f}\n"
+        f"🎯 الهدف (TP): {tp:.4f}\n"
+        f"🛑 الوقف (SL): {sl:.4f}\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"📦 الكمية: {qty:.2f} XRP\n"
         f"💵 القيمة: {FIXED_TRADE_SIZE:.0f} USDT\n"
@@ -1094,6 +1094,13 @@ async def cmd_diagnostic(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg += f"• سعر الدخول: {state.entry_price:.4f}\n"
     msg += f"• عدد الصفقات: {len(closed_trades)}\n\n"
     
+    # Downtrend Alerts
+    last_alert = "لا يوجد"
+    if state.last_downtrend_alert_time > 0:
+        last_alert = datetime.fromtimestamp(state.last_downtrend_alert_time, tz=timezone.utc).strftime("%H:%M:%S")
+    msg += "📉 *تنبيهات الهبوط*\n"
+    msg += f"• آخر تنبيه هبوط: {last_alert}\n\n"
+    
     # الخلاصة الذكية
     summary = ""
     if kill_switch.active or not state.signals_enabled or ks_block:
@@ -1110,6 +1117,7 @@ async def cmd_diagnostic(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(msg, parse_mode='Markdown')
     else:
         await update.callback_query.message.reply_text(msg, parse_mode='Markdown')
+
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
@@ -1171,6 +1179,49 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
 
 
+async def check_downtrend_alerts(bot: Bot, chat_id: str, analysis: dict, candles: List[dict]):
+    """
+    إرسال تنبيهات الهبوط (للمراقبة فقط)
+    """
+    if state.position_open or kill_switch.active:
+        return
+
+    now = datetime.now(timezone.utc).timestamp()
+    if now - state.last_downtrend_alert_time < DOWNTREND_ALERT_COOLDOWN:
+        return
+
+    reasons = []
+    current_close = analysis["close"]
+    
+    if current_close < analysis["ema_short"]:
+        reasons.append("- كسر EMA20")
+    
+    if current_close < analysis["ema_long"]:
+        reasons.append("- كسر EMA50")
+    
+    # Lowest of previous 5 candles (excluding current)
+    prev_lows = [c["low"] for c in candles[-6:-1]]
+    lowest_low = min(prev_lows) if prev_lows else current_close
+    
+    if current_close < lowest_low:
+        reasons.append("- كسر قاع آخر 5 شموع")
+
+    if reasons:
+        msg = (
+            "⚠️ *تنبيه هبوط (مراقبة فقط)*\n\n"
+            f"الزوج: {SYMBOL_DISPLAY}\n"
+            f"الفريم: {state.timeframe}\n"
+            f"السعر الحالي: {current_close:.4f}\n\n"
+            "السبب:\n"
+            f"{chr(10).join(reasons)}\n\n"
+            f"⏱ الوقت: {datetime.now(timezone.utc).strftime('%H:%M:%S')} UTC\n\n"
+            "❌ هذا تنبيه فقط\n"
+            "❌ لا يوجد تنفيذ تداول"
+        )
+        if await send_signal_message(bot, chat_id, msg, "downtrend_alert"):
+            state.last_downtrend_alert_time = now
+
+
 async def signal_loop(bot: Bot, chat_id: str) -> None:
     logger.info("حلقة الإشارات تعمل...")
     try:
@@ -1191,6 +1242,9 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
         analysis = analyze_market(candles)
         if "error" in analysis:
             return
+            
+        # Downtrend Alerts (Monitoring Only)
+        await check_downtrend_alerts(bot, chat_id, analysis, candles)
         
         ks_reason = evaluate_kill_switch()
         if ks_reason and not state.position_open:
@@ -1275,21 +1329,16 @@ async def main() -> None:
     
     print(f"🚀 بوت إشارات {SYMBOL_DISPLAY} V3.2 يعمل...")
     
-    # Keep the loop running
+    # Keep running
     try:
         while True:
-            await asyncio.sleep(3600)
+            await asyncio.sleep(1)
     except (KeyboardInterrupt, SystemExit):
-        logger.info("Stopping...")
-    finally:
-        if application.updater.running:
-            await application.updater.stop()
         await application.stop()
         await application.shutdown()
 
 if __name__ == "__main__":
     try:
-        # Use simple run since we're in the main entry point
         asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
+    except KeyboardInterrupt:
         pass
