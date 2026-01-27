@@ -780,12 +780,19 @@ def format_exit_message(entry: float, exit_price: float, pnl_pct: float, pnl_usd
     )
 
 def format_status_message() -> str:
-    status = "✅ نشط" if state.signals_enabled else "⏸️ متوقف"
+    """تنسيق رسالة الحالة"""
+    stats = get_paper_stats()
+    status = "✅ نشط" if state.signals_enabled else "⏸️ متوقف (Kill Switch)"
     position = "📈 مفتوح" if state.position_open else "📉 مغلق"
     
+    # إضافة سطر نضج البيانات (V3.1)
+    maturity_str = ""
+    if stats['total'] < 5:
+        maturity_str = f"\n🧪 وضع التعلّم: لم يكتمل نضج البيانات بعد ({stats['total']} / 5)"
+    
     msg = (
-        f"ℹ️ *حالة البوت (Paper Trading)*\n\n"
-        f"🔔 *الإشارات:* {status}\n"
+        f"ℹ️ *حالة البوت (V3.1 - Paper Trading)*\n\n"
+        f"🔔 *الإشارات:* {status}{maturity_str}\n"
         f"📊 *الفريم:* {state.timeframe}\n"
         f"📈 *المركز:* {position}\n"
         f"💵 *الرصيد:* {paper_state.balance:.2f} USDT\n"
@@ -1234,32 +1241,35 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
             state.error_alerted = False
             
             if not state.position_open and not state.backtest_warned:
-                hist_candles = get_historical_klines(SYMBOL, state.timeframe, BACKTEST_DAYS)
-                if hist_candles:
-                    bt_stats = run_backtest(hist_candles)
-                    state.backtest_stats = bt_stats
-                    
-                    if "error" not in bt_stats and bt_stats.get("win_rate", 0) < MIN_WIN_RATE:
-                        try:
-                            await bot.send_message(
-                                chat_id=chat_id,
-                                text=f"⚠️ تم إيقاف الإشارات مؤقتًا\n"
-                                     f"(Win Rate {bt_stats['win_rate']:.1f}% < {MIN_WIN_RATE}%)",
-                                parse_mode="Markdown"
-                            )
-                            state.backtest_warned = True
-                        except:
-                            pass
-                        await asyncio.sleep(POLL_INTERVAL)
-                        continue
-            
-            if state.backtest_warned:
-                await asyncio.sleep(POLL_INTERVAL)
-                continue
+                # V3.1: Kill Switch logic moved below and modified for maturity
+                pass
             
             analysis = analyze_market(candles)
             
             if "error" in analysis:
+                await asyncio.sleep(POLL_INTERVAL)
+                continue
+
+            # ============================================================================
+            # KILL SWITCH (V3.1)
+            # ============================================================================
+            stats = get_paper_stats()
+            if stats['total'] >= 5:
+                # أعد تفعيل منطق V3 الأصلي كما هو بعد نضج البيانات
+                if stats['win_rate'] < MIN_WIN_RATE:
+                    if state.signals_enabled:
+                        state.signals_enabled = False
+                        try:
+                            await bot.send_message(
+                                chat_id=chat_id,
+                                text=f"⚠️ **Kill Switch Activated**\n\nWin Rate ({stats['win_rate']:.1f}%) < {MIN_WIN_RATE}%\nتم إيقاف الإشارات التلقائية لحماية الرصيد.",
+                                parse_mode="Markdown"
+                            )
+                        except:
+                            pass
+                        continue
+            
+            if not state.signals_enabled:
                 await asyncio.sleep(POLL_INTERVAL)
                 continue
             
