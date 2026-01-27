@@ -16,14 +16,14 @@ import requests
 from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
-    # --- Configuration ---
-    MODE = "PAPER"
-    TIMEFRAME = "1m"
-    SYMBOL = "XRPUSDT"
-    SYMBOL_DISPLAY = "XRP/USDT"
-    
-    analysis_count = 0
-    last_analysis_time = None
+# --- Configuration ---
+MODE = "PAPER"
+TIMEFRAME = "1m"
+SYMBOL = "XRPUSDT"
+SYMBOL_DISPLAY = "XRP/USDT"
+
+analysis_count = 0
+last_analysis_time = None
 
 EMA_SHORT = 20
 EMA_LONG = 50
@@ -1014,7 +1014,107 @@ async def cmd_الفريم(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     )
 
 
+async def cmd_diagnostic(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    إجراء فحص تشغيلي شامل وعرض النتائج في تيليجرام
+    """
+    global analysis_count, last_analysis_time
+    
+    # 1. جلب البيانات وتحليلها
+    candles = get_klines(SYMBOL, state.timeframe)
+    if not candles:
+        msg = "❌ فشل في جلب بيانات السوق."
+        if update.message:
+            await update.message.reply_text(msg)
+        else:
+            await update.callback_query.message.reply_text(msg)
+        return
+        
+    analysis = analyze_market(candles)
+    if "error" in analysis:
+        msg = f"❌ خطأ في التحليل: {analysis['error']}"
+        if update.message:
+            await update.message.reply_text(msg)
+        else:
+            await update.callback_query.message.reply_text(msg)
+        return
+
+    score, reasons = calculate_signal_score(analysis, candles)
+    ks_block = evaluate_kill_switch()
+    
+    # 2. بناء الرسالة
+    msg = "🧪 *تشخيص البوت V3.2*\n\n"
+    
+    # حالة النظام
+    job_status = "✅ يعمل" if analysis_count > 0 else "🛑 متوقف"
+    last_time = last_analysis_time.strftime("%H:%M:%S") if last_analysis_time else "لا يوجد"
+    msg += "🔧 *حالة النظام*\n"
+    msg += f"• Job التحليل: {job_status}\n"
+    msg += f"• مرات التنفيذ: {analysis_count}\n"
+    msg += f"• آخر تنفيذ: {last_time}\n\n"
+    
+    # حالة التداول
+    signals = "✅ مفعّلة" if state.signals_enabled else "🛑 موقوفة"
+    ks_status = "⚠️ مفعل" if kill_switch.active else "✅ غير مفعل"
+    cooldown = 0
+    if state.pause_until:
+        rem = (state.pause_until - datetime.now(timezone.utc)).total_seconds()
+        cooldown = max(0, int(rem))
+        
+    msg += "⚙️ *حالة التداول*\n"
+    msg += f"• الإشارات: {signals}\n"
+    msg += f"• Paper Trading: ✅ مفعّل\n"
+    msg += f"• Kill Switch: {ks_status}\n"
+    if kill_switch.active:
+        msg += f"  - السبب: {kill_switch.reason}\n"
+    msg += f"• Cooldown: {cooldown} ثانية\n\n"
+    
+    # بيانات السوق
+    last_candle_time = datetime.fromtimestamp(candles[-1]['open_time']/1000, tz=timezone.utc).strftime("%H:%M:%S")
+    msg += "📊 *بيانات السوق (XRP/USDT)*\n"
+    msg += f"• الفريم: {state.timeframe}\n"
+    msg += f"• الشموع: {len(candles)}\n"
+    msg += f"• آخر إغلاق: {analysis['close']:.4f}\n"
+    msg += f"• وقت الشمعة: {last_candle_time}\n\n"
+    
+    # تحليل الدخول
+    msg += "📈 *تحليل الدخول (آخر دورة)*\n"
+    msg += f"{'✔️' if analysis['ema_bullish'] else '❌'} EMA20 > EMA50\n"
+    msg += f"{'✔️' if analysis['breakout'] else '❌'} كسر قمة آخر 5 شموع\n"
+    msg += f"{'✔️' if analysis['volume_confirmed'] else '❌'} فلتر الحجم (Volume)\n"
+    msg += f"{'✔️' if analysis['range_confirmed'] else '❌'} فلتر التذبذب (Range)\n"
+    msg += f"• Score الحالي: {score} / 10\n\n"
+    
+    # Paper Trading
+    closed_trades = get_closed_trades()
+    msg += "🧾 *Paper Trading*\n"
+    msg += f"• الرصيد: {paper_state.balance:.2f} USDT\n"
+    msg += f"• صفقة مفتوحة: {'نعم' if paper_state.position_qty > 0 else 'لا'}\n"
+    if paper_state.position_qty > 0:
+        msg += f"• سعر الدخول: {state.entry_price:.4f}\n"
+    msg += f"• عدد الصفقات: {len(closed_trades)}\n\n"
+    
+    # الخلاصة الذكية
+    summary = ""
+    if kill_switch.active or not state.signals_enabled or ks_block:
+        reason = kill_switch.reason if kill_switch.active else (ks_block if ks_block else "إيقاف يدوي")
+        summary = f"🛑 التداول موقوف حاليًا بسبب: {reason}"
+    elif score >= MIN_SIGNAL_SCORE:
+        summary = "✅ البوت جاهز وسيدخل عند تحقق الشروط"
+    else:
+        summary = "⚠️ البوت يعمل لكن شروط الدخول غير مكتملة"
+    
+    msg += f"🧠 *الخلاصة الذكية*\n{summary}"
+    
+    if update.message:
+        await update.message.reply_text(msg, parse_mode='Markdown')
+    else:
+        await update.callback_query.message.reply_text(msg, parse_mode='Markdown')
+
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    التعامل مع ضغطات الأزرار
+    """
     query = update.callback_query
     await query.answer()
     data = query.data
@@ -1035,6 +1135,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.edit_message_text(format_stats_message(), reply_markup=get_main_keyboard(), parse_mode="Markdown")
     elif data == "rules":
         await query.edit_message_text(format_rules_message(), reply_markup=get_main_keyboard(), parse_mode="Markdown")
+    elif data == "diagnostic":
+        await cmd_diagnostic(update, context)
     elif data == "reset":
         await query.edit_message_text("⚠️ *هل تريد تصفير الرصيد والسجل؟*\n\n", reply_markup=get_confirm_keyboard(), parse_mode="Markdown")
     elif data == "confirm_reset":
@@ -1144,7 +1246,7 @@ async def main() -> None:
     application.add_handler(CommandHandler("off", cmd_off))
     application.add_handler(CommandHandler("rules", cmd_rules))
     application.add_handler(CommandHandler("stats", cmd_stats))
-    application.add_handler(CommandHandler("تشخيص", cmd_diagnostic))
+    application.add_handler(CommandHandler("diagnostic", cmd_diagnostic))
     application.add_handler(CommandHandler("frame", cmd_الفريم))
     application.add_handler(CallbackQueryHandler(button_callback))
     
