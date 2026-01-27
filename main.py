@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-XRP/USDT Telegram Signals Bot V3.2 + Paper Trading
+XRP/USDT Telegram Signals Bot V3.3 + Paper Trading
 بوت إشارات تداول يرسل إشارات دخول/خروج لزوج XRP/USDT
-V3.2: Kill Switch متعدد الطبقات لحماية رأس المال
+V3.3: TP Trigger & Risk-Free Management
 """
 
 import os
@@ -191,6 +191,8 @@ class BotState:
         self.backtest_stats: Dict = {}
         self.pending_reset: bool = False
         self.last_downtrend_alert_time: float = 0
+        self.tp_triggered: bool = False
+        self.risk_free_sl: Optional[float] = None
 
 state = BotState()
 
@@ -604,18 +606,31 @@ def check_exit_signal(analysis: dict) -> Optional[str]:
     entry_price = state.entry_price
     pnl_pct = ((current_price - entry_price) / entry_price) * 100
     
-    if pnl_pct >= TAKE_PROFIT_PCT:
-        return "tp"
+    # v3.3: TP Trigger Logic
+    if not state.tp_triggered and pnl_pct >= TAKE_PROFIT_PCT:
+        state.tp_triggered = True
+        state.risk_free_sl = entry_price * 1.001  # +0.1% Small profit
+        return "tp_trigger"
+
+    # v3.3: Exit Conditions after TP Triggered or Normal SL
+    if state.tp_triggered:
+        if current_price <= state.risk_free_sl:
+            return "risk_free_sl_hit"
+        if current_price < analysis["ema_short"]:
+            return "ema_exit_post_tp"
+    else:
+        if pnl_pct <= -STOP_LOSS_PCT:
+            return "sl"
     
-    if pnl_pct <= -STOP_LOSS_PCT:
-        return "sl"
+    # Trailing SL (Existing logic preserved but secondary to TP trigger)
+    if not state.tp_triggered:
+        if pnl_pct >= TRAILING_TRIGGER_PCT:
+            state.trailing_activated = True
+        
+        if state.trailing_activated and current_price < analysis["ema_short"]:
+            return "trailing_sl"
     
-    if pnl_pct >= TRAILING_TRIGGER_PCT:
-        state.trailing_activated = True
-    
-    if state.trailing_activated and current_price < analysis["ema_short"]:
-        return "trailing_sl"
-    
+    # EMA Confirmation (Original logic)
     if current_price < analysis["ema_short"]:
         state.candles_below_ema += 1
     else:
@@ -680,6 +695,8 @@ def reset_position_state():
     state.entry_timeframe = None
     state.trailing_activated = False
     state.candles_below_ema = 0
+    state.tp_triggered = False
+    state.risk_free_sl = None
 
 
 def get_trade_duration_minutes() -> int:
