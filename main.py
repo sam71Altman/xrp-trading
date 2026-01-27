@@ -1495,9 +1495,6 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
     except Exception as e:
         logger.error(f"Error in signal loop: {e}")
 
-    except Exception as e:
-        logger.error(f"Error in signal loop: {e}")
-
 
 async def main() -> None:
     tg_token = os.environ.get("TG_TOKEN")
