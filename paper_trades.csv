@@ -71,3 +71,5 @@ timestamp,action,entry_price,exit_price,pnl_percent,pnl_usdt,balance_after,score
 2026-01-28 04:45:56,EXIT,1.8997,1.9025,0.15,0.00,999.59,10,,aggressive_flip,13,False,,1000.56
 2026-01-28 04:46:41,EXIT,1.8997,1.9015,0.09,0.00,999.59,10,,risk_free_sl_hit,14,False,,1000.56
 2026-01-28 04:49:51,BUY,1.9024,,,,999.59,1,Aggressive Entry,,0,False,,1000.56
+2026-01-28 05:16:04,BUY,1.9015,,,,999.59,1,Aggressive Entry,,0,False,,1000.56
+2026-01-28 05:18:34,BUY,1.9024,,,,999.59,1,Aggressive Entry,,0,False,,1000.56

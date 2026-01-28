@@ -681,26 +681,37 @@ def calculate_rsi(prices: List[float], period: int = 14) -> float:
 
 def check_extended_price(price: float, analysis: dict, candles: List[dict]) -> bool:
     # A) EMA Distance
-    ema20 = analysis.get("ema_short", 0)
+    ema20 = float(analysis.get("ema_short", 0))
     if ema20 > 0 and abs(price - ema20) / ema20 >= 0.0020:
         return True
         
     # B) Candle Body Expansion
     if len(candles) >= 6:
-        bodies = [abs(float(c.get("open", 0)) - float(c.get("close", 0))) for c in candles[-6:-1]]
-        avg_body_5 = sum(bodies) / 5
-        current_candle = candles[-1]
-        current_body = abs(float(current_candle.get("open", 0)) - float(current_candle.get("close", 0)))
-        if current_body > avg_body_5 * 1.5:
-            return True
+        try:
+            bodies = [abs(float(c.get("open", 0)) - float(c.get("close", 0))) for c in candles[-6:-1]]
+            avg_body_5 = sum(bodies) / 5
+            current_candle = candles[-1]
+            current_body = abs(float(current_candle.get("open", 0)) - float(current_candle.get("close", 0)))
+            if current_body > avg_body_5 * 1.5:
+                return True
+        except (TypeError, ValueError):
+            pass
             
     # C) Wick Rejection
-    last_candle = candles[-1]
-    candle_range = last_candle["high"] - last_candle["low"]
-    if candle_range > 0:
-        upper_wick = last_candle["high"] - max(last_candle["open"], last_candle["close"])
-        if (upper_wick / candle_range) > 0.65:
-            return True
+    try:
+        last_candle = candles[-1]
+        high = float(last_candle.get("high", 0))
+        low = float(last_candle.get("low", 0))
+        open_p = float(last_candle.get("open", 0))
+        close_p = float(last_candle.get("close", 0))
+        
+        candle_range = high - low
+        if candle_range > 0:
+            upper_wick = high - max(open_p, close_p)
+            if (upper_wick / candle_range) > 0.65:
+                return True
+    except (TypeError, ValueError):
+        pass
             
     return False
 
