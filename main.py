@@ -107,7 +107,7 @@ class KillSwitchState:
     def activate(self, reason: str):
         self.active = True
         self.reason = reason
-        self.triggered_at = datetime.now(timezone.utc)
+        self.triggered_at = get_now()
         self.resume_at = self.triggered_at + timedelta(minutes=AUTO_RESUME_MINUTES)
         self.alert_sent = False
         logger.info(f"Kill Switch مفعّل: {reason}")
@@ -122,13 +122,13 @@ class KillSwitchState:
     
     def check_auto_resume(self) -> bool:
         if self.active and self.resume_at:
-            if datetime.now(timezone.utc) >= self.resume_at:
+            if get_now() >= self.resume_at:
                 return True
         return False
     
     def get_remaining_minutes(self) -> int:
         if self.resume_at:
-            remaining = self.resume_at - datetime.now(timezone.utc)
+            remaining = self.resume_at - get_now()
             return max(0, int(remaining.total_seconds() / 60))
         return 0
 
@@ -307,7 +307,7 @@ class ExitIntelligenceLayer:
     def start_monitoring(self, entry_price: float, ema_slope: float):
         self.monitoring_active = True
         self.entry_price = entry_price
-        self.entry_time = datetime.now(timezone.utc)
+        self.entry_time = get_now()
         self.entry_ema_slope = ema_slope
         self.max_price_seen = entry_price
         self.min_price_since_high = entry_price
@@ -325,7 +325,7 @@ class ExitIntelligenceLayer:
         if not self.recent_prices:
             return False
             
-        now = datetime.now(timezone.utc)
+        now = get_now()
         # last 10 seconds low
         ten_sec_ago = now - timedelta(seconds=10)
         recent_ticks = [p for t, p in self.recent_prices if t >= ten_sec_ago]
@@ -344,7 +344,7 @@ class ExitIntelligenceLayer:
         if not self.monitoring_active or not self.entry_time:
             return "NO_ACTION"
 
-        now = datetime.now(timezone.utc)
+        now = get_now()
         duration = (now - self.entry_time).total_seconds()
         self.recent_prices.append((now, current_price))
         
@@ -750,7 +750,7 @@ def calculate_ema(prices: List[float], period: int) -> List[float]:
 def analyze_market(candles: List[dict]) -> dict:
     global analysis_count, last_analysis_time
     analysis_count += 1
-    last_analysis_time = datetime.now(timezone.utc)
+    last_analysis_time = get_now()
     
     if not candles or len(candles) < EMA_LONG + BREAKOUT_CANDLES:
         return {"error": "بيانات غير كافية"}
@@ -1101,7 +1101,7 @@ def execute_paper_exit(entry_price: float, exit_price: float, reason: str,
         state.consecutive_losses = 0
     
     if state.consecutive_losses >= 2:
-        state.pause_until = datetime.now(timezone.utc) + timedelta(minutes=COOLDOWN_PAUSE_MINUTES)
+        state.pause_until = get_now() + timedelta(minutes=COOLDOWN_PAUSE_MINUTES)
     
     log_paper_trade(
         "EXIT", entry_price, exit_price, pnl_pct, pnl_usdt,
@@ -1132,7 +1132,7 @@ def reset_position_state():
 
 def get_trade_duration_minutes() -> int:
     if state.entry_time:
-        delta = datetime.now(timezone.utc) - state.entry_time
+        delta = get_now() - state.entry_time
         return int(delta.total_seconds() / 60)
     return 0
 
@@ -1533,7 +1533,7 @@ async def cmd_diagnostic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ks_status = "⚠️ مفعل" if kill_switch.active else "✅ غير مفعل"
     cooldown = 0
     if state.pause_until:
-        rem = (state.pause_until - datetime.now(timezone.utc)).total_seconds()
+        rem = (state.pause_until - get_now()).total_seconds()
         cooldown = max(0, int(rem))
         
     msg += "⚙️ *حالة التداول*\n"
@@ -1661,7 +1661,7 @@ async def check_downtrend_alerts(bot: Bot, chat_id: str, analysis: dict, candles
     if state.position_open or kill_switch.active:
         return
 
-    now = datetime.now(timezone.utc).timestamp()
+    now = get_now().timestamp()
     if now - state.last_downtrend_alert_time < DOWNTREND_ALERT_COOLDOWN:
         return
 
@@ -1750,7 +1750,7 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
         
         # Disable Cooldown for Aggressive Mode
         if state.mode != "AGGRESSIVE":
-            if state.pause_until and datetime.now(timezone.utc) < state.pause_until:
+            if state.pause_until and get_now() < state.pause_until:
                 return
         
         # Use Real-time Price for Aggressive Mode
@@ -1843,7 +1843,7 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                 # Update State for New Long
                 state.position_open = True
                 state.entry_price = entry_price
-                state.entry_time = datetime.now(timezone.utc)
+                state.entry_time = get_now()
                 state.current_sl = sl
                 state.tp_triggered = False
                 state.risk_free_sl = None
