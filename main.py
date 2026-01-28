@@ -248,6 +248,104 @@ def log_loss_event(loss_type: str, pnl_pct: float, entry_price: float, exit_pric
             f"{exit_price:.4f}"
         ])
 
+# ثوابت زمنية (v3.7)
+MIN_MONITOR_DELAY = 5      # ثواني: لا تبدأ المراقبة قبل
+MAX_MONITOR_WINDOW = 180   # ثواني: توقف بعد 3 دقائق
+SHORT_TIME_WINDOW = 30     # ثواني: نافذة "الرفض المبكر"
+
+# ثوابت السعر
+REJECTION_ZONE = 0.03      # %: منطقة العودة للدخول
+SLOPE_DEGRADATION = 0.3    # %: انخفاض منحدر EMA20 المسموح
+
+# منطق الاستجابة
+ACTION_1_FLAG = "MONITOR"      # راقب فقط
+ACTION_2_FLAGS = "TIGHTEN_SL"  # شد وقف الخسارة
+ACTION_3_FLAGS = "EXIT_EARLY"  # اخرج مبكراً
+
+class ExitIntelligenceLayer:
+    def __init__(self):
+        self.monitoring_active = False
+        self.entry_price = 0.0
+        self.entry_time = None
+        self.entry_ema_slope = 0.0
+        self.max_price_seen = 0.0
+        self.last_high_time = None
+        self.stats = {
+            "total_monitored_trades": 0,
+            "early_exits_triggered": 0,
+            "losses_prevented": 0,
+            "false_exits": 0
+        }
+
+    def start_monitoring(self, entry_price: float, ema_slope: float):
+        self.monitoring_active = True
+        self.entry_price = entry_price
+        self.entry_time = datetime.now(timezone.utc)
+        self.entry_ema_slope = ema_slope
+        self.max_price_seen = entry_price
+        self.last_high_time = self.entry_time
+        self.stats["total_monitored_trades"] += 1
+        logger.info(f"[INTEL] Started monitoring at {entry_price}")
+
+    def stop_monitoring(self):
+        self.monitoring_active = False
+
+    def monitor(self, current_price: float, current_ema_slope: float) -> str:
+        if not self.monitoring_active or not self.entry_time:
+            return "NO_ACTION"
+
+        now = datetime.now(timezone.utc)
+        duration = (now - self.entry_time).total_seconds()
+
+        if duration < MIN_MONITOR_DELAY:
+            return "NO_ACTION"
+        if duration > MAX_MONITOR_WINDOW:
+            self.stop_monitoring()
+            return "NO_ACTION"
+
+        # Update high price tracker
+        if current_price > self.max_price_seen:
+            self.max_price_seen = current_price
+            self.last_high_time = now
+
+        flags_count = 0
+        
+        # A) فشل استمرار الزخم
+        time_since_high = (now - self.last_high_time).total_seconds()
+        dist_from_entry = (current_price - self.entry_price) / self.entry_price
+        if time_since_high >= 15 and dist_from_entry < 0.001:
+            flags_count += 1
+            
+        # B) تدهور منحدر EMA20
+        if duration >= 10 and self.entry_ema_slope != 0:
+            slope_ratio = current_ema_slope / self.entry_ema_slope
+            if slope_ratio < SLOPE_DEGRADATION:
+                flags_count += 1
+                
+        # C) العودة السريعة لمنطقة الدخول
+        if duration <= SHORT_TIME_WINDOW:
+            price_diff_pct = abs(current_price - self.entry_price) / self.entry_price * 100
+            if price_diff_pct <= REJECTION_ZONE and (self.max_price_seen / self.entry_price - 1) > 0.0005:
+                flags_count += 1
+
+        # Response logic
+        if flags_count == 1:
+            return ACTION_1_FLAG
+        elif flags_count == 2:
+            return ACTION_2_FLAGS if duration < 60 else ACTION_1_FLAG
+        elif flags_count >= 3:
+            return ACTION_3_FLAGS if duration < 45 else ACTION_2_FLAGS
+            
+        return "NO_ACTION"
+
+exit_intel = ExitIntelligenceLayer()
+
+def calculate_slope(data: List[float], period: int = 5) -> float:
+    if len(data) < period:
+        return 0.0
+    # Simple linear slope: (y2 - y1) / x_diff
+    return (data[-1] - data[-period]) / period
+
 class BotState:
     def __init__(self):
         self.mode: str = "AGGRESSIVE"  # Force Aggressive Mode
@@ -870,6 +968,11 @@ def execute_paper_buy(price: float, score: int, reasons: List[str]) -> float:
     paper_state.position_qty = qty
     paper_state.entry_reason = ", ".join(reasons)
     
+    # Start Exit Intelligence Monitoring (v3.7)
+    ema20_vals = calculate_ema([c['close'] for c in get_klines(SYMBOL, state.timeframe)], EMA_SHORT)
+    current_slope = calculate_slope(ema20_vals) if ema20_vals else 0.0
+    exit_intel.start_monitoring(price, current_slope)
+    
     log_paper_trade(
         "BUY", price, None, None, None,
         paper_state.balance, score, paper_state.entry_reason,
@@ -929,6 +1032,7 @@ def execute_paper_exit(entry_price: float, exit_price: float, reason: str,
     # Reset position after logging
     paper_state.position_qty = 0.0
     paper_state.entry_reason = ""
+    exit_intel.stop_monitoring() # Stop Intel (v3.7)
     
     return pnl_pct, pnl_usdt, paper_state.balance
 
@@ -962,7 +1066,7 @@ def update_cooldown_after_exit(reason: str):
         state.current_cooldown = COOLDOWN_NORMAL
 
 
-VERSION = "3.6.2 – Trailing SL Quantity & PnL Fix"
+VERSION = "3.7 – Exit Intelligence (Aggressive)"
 
 def get_main_keyboard():
     keyboard = [
@@ -1579,7 +1683,32 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
         candles = get_klines(SYMBOL, state.timeframe)
         if candles is None:
             return
-        
+            
+        # --- Exit Intelligence Layer (v3.7) ---
+        if state.position_open:
+            start_intel = time.time()
+            # We need EMA20 slope
+            ema20_vals = calculate_ema([c['close'] for c in candles], EMA_SHORT)
+            current_slope = calculate_slope(ema20_vals) if ema20_vals else 0.0
+            intel_action = exit_intel.monitor(current_price, current_slope)
+            
+            if (time.time() - start_intel) > 0.1:
+                logger.warning(f"[INTEL] Execution exceeded 100ms: {(time.time() - start_intel)*1000:.2f}ms")
+            
+            if intel_action == ACTION_3_FLAGS:
+                exit_reason = "intel_early_exit"
+                pnl_pct, pnl_usdt, balance = execute_paper_exit(state.entry_price, current_price, exit_reason, 10, 0)
+                reset_position_state()
+                update_cooldown_after_exit(exit_reason)
+                msg = f"🛡️ **Intel Early Exit**\nPrice: {current_price}\nPnL: {pnl_usdt:.2f} ({pnl_pct:.2f}%)"
+                await bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
+                return
+            elif intel_action == ACTION_2_FLAGS:
+                tight_sl = state.entry_price * 1.0005
+                if not state.current_sl or tight_sl > state.current_sl:
+                    state.current_sl = tight_sl
+                    logger.info(f"[INTEL] Tightened SL to {tight_sl}")
+
         analysis = analyze_market(candles)
         if "error" in analysis:
             return
