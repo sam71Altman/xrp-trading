@@ -1,0 +1,185 @@
+Entry Gate Fix – تفعيل Light Post-Exit Memory (LPEM) بشكل صحيح
+⚠️ تنبيه إلزامي قبل التنفيذ
+❌ ليس تحديث استراتيجية
+❌ ليس تعديل شروط دخول
+❌ ليس تعديل خروج أو Stop Loss
+❌ ليس إضافة مؤشرات
+✅ هذا إصلاح ربط منطقي فقط (Wiring Fix)
+🎯 المشكلة المحددة بدقة
+منطق Light Post-Exit Memory (LPEM) موجود، لكنه غير مربوط بمسار قرار الدخول النهائي.
+النتيجة الحالية:
+خروج بربح صغير
+دخول فوري من نفس المنطقة
+تكرار الحلقة
+السبب:
+LPEM لا يتم استدعاؤه قبل تنفيذ open_trade().
+🎯 الهدف الوحيد
+🔒 منع إعادة الدخول من نفس المنطقة السعرية بعد خروج بربح صغير
+وذلك عبر فحص LPEM داخل بوابة الدخول النهائية فقط.
+بدون:
+تغيير شروط الدخول
+تغيير شروط الخروج
+تغيير EMA / SL / TP
+تغيير السرعة أو العدوانية
+إضافة أي انتظار زمني
+🚫 محظورات صارمة
+ممنوع تعديل أي من التالي:
+entry_conditions
+scoring
+EMA logic
+trailing stop
+risk management
+paper trading
+Telegram formatting
+✅ المطلوب تنفيذه (إلزامي)
+1️⃣ ربط LPEM في بوابة الدخول النهائية فقط
+ابحث عن الدالة التي تفتح الصفقة فعليًا (مثل):
+نسخ التعليمات البرمجية
+Python
+open_trade()
+execute_trade()
+enter_position()
+ولا تضف أي منطق في signal generation أو التحليل.
+✅ الكود الصحيح:
+نسخ التعليمات البرمجية
+Python
+def try_open_trade(signal):
+    """
+    البوابة النهائية لفتح الصفقة
+    """
+
+    from post_exit_memory import PostExitMemory
+    mem = PostExitMemory.get_instance()
+
+    # 🔒 فحص LPEM قبل فتح الصفقة
+    if mem.is_active():
+        if mem.blocks_entry(
+            direction=signal.type,   # "BUY" أو "SELL"
+            current_price=signal.price
+        ):
+            log(
+                f"[LPEM] ENTRY BLOCKED | "
+                f"dir={signal.type}, "
+                f"price={signal.price:.6f}, "
+                f"exit={mem.exit_price:.6f}, "
+                f"band={mem.current_band:.2f}%"
+            )
+            return None  # ⛔ منع الدخول فقط
+
+    # ⬇️ السلوك القديم بدون أي تغيير
+    trade = open_trade(signal)
+    return trade
+2️⃣ تعريف LPEM (نسخة مصححة وآمنة)
+نسخ التعليمات البرمجية
+Python
+class PostExitMemory:
+    """
+    Light Post-Exit Memory
+    يمنع إعادة الدخول من نفس المنطقة بعد ربح صغير
+    """
+
+    _instance = None
+
+    @classmethod
+    def get_instance(cls):
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+
+    def __init__(self):
+        self.active = False
+        self.direction = None      # "BUY" أو "SELL"
+        self.exit_price = 0.0
+        self.current_band = 0.05   # 0.05% فقط (دقيق للفريمات الصغيرة)
+
+    def record_exit(self, direction: str, exit_price: float, pnl_percent: float):
+        """
+        تفعيل الذاكرة فقط عند ربح صغير حقيقي
+        """
+        if 0.01 <= pnl_percent <= 0.06:
+            self.active = True
+            self.direction = direction
+            self.exit_price = exit_price
+
+            log(
+                f"[LPEM] Exit recorded | "
+                f"dir={direction}, "
+                f"price={exit_price:.6f}, "
+                f"pnl={pnl_percent:.2f}%"
+            )
+        else:
+            self.deactivate()
+
+    def is_active(self) -> bool:
+        return self.active
+
+    def blocks_entry(self, direction: str, current_price: float) -> bool:
+        if not self.active:
+            return False
+
+        # يمنع فقط نفس الاتجاه
+        if direction != self.direction:
+            return False
+
+        diff_pct = abs(current_price - self.exit_price) / self.exit_price * 100
+
+        return diff_pct <= self.current_band
+
+    def deactivate(self):
+        if self.active:
+            log("[LPEM] Deactivated")
+        self.active = False
+        self.direction = None
+        self.exit_price = 0.0
+3️⃣ ربط LPEM مع الخروج (بدون المساس بالمنطق)
+أضف فقط هذه الأسطر داخل دالة الخروج الحالية:
+نسخ التعليمات البرمجية
+Python
+def exit_trade(trade, exit_price, reason):
+    # ... الكود الحالي ...
+
+    # حساب PnL بشكل صحيح
+    if trade.type == "BUY":
+        pnl_percent = ((exit_price - trade.entry_price) / trade.entry_price) * 100
+    else:  # SELL
+        pnl_percent = ((trade.entry_price - exit_price) / trade.entry_price) * 100
+
+    # تسجيل الخروج في LPEM فقط عند ربح
+    if pnl_percent > 0:
+        mem = PostExitMemory.get_instance()
+        mem.record_exit(
+            direction=trade.type,
+            exit_price=exit_price,
+            pnl_percent=pnl_percent
+        )
+
+    # ... باقي الكود الحالي ...
+🧪 السلوك المتوقع بعد الإصلاح
+❌ النمط الخاطئ (يختفي):
+نسخ التعليمات البرمجية
+
+Exit +0.02%
+Enter immediately ❌
+Exit +0.03%
+Enter again ❌
+✅ النمط الصحيح:
+نسخ التعليمات البرمجية
+
+Exit +0.02%
+[LPEM] ENTRY BLOCKED
+Price moves away
+Enter from better zone ✅
+✅ قواعد سلوكية إلزامية
+✅ LPEM يمنع الدخول فقط
+❌ لا يمنع الخروج
+❌ لا يمنع Stop Loss
+❌ لا يغير المؤشرات
+❌ لا يغير إدارة المخاطر
+❌ لا يضيف أي تأخير
+⚡ Zero Latency
+🏁 النتيجة النهائية
+اتجاه واحد = صفقات أقل
+أرباح أوضح
+لا تجزئة للحركة
+لا تأثير على العدوانية
+لا تأثير على الأداء

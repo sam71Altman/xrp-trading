@@ -1231,12 +1231,13 @@ def execute_paper_exit(entry_price: float, exit_price: float, reason: str,
     paper_state.balance += pnl_usdt
     paper_state.update_peak()
     
-    # LPEM Activation Logic (v3.7.2)
-    if pnl_pct > 0 and pnl_pct < SMALL_PROFIT_THRESHOLD and reason in ["EMA_EXIT", "TRAILING_SL", "RISK_FREE", "TREND_REVERSAL_PREVENTED"]:
+    # LPEM Activation Logic (v3.7.2 - Fixed Wiring)
+    # Activate LPEM only for small profits (0.01% to 0.06%)
+    if 0.01 <= pnl_pct <= 0.06:
         activate_lpem("LONG", exit_price, pnl_pct, reason)
     else:
-        # If exit reason is not small profit or is loss, reset consecutive count
-        if pnl_pct <= 0 or reason == "STOP_LOSS":
+        # If exit is outside small profit range, release LPEM
+        if pnl_pct <= 0 or pnl_pct > 0.06:
             release_lpem("major_exit_or_loss")
     
     if pnl_usdt < 0:
