@@ -1,0 +1,86 @@
+You are fixing a confirmed critical accounting bug.
+The trading logic is correct.
+Signals, entries, exits, and trailing SL are working correctly.
+The bug is 100% related to quantity & PnL calculation during trade close, especially for Trailing SL exits.
+🚨 CONFIRMED SYMPTOM
+Trades close with:
+Positive price movement
+Correct exit reason (Trailing SL)
+BUT:
+pnl_usdt = 0
+pnl_percent = 0
+Balance sometimes decreases
+This is mathematically impossible unless quantity == 0 or not used.
+❌ STRICT RULE
+DO NOT change:
+Strategy
+Trailing SL logic
+Entry/exit conditions
+Aggressive mode
+Speed
+Risk rules
+This is NOT a strategy update.
+✅ REQUIRED FIXES (MANDATORY)
+1️⃣ Freeze Quantity at Entry (CRITICAL)
+At trade entry:
+نسخ التعليمات البرمجية
+Python
+trade.quantity = calculated_quantity
+trade.position_size = used_usdt
+These values MUST be immutable and stored inside the trade object.
+2️⃣ Use Frozen Quantity at Close (NO RE-CALCULATION)
+At trade close (ANY reason, including Trailing SL):
+نسخ التعليمات البرمجية
+Python
+pnl = (exit_price - trade.entry_price) * trade.quantity
+❌ Do NOT recalculate quantity
+❌ Do NOT use current price sizing
+❌ Do NOT use percentage-only logic
+3️⃣ Trailing SL MUST Use Same Close Path
+Trailing SL must call the SAME close function as TP/SL:
+نسخ التعليمات البرمجية
+Python
+close_trade(trade, reason="TRAILING_SL")
+And that function MUST:
+Use trade.quantity
+Use trade.entry_price
+4️⃣ Balance Update MUST Be Incremental
+نسخ التعليمات البرمجية
+Python
+balance = balance + pnl
+❌ Never overwrite balance
+❌ Never reset balance on close
+5️⃣ Logging Validation (Hard Check)
+Before saving trade:
+نسخ التعليمات البرمجية
+Python
+assert trade.quantity > 0
+assert abs(pnl) > 0 or trade.exit_price == trade.entry_price
+If assertion fails:
+Log error
+Do NOT save trade
+Do NOT update balance
+6️⃣ Display Logic (Cosmetic Only)
+Round ONLY for display:
+نسخ التعليمات البرمجية
+Python
+display_pnl = round(pnl, 2)
+display_percent = round((pnl / trade.position_size) * 100, 2)
+Internal values remain full precision.
+🧪 MANDATORY TEST
+Simulate Trailing SL trade:
+Entry: 1.9289
+Exit: 1.9305
+Position: 100 USDT
+Expected:
+pnl ≈ +0.08 USDT
+balance increases
+trade history reflects profit
+NO zero-profit display
+🏷️ VERSION
+نسخ التعليمات البرمجية
+Python
+VERSION = "3.6.2 – Trailing SL Quantity & PnL Fix"
+🚫 FAILURE CONDITION
+If after this fix:
+Any profitable trade shows +0.00 USDT → STOP and report failure.

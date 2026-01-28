@@ -138,3 +138,12 @@ timestamp,action,entry_price,exit_price,pnl_percent,pnl_usdt,balance_after,score
 2026-01-28 06:43:37,BUY,1.9158,,,,999.75,1,Aggressive Entry,,0,False,,1000.56
 2026-01-28 06:50:12,EXIT,1.9158,1.9188,0.16,0.16,999.91,10,Aggressive Entry,tp_trigger,6,False,,1000.56
 2026-01-28 06:51:25,BUY,1.9224,,,,999.91,1,Aggressive Entry,,0,False,,1000.56
+2026-01-28 07:30:06,EXIT,1.9224,1.9172,-0.27,-0.27,999.64,10,Aggressive Entry,sl,38,False,,1000.56
+2026-01-28 07:49:40,BUY,1.9179,,,,999.64,1,Aggressive Entry,,0,False,,1000.56
+2026-01-28 08:50:28,BUY,1.9113,,,,999.64,1,Aggressive Entry,,0,False,,1000.56
+2026-01-28 09:44:10,BUY,1.9224,,,,999.64,1,Aggressive Entry,,0,False,,1000.56
+2026-01-28 09:50:35,EXIT,1.9224,1.9254,0.16,0.16,999.80,10,Aggressive Entry,tp_trigger,6,False,,1000.56
+2026-01-28 09:57:37,BUY,1.9289,,,,999.80,1,Aggressive Entry,,0,False,,1000.56
+2026-01-28 09:59:57,EXIT,1.9289,1.9326,0.19,0.19,999.99,10,Aggressive Entry,tp_trigger,2,False,,1000.56
+2026-01-28 09:59:57,BUY,1.9326,,,,999.80,1,Aggressive Entry,,0,False,,1000.56
+2026-01-28 10:04:22,BUY,1.9323,,,,999.99,1,Aggressive Entry,,0,False,,1000.56

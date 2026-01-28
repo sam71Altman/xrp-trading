@@ -866,6 +866,7 @@ def execute_paper_buy(price: float, score: int, reasons: List[str]) -> float:
         logger.warning(f"Abort trade execution: Quantity is zero. Price: {price}, Size: {trade_size_usdt}")
         return 0.0
         
+    # Freeze Quantity at Entry (CRITICAL - 3.6.2)
     paper_state.position_qty = qty
     paper_state.entry_reason = ", ".join(reasons)
     
@@ -879,17 +880,23 @@ def execute_paper_buy(price: float, score: int, reasons: List[str]) -> float:
 
 def execute_paper_exit(entry_price: float, exit_price: float, reason: str,
                        score: int, duration_min: int) -> tuple:
+    # Use Frozen Quantity at Close (NO RE-CALCULATION - 3.6.2)
     qty = paper_state.position_qty
     
     # Enforce Valid Quantity (MANDATORY FIX 1)
     if qty <= 0:
-        logger.warning("Abort exit execution: Quantity is zero.")
+        logger.warning(f"Abort exit execution: Quantity is zero.")
         return 0.0, 0.0, paper_state.balance
         
-    # Correct PnL Calculation (ABSOLUTE VALUE) (MANDATORY FIX 2)
+    # Correct PnL Calculation (ABSOLUTE VALUE - 3.6.2)
     pnl_usdt = (exit_price - entry_price) * qty
     pnl_pct = ((exit_price - entry_price) / entry_price) * 100
     
+    # Logging Validation (Hard Check - 3.6.2)
+    if not (qty > 0 and (abs(pnl_usdt) > 0 or exit_price == entry_price)):
+        logger.error(f"Validation failed: Qty={qty}, PnL={pnl_usdt}. Skipping balance update.")
+        return 0.0, 0.0, paper_state.balance
+
     # Correct Balance Update Order (MANDATORY FIX 3)
     # Balance update MUST occur after trade close
     paper_state.balance += pnl_usdt
@@ -955,7 +962,7 @@ def update_cooldown_after_exit(reason: str):
         state.current_cooldown = COOLDOWN_NORMAL
 
 
-VERSION = "3.6.1 – Accounting & Trade Logging Fix"
+VERSION = "3.6.2 – Trailing SL Quantity & PnL Fix"
 
 def get_main_keyboard():
     keyboard = [
