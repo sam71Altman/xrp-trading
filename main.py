@@ -86,6 +86,13 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO
 )
+
+# تعيين توقيت مكة للمكتبة الأساسية (Logging)
+def logging_time_converter(*args):
+    return get_now().timetuple()
+
+logging.Formatter.converter = logging_time_converter
+
 logger = logging.getLogger(__name__)
 
 
