@@ -541,17 +541,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        msg = (
-            "⚠️ *تأكيد تصفير سجل الصفقات*\n\n"
-            "سيتم حذف:\n"
-            "• جميع الصفقات المغلقة\n"
-            "• جميع بيانات الأداء السابقة\n\n"
-            "لن يتم حذف:\n"
-            "• الرصيد الحالي\n"
-            "• الصفقة المفتوحة (إن وجدت)\n"
-            "• إعدادات البوت"
-        )
-        await query.edit_message_text(msg, reply_markup=reply_markup, parse_mode="Markdown")
+        # Just update the reply markup for the confirmation
+        await query.edit_message_reply_markup(reply_markup=reply_markup)
         
     elif query.data == "CONFIRM_CLEAR_HISTORY":
         if clear_trade_history():
@@ -560,7 +551,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await query.edit_message_text("❌ فشل تصفير السجل. تحقق من السجلات.")
             
     elif query.data == "CANCEL_CLEAR":
-        await query.edit_message_text("❌ تم إلغاء عملية التصفير.")
+        # Return to the single clear button
+        await query.edit_message_reply_markup(reply_markup=get_trades_keyboard())
 def init_paper_trades_file():
     if not os.path.exists(PAPER_TRADES_FILE):
         with open(PAPER_TRADES_FILE, 'w', newline='', encoding='utf-8') as f:
@@ -1570,15 +1562,14 @@ async def cmd_balance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 def get_trades_keyboard():
     keyboard = [
-        [InlineKeyboardButton("📊 عرض السجل", callback_data="VIEW_TRADES")],
-        [InlineKeyboardButton("📈 إحصائيات السجل", callback_data="VIEW_STATS")],
         [InlineKeyboardButton("🗑️ تصفير سجل الصفقات", callback_data="CLEAR_TRADE_HISTORY")]
     ]
     return InlineKeyboardMarkup(keyboard)
 
 async def cmd_trades(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    history_text = format_trades_message()
     await update.message.reply_text(
-        "📂 *سجل الصفقات*",
+        history_text,
         reply_markup=get_trades_keyboard(),
         parse_mode="Markdown"
     )
