@@ -183,6 +183,9 @@ class PaperTradingState:
 
 paper_state = PaperTradingState()
 
+REJECTION_ZONE = 0.01  # 0.01% zone for early rejection
+TRAILING_TRIGGER_PCT = 0.2  # 0.2% to activate trailing SL
+TRAILING_STOP_PCT = 0.1     # 0.1% trailing stop
 DOWNTREND_ALERT_COOLDOWN = 300  # 5 minutes in seconds
 
 ATR_PERIOD = 14
@@ -1003,28 +1006,28 @@ def check_exit_signal(analysis: dict, candles: List[dict]) -> Optional[str]:
     pnl_pct = ((current_price - entry_price) / entry_price) * 100
     
     # v3.3: TP Trigger Logic
-    if not state.tp_triggered and pnl_pct >= TAKE_PROFIT_PCT:
+    if not state.tp_triggered and TAKE_PROFIT_PCT is not None and pnl_pct >= TAKE_PROFIT_PCT:
         state.tp_triggered = True
         state.risk_free_sl = entry_price * 1.001  # +0.1% Small profit
         return "tp_trigger"
 
     # v3.3: Exit Conditions after TP Triggered or Smart SL
     if state.tp_triggered:
-        if current_price <= state.risk_free_sl:
+        if state.risk_free_sl is not None and current_price <= state.risk_free_sl:
             return "risk_free_sl_hit"
-        if current_price < analysis["ema_short"]:
+        if "ema_short" in analysis and analysis["ema_short"] is not None and current_price < analysis["ema_short"]:
             return "ema_exit_post_tp"
     else:
         # Check Smart SL
-        if state.current_sl and current_price <= state.current_sl:
+        if state.current_sl is not None and current_price <= state.current_sl:
             return "sl"
         
     # Trailing SL (Existing logic preserved but secondary to TP trigger)
-    if not state.tp_triggered:
+    if not state.tp_triggered and TRAILING_TRIGGER_PCT is not None:
         if pnl_pct >= TRAILING_TRIGGER_PCT:
             state.trailing_activated = True
         
-        if state.trailing_activated and current_price < analysis["ema_short"]:
+        if state.trailing_activated and "ema_short" in analysis and analysis["ema_short"] is not None and current_price < analysis["ema_short"]:
             return "trailing_sl"
     
     # EMA Confirmation (Original logic)

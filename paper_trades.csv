@@ -224,3 +224,4 @@ timestamp,action,entry_price,exit_price,pnl_percent,pnl_usdt,balance_after,score
 2026-01-28 23:35:04,BUY,1.9239,,,,1000.35,1,Aggressive Entry,,0,False,,1001.19
 2026-01-28 23:36:02,BUY,1.9211,,,,1000.35,1,Aggressive Entry,,0,False,,1001.19
 2026-01-28 23:40:02,BUY,1.9187,,,,1000.35,1,Aggressive Entry,,0,False,,1001.19
+2026-01-29 00:20:55,BUY,1.9201,,,,1000.35,1,Aggressive Entry,,0,False,,1001.19
