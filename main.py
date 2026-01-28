@@ -251,6 +251,7 @@ def log_loss_event(loss_type: str, pnl_pct: float, entry_price: float, exit_pric
 # Monitoring (v3.7.1-lite)
 MIN_MONITOR_DELAY = 5        # seconds after entry
 DEBOUNCE_WINDOW = 15         # seconds (ticks approximate)
+MAX_MONITOR_WINDOW = 180     # seconds (v3.7)
 
 # Required persistence per flag type (3.7.1-lite)
 REQUIRED_FLAGS = {
