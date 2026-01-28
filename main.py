@@ -1345,7 +1345,7 @@ def format_status_message() -> str:
         pos_status = f"✅ صفقة مفتوحة ({pnl:+.2f}%)"
     
     return (
-        f"📊 *حالة البوت الحالية {BOT_VERSION}*\n"
+        f"📊 *حالة البوت {BOT_VERSION}*\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"🤖 الحالة: {status}\n"
         f"🛡️ Kill Switch: {ks_status}\n"
