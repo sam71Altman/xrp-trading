@@ -269,6 +269,12 @@ def log_loss_event(loss_type: str, pnl_pct: float, entry_price: float, exit_pric
 MIN_MONITOR_DELAY = 5        # seconds after entry
 DEBOUNCE_WINDOW = 15         # seconds (ticks approximate)
 MAX_MONITOR_WINDOW = 180     # seconds (v3.7)
+SHORT_TIME_WINDOW = 30       # seconds: "Early Rejection" window
+SLOPE_DEGRADATION = 0.3      # %: Allowed EMA20 slope drop
+
+ACTION_1_FLAG = "MONITOR"
+ACTION_2_FLAGS = "PREPARE"
+ACTION_3_FLAGS = "EXIT"
 
 # Required persistence per flag type (3.7.1-lite)
 REQUIRED_FLAGS = {
