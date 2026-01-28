@@ -687,9 +687,10 @@ def check_extended_price(price: float, analysis: dict, candles: List[dict]) -> b
         
     # B) Candle Body Expansion
     if len(candles) >= 6:
-        bodies = [abs(c["open"] - c["close"]) for c in candles[-6:-1]]
+        bodies = [abs(float(c.get("open", 0)) - float(c.get("close", 0))) for c in candles[-6:-1]]
         avg_body_5 = sum(bodies) / 5
-        current_body = abs(candles[-1]["open"] - candles[-1]["close"])
+        current_candle = candles[-1]
+        current_body = abs(float(current_candle.get("open", 0)) - float(current_candle.get("close", 0)))
         if current_body > avg_body_5 * 1.5:
             return True
             
