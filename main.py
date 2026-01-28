@@ -441,6 +441,12 @@ def calculate_slope(data: List[float], period: int = 5) -> float:
     # Simple linear slope: (y2 - y1) / x_diff
     return (data[-1] - data[-period]) / period
 
+# القيم المحسنة (معتمدة على تحليل XRP/USDT)
+SMALL_PROFIT_THRESHOLD = 0.045  # نسبة مئوية (محسّنة)
+PRICE_REENTRY_BAND = 0.05      # % منطقة منع إعادة الدخول (محسّنة)
+PRICE_INVALIDATION = 0.08      # % لتحرير الذاكرة
+MAX_CONSECUTIVE_LOOPS = 3      # أقصى تكرار للمكاسب الصغيرة
+
 class BotState:
     def __init__(self):
         self.mode: str = "AGGRESSIVE"  # Force Aggressive Mode
@@ -474,6 +480,15 @@ class BotState:
         self.risk_free_sl: Optional[float] = None
         self.current_sl: Optional[float] = None
         self.entry_candles_snapshot: List[dict] = []
+        
+        # LPEM State (v3.7.2)
+        self.lpem_active: bool = False
+        self.lpem_direction: str = "LONG"
+        self.lpem_exit_price: float = 0.0
+        self.lpem_activation_time: float = 0.0
+        self.lpem_consecutive_count: int = 0
+        self.lpem_strict_mode: bool = False
+        self.last_exit_time: float = 0.0
 
 state = BotState()
 
@@ -1076,6 +1091,63 @@ def execute_paper_buy(price: float, score: int, reasons: List[str]) -> float:
     return qty
 
 
+def activate_lpem(direction: str, exit_price: float, pnl_pct: float, exit_reason: str):
+    """
+    تنشيط الذاكرة خفيفة الوزن بعد الخروج بربح صغير (v3.7.2)
+    """
+    now_ts = time.time()
+    
+    # تتبع التكرار المتسلسل
+    if (now_ts - state.last_exit_time) < 60:
+        state.lpem_consecutive_count += 1
+    else:
+        state.lpem_consecutive_count = 1
+    
+    state.last_exit_time = now_ts
+    state.lpem_active = True
+    state.lpem_direction = direction
+    state.lpem_exit_price = exit_price
+    state.lpem_activation_time = now_ts
+    state.lpem_strict_mode = (state.lpem_consecutive_count >= 2)
+    
+    logger.info(f"🧠 [LPEM] Activated: PnL={pnl_pct:.4f}%, Reason={exit_reason}, Consecutive={state.lpem_consecutive_count}")
+
+def release_lpem(reason: str):
+    """
+    تحرير الذاكرة وتصفير عداد التكرار (v3.7.2)
+    """
+    if state.lpem_active:
+        state.lpem_active = False
+        state.lpem_consecutive_count = 0
+        state.lpem_strict_mode = False
+        logger.info(f"🔓 [LPEM] Released: {reason}")
+
+def check_lpem_invalidation(current_price: float, analysis: dict):
+    """
+    التحقق من شروط تحرير الذاكرة التلقائي (v3.7.2)
+    """
+    if not state.lpem_active:
+        return
+        
+    # 1. تحرك السعر عكسيًا (فرصة دخول أفضل)
+    diff_pct = abs((current_price - state.lpem_exit_price) / state.lpem_exit_price) * 100
+    if diff_pct >= PRICE_INVALIDATION:
+        release_lpem("price_moved_against")
+        return
+        
+    # 2. انعكاس ظروف الاتجاه
+    if state.lpem_direction == "LONG" and not analysis.get("ema_bullish"):
+        release_lpem("trend_invalidated")
+        return
+    elif state.lpem_direction == "SHORT" and analysis.get("ema_bullish"):
+        release_lpem("trend_invalidated")
+        return
+        
+    # 3. مرور وقت طويل (ساعة احتياطية - 5 دقائق)
+    if (time.time() - state.lpem_activation_time) > 300:
+        release_lpem("safety_timeout")
+        return
+
 def execute_paper_exit(entry_price: float, exit_price: float, reason: str,
                        score: int, duration_min: int) -> tuple:
     # Use Frozen Quantity at Close (NO RE-CALCULATION - 3.6.2)
@@ -1099,6 +1171,14 @@ def execute_paper_exit(entry_price: float, exit_price: float, reason: str,
     # Balance update MUST occur after trade close
     paper_state.balance += pnl_usdt
     paper_state.update_peak()
+    
+    # LPEM Activation Logic (v3.7.2)
+    if pnl_pct > 0 and pnl_pct < SMALL_PROFIT_THRESHOLD and reason in ["EMA_EXIT", "TRAILING_SL", "RISK_FREE", "TREND_REVERSAL_PREVENTED"]:
+        activate_lpem("LONG", exit_price, pnl_pct, reason)
+    else:
+        # If exit reason is not small profit or is loss, reset consecutive count
+        if pnl_pct <= 0 or reason == "STOP_LOSS":
+            release_lpem("major_exit_or_loss")
     
     if pnl_usdt < 0:
         paper_state.loss_streak += 1
@@ -1938,6 +2018,9 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
         # Downtrend Alerts (Monitoring Only)
         await check_downtrend_alerts(bot, chat_id, analysis, candles)
         
+        # LPEM Invalidation Check (v3.7.2)
+        check_lpem_invalidation(current_price, analysis)
+        
         # Disable Kill Switch evaluation for Aggressive Mode
         if state.mode != "AGGRESSIVE":
             ks_reason = evaluate_kill_switch()
@@ -1974,6 +2057,17 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
         if not state.position_open:
             if check_buy_signal(analysis, candles):
                 entry_price = analysis["close"]
+                
+                # LPEM Filter (v3.7.2)
+                if state.lpem_active and state.lpem_direction == "LONG":
+                    # حساب منطقة المنع
+                    current_band = PRICE_REENTRY_BAND * 0.6 if state.lpem_strict_mode else PRICE_REENTRY_BAND
+                    diff_pct = abs((entry_price - state.lpem_exit_price) / state.lpem_exit_price) * 100
+                    
+                    if diff_pct <= current_band:
+                        logger.info(f"🚫 [LPEM] Blocked Entry: Price within band ({diff_pct:.4f}% <= {current_band}%)")
+                        return
+                
                 tp, sl = calculate_targets(entry_price, candles)
                 
                 # Fixed Score Calculation: Single source of truth (v3.7.1-lite)
