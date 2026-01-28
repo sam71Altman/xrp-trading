@@ -1,0 +1,123 @@
+You are fixing a price latency issue in an existing XRP/USDT Telegram trading bot.
+⚠️ This is NOT a strategy update.
+⚠️ This is NOT a logic improvement.
+⚠️ This is a real-time price delivery fix only.
+The bot is already functional and aggressive.
+Do NOT change trading behavior, scoring, entries, exits, or frequency.
+🎯 OBJECTIVE
+Guarantee true real-time price updates suitable for 1m and 5m scalping, by eliminating all price lag sources.
+Target requirements:
+Price freshness ≤ 300 ms
+No dependency between price updates and analysis loop
+Zero impact on trade frequency or strategy behavior
+Execution speed remains <100 ms
+🚫 ABSOLUTE RESTRICTIONS
+Do NOT:
+❌ Modify entry logic
+❌ Modify exit logic
+❌ Modify score calculation
+❌ Add indicators
+❌ Add confirmation steps
+❌ Slow down analysis
+❌ Convert strategy to conservative
+❌ Change Telegram UI or commands
+This is a data-pipeline fix only.
+🔥 REQUIRED ARCHITECTURE (MANDATORY)
+1️⃣ Dedicated Real-Time Price Engine (Hard Requirement)
+Create a standalone price engine that:
+Uses WebSocket only
+Subscribes to trade or bookTicker stream
+Never uses klines for last price
+Never uses REST polling for live price
+نسخ التعليمات البرمجية
+Python
+class PriceEngine:
+    last_price: float
+    last_update_ts: float  # epoch milliseconds
+WebSocket handler:
+نسخ التعليمات البرمجية
+Python
+on_trade_event(event):
+    PriceEngine.last_price = event.price
+    PriceEngine.last_update_ts = now()
+2️⃣ Absolute Separation of Concerns
+🚫 Strategy MUST NOT fetch price
+❌ NO:
+نسخ التعليمات البرمجية
+Python
+price = get_price()
+✅ YES:
+نسخ التعليمات البرمجية
+Python
+price = PriceEngine.last_price
+Analysis, entries, exits, and monitoring must read only from PriceEngine.
+3️⃣ Anti-Lag Safety Guard (Mandatory)
+Prevent trading on stale prices:
+نسخ التعليمات البرمجية
+Python
+MAX_PRICE_LAG_MS = 500
+
+if now() - PriceEngine.last_update_ts > MAX_PRICE_LAG_MS:
+    BLOCK_ALL_TRADING = True
+    log("⚠️ PRICE LAG DETECTED – Trading paused")
+else:
+    BLOCK_ALL_TRADING = False
+This guard must apply to:
+Entries
+Exits
+Trailing SL logic
+Exit intelligence
+4️⃣ Telegram Output Must Reflect Real Price
+Telegram messages must display:
+PriceEngine.last_price
+Optional latency delta
+نسخ التعليمات البرمجية
+Python
+latency_ms = now() - PriceEngine.last_update_ts
+Example:
+نسخ التعليمات البرمجية
+
+السعر الحالي: 1.9187
+⏱ تأخير: 120ms
+❌ Do NOT fetch price separately for Telegram.
+5️⃣ Zero Throttling on Price Stream
+Do NOT debounce WebSocket events
+Do NOT aggregate trades
+Do NOT limit update frequency
+Let the price stream flow freely.
+All throttling (if any) must happen after analysis, not before price update.
+6️⃣ Fallback Protection (Safety Only)
+If WebSocket disconnects:
+نسخ التعليمات البرمجية
+Python
+on_disconnect():
+    BLOCK_ALL_TRADING = True
+    alert("Price stream disconnected – trading paused")
+Trading resumes only after real-time stream is restored.
+🧪 VALIDATION CHECKS (MANDATORY)
+Implement runtime checks:
+نسخ التعليمات البرمجية
+Python
+assert now() - PriceEngine.last_update_ts < 300
+Log continuously:
+Average price latency
+Max latency spike
+Number of blocked trades due to lag
+📌 SUCCESS CRITERIA
+✔ Price updates match exchange UI in real time
+✔ No visible delay on 1m / 5m frames
+✔ Strategy behavior unchanged
+✔ Trade frequency unchanged
+✔ No “late entry / late exit” behavior
+If price latency exceeds 500 ms → this fix is considered FAILED.
+🏷 VERSION TAG
+نسخ التعليمات البرمجية
+Python
+PATCH = "Real-Time Price Engine Fix"
+NOTE = "Latency repair only – no strategy changes"
+🚨 FINAL WARNING
+This bot is a scalping system.
+Any price delay >300 ms invalidates all logic,
+regardless of how good the strategy is.
+Speed is not an optimization —
+speed is correctness.

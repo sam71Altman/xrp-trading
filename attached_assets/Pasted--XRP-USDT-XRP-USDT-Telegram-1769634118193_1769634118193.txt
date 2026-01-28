@@ -1,0 +1,127 @@
+ تحديث محرك الأسعار الآني للتداول السريع (XRP/USDT)
+
+أنت تقوم بتحديث بوت تداول XRP/USDT على Telegram لحل مشكلة تأخر الأسعار. ⚠️ هذا ليس تحديثاً للإستراتيجية ⚠️ هذا ليس تحسيناً للمنطق ⚠️ هذا إصلاح لنظام توصيل الأسعار في الوقت الحقيقي فقط البوت يعمل بالفعل وهو عدواني. لا تغير سلوك التداول، التسجيل، الدخول، الخروج، أو التكرار. 🎯 الهدف ضمان تحديثات أسعار آنية حقيقية مناسبة للتداول السريع على فترات 1 و5 دقائق، من خلال إزالة جميع مصادر تأخر الأسعار. متطلبات الأداء: - نضارة السعر ≤ 300 مللي ثانية - لا تبعية بين تحديثات الأسعار وحلقة التحليل - تأثير صفر على تكرار التداول أو سلوك الإستراتيجية - سرعة التنفيذ تبقى <100 مللي ثانية 🚫 قيود مطلقة لا تقم بـ: ❌ تعديل منطق الدخول ❌ تعديل منطق الخروج ❌ تعديل حساب النقاط ❌ إضافة مؤشرات ❌ إضافة خطوات تأكيد ❌ إبطاء التحليل ❌ تحويل الإستراتيجية إلى محافظة ❌ تغير واجهة Telegram أو الأوامر هذا إصلاح لخط البيانات فقط. 🔥 الهيكلية المطلوبة (إلزامي) 1️⃣ محرك الأسعار الآني المخصص (مطلب صارم) أنشئ محرك أسعار منفصلاً يعمل باستمرار: استخدام WebSocket فقط ✅ الاشتراك في تدفق الصفقات (trade stream) أو bookTicker ✅ لا يستخدم كلاين (klines) للسعر الأخير أبداً ❌ لا يستخدم استطلاع REST للسعر المباشر أبداً ❌ نسخ التعليمات البرمجية Python import websocket import threading import json import time from dataclasses import dataclass from typing import Optional import logging @dataclass class PriceData: price: float timestamp: float # وقت الحدث من البورصة (مللي ثانية) local_received: float # وقت الاستلام المحلي (مللي ثانية) source: str # bookTicker أو trade trade_id: Optional[str] = None # لتعقب الصفقات class RealTimePriceEngine: """ محرك أسعار آني منفصل يعمل على WebSocket """ # حالة السريتون (Singleton) _instance = None _lock = threading.Lock() def __new__(cls): with cls._lock: if cls._instance is None: cls._instance = super().__new__(cls) cls._instance._initialized = False return cls._instance def __init__(self): if self._initialized: return self.last_price_data: Optional[PriceData] = None self.ws = None self.ws_connected = False self.running = False self.thread = None self.reconnect_attempts = 0 self.max_reconnect_attempts = 10 self.reconnect_delay = 1 # ثانية # إحصائيات المراقبة self.update_count = 0 self.total_latency = 0 self.max_latency = 0 self.disconnect_count = 0 # اشتراك WebSocket self.ws_url = "wss://stream.binance.com:9443/ws/xrpusdt@bookTicker" # بديل: "wss://stream.binance.com:9443/ws/xrpusdt@trade" self._initialized = True logging.info("💰 RealTimePriceEngine initialized") def start(self): """بدء محرك الأسعار في خلفية منفصلة""" if self.running: logging.warning("Price engine already running") return self.running = True self.thread = threading.Thread( target=self._run_websocket, name="PriceEngine-WebSocket", daemon=True ) self.thread.start() logging.info("🚀 Price engine started") def stop(self): """إيقاف محرك الأسعار""" self.running = False if self.ws: self.ws.close() logging.info("🛑 Price engine stopped") def _run_websocket(self): """تشغيل اتصال WebSocket مع إعادة اتصال تلقائي""" while self.running and self.reconnect_attempts < self.max_reconnect_attempts: try: self.ws = websocket.WebSocketApp( self.ws_url, on_message=self._on_message, on_error=self._on_error, on_close=self._on_close, on_open=self._on_open ) logging.info(f"🔗 Connecting to WebSocket: {self.ws_url}") self.ws.run_forever(ping_interval=30, ping_timeout=10) except Exception as e: logging.error(f"WebSocket fatal error: {e}") # إعادة الاتصال بعد فشل if self.running: self.reconnect_attempts += 1 delay = self.reconnect_delay * min(self.reconnect_attempts, 5) logging.warning(f"🔄 Reconnecting in {delay}s (attempt {self.reconnect_attempts}/{self.max_reconnect_attempts})") time.sleep(delay) def _on_open(self, ws): """عند فتح اتصال WebSocket""" self.ws_connected = True self.reconnect_attempts = 0 self.disconnect_count += 1 logging.info("✅ WebSocket connected successfully") def _on_message(self, ws, message): """معالجة رسائل WebSocket""" try: data = json.loads(message) local_time = time.time() * 1000 # تحويل إلى مللي ثانية # معالجة bookTicker if 'b' in data and 'B' in data: # أفضل سعر شراء price = float(data['b']) event_time = data.get('E', local_time) # وقت الحدث من البورصة # حماية من القيم الشاذة if self._is_valid_price(price): self.last_price_data = PriceData( price=price, timestamp=event_time, local_received=local_time, source="bookTicker" ) # حساب الكمون latency = local_time - event_time self._update_metrics(latency) # تسجيل كل 100 تحديث if self.update_count % 100 == 0: avg_latency = self.total_latency / max(self.update_count, 1) logging.info(f"📊 Price Update #{self.update_count}: {price:.4f} | Latency: {latency:.1f}ms (Avg: {avg_latency:.1f}ms)") # معالجة trade stream (بديل) elif 'p' in data and 'T' in data: price = float(data['p']) event_time = data['T'] trade_id = data.get('t') if self._is_valid_price(price): self.last_price_data = PriceData( price=price, timestamp=event_time, local_received=local_time, source="trade", trade_id=trade_id ) latency = local_time - event_time self._update_metrics(latency) except Exception as e: logging.error(f"Error processing WebSocket message: {e}") def _is_valid_price(self, price: float) -> bool: """التحقق من صحة السعر""" if price <= 0: return False # فحص التغير المفاجئ (>10%) if self.last_price_data: change_pct = abs((price - self.last_price_data.price) / self.last_price_data.price * 100) if change_pct > 10: # تغيير مفاجئ > 10% logging.warning(f"⚠️ Price anomaly detected: {change_pct:.1f}% change") return False return True def _update_metrics(self, latency: float): """تحديث إحصائيات الأداء""" self.update_count += 1 self.total_latency += latency self.max_latency = max(self.max_latency, latency) def _on_error(self, ws, error): """معالجة أخطاء WebSocket""" self.ws_connected = False logging.error(f"WebSocket error: {error}") def _on_close(self, ws, close_status_code, close_msg): """عند إغلاق اتصال WebSocket""" self.ws_connected = False logging.warning(f"WebSocket closed: {close_status_code} - {close_msg}") @property def last_price(self) -> Optional[float]: """السعر الأخير (للتكامل مع النظام القديم)""" return self.last_price_data.price if self.last_price_data else None @property def last_update_ts(self) -> float: """وقت آخر تحديث (للتكامل مع النظام القديم)""" return self.last_price_data.timestamp if self.last_price_data else 0 def get_latency(self) -> float: """حساب الكمون الحالي""" if not self.last_price_data: return float('inf') return time.time() * 1000 - self.last_price_data.timestamp def get_status(self) -> dict: """حالة المحرك""" return { "connected": self.ws_connected, "running": self.running, "last_price": self.last_price, "latency_ms": self.get_latency(), "update_count": self.update_count, "disconnect_count": self.disconnect_count, "source": self.last_price_data.source if self.last_price_data else None } # السريتون العالمي PriceEngine = RealTimePriceEngine() 
+
+2️⃣ الفصل المطلق للمسؤوليات (إلزامي)
+❌ الاستراتيجية لا يجب أن تجلب السعر
+ممنوع:
+نسخ التعليمات البرمجية
+Python
+price = exchange.fetch_ticker('XRP/USDT')['last'] # ❌ قديم وبطيء
+price = get_price_from_api() # ❌ استطلاع REST
+
+✅ نعم:
+نسخ التعليمات البرمجية
+Python
+from price_engine import PriceEngine
+
+في أي مكان في الكود
+
+price = PriceEngine.last_price # ✅ فوري
+if price is None:
+log("⚠️ Waiting for price data...")
+return
+
+الاستخدام في جميع أنحاء النظام
+
+class TradingBot:
+def analyze_market(self):
+
+التحليل 
+
+current_price = PriceEngine.last_price
+
+... منطق التحليل 
+
+التحليل، الدخول، الخروج، والمراقبة يجب أن تقرأ فقط من PriceEngine.
+
+3️⃣ حارس السلامة من التأخير (إلزامي)
+منع التداول على أسعار قديمة:
+نسخ التعليمات البرمجية
+Python
+class TradingGuard:
+"""
+حارس يمنع التداول عند اكتشاف أسعار قديمة أو مشاكل في الاتصال
+"""
+
+الاستخدام في جميع عمليات التداول
+
+def execute_trade_operation(operation_type: str, logic_function):
+"""
+دالة غلاف لتنفيذ عمليات التداول مع الحارس
+"""
+if not TradingGuard.enforce_guard(operation_type):
+return None
+
+أمثلة التكامل
+
+def safe_entry():
+"""دخول آمن مع فحص الحارس"""
+return execute_trade_operation("entry", _execute_entry_logic)
+
+def safe_exit():
+"""خروج آمن مع فحص الحارس"""
+return execute_trade_operation("exit", _execute_exit_logic)
+
+def safe_update_trailing_sl():
+"""تحديث آمن لوقف الخسارة المتابع"""
+return execute_trade_operation("trailing_sl", _update_trailing_sl_logic)
+
+4️⃣ إخراج Telegram يجب أن يعكس السعر الحقيقي رسائل Telegram يجب أن تعرض: - PriceEngine.last_price - اختياري: فرق الكمون نسخ التعليمات البرمجية Python class TelegramReporter: """ معدل تقارير Telegram ليعكس الأسعار الآنية """ @staticmethod def format_price_message(action: str, details: dict) -> str: """ تنسيق رسالة السعر مع معلومات الكمون Args: action: نوع العملية (دخول، خروج، تحديث) details: تفاصيل إضافية Returns: str: رسالة منسقة """ # الحصول على السعر الآني current_price = PriceEngine.last_price latency = PriceEngine.get_latency() # تنسيق الرسالة message = f"📈 **{action.upper()}**\n" message += f"السعر الحالي: `{current_price:.4f}`\n" # إضافة معلومات الكمون إذا كانت معقولة if latency < 1000: # أقل من ثانية message += f"⏱ تأخير: `{latency:.0f}ms`\n" else: message += f"⚠️ تأخير: `{latency:.0f}ms`\n" # إضافة تفاصيل إضافية for key, value in details.items(): message += f"{key}: `{value}`\n" # حالة اتصال WebSocket status = PriceEngine.get_status() if not status['connected']: message += "🔴 **اتصال WebSocket مقطوع**\n" return message @staticmethod def send_trade_alert(trade_type: str, **kwargs): """ إرسال تنبيه صفقة مع السعر الآني """ # استخدام السعر من PriceEngine فقط price_info = { "type": trade_type, "price": PriceEngine.last_price, "latency_ms": PriceEngine.get_latency(), **kwargs } message = TelegramReporter.format_price_message( f"صفقة {trade_type}", price_info ) # إرسال عبر Telegram (استخدام الدالة الحالية) send_telegram_message(message) @staticmethod def send_status_update(): """ إرسال تحديث حالة مع إحصائيات الأداء """ status = PriceEngine.get_status() message = "📊 **حالة محرك الأسعار**\n" message += f"✅ متصل: {'نعم' if status['connected'] else 'لا'}\n" message += f"💰 السعر: `{status['last_price']:.4f}`\n" message += f"⏱ الكمون: `{status['latency_ms']:.0f}ms`\n" message += f"🔄 التحديثات: `{status['update_count']}`\n" message += f"📡 المصدر: `{status['source']}`\n" # إضافة حالة التداول trading_allowed, reason = TradingGuard.check_trading_allowed() message += f"🎯 التداول: {'✅ مفعل' if trading_allowed else '⛔ معطل'}\n" if not trading_allowed: message += f"السبب: `{reason}`\n" send_telegram_message(message) # ❌ لا تجلب السعر بشكل منفصل لـ Telegram # ✅ استخدم PriceEngine.last_price فقط 
+
+5️⃣ عدم تخفيف تدفق السعر (Zero Throttling)
+لا تقم بـ:
+
+· تخفيف أحداث WebSocket ❌
+· تجميع الصفقات ❌
+· تحديد تردد التحديث ❌
+
+دع تدفق السعر يتدفق بحرية.
+جميع التخفيفات (إن وجدت) يجب أن تحدث بعد التحليل، ليس قبل تحديث السعر.
+
+نسخ التعليمات البرمجية
+Python
+
+❌ ممنوع تماماً
+
+class BadPriceEngine:
+def _on_message(self, ws, message):
+
+تجميع الصفقات (سيء) 
+
+self.trade_buffer.append(message)
+if len(self.trade_buffer) >= 10: # ❌ يسبب تأخير
+self.process_buffer()
+
+✅ المسموح (إذا كان ضرورياً)
+
+class GoodPriceEngine:
+def _on_message(self, ws, message):
+
+معالجة كل رسالة فوراً ✅ 
+
+self.process_message_immediately(message)
+
+التخفيف يجب أن يكون في التحليل، ليس في تحديث السعر
+
+class AnalysisEngine:
+def init(self):
+self.last_analysis_time = 0
+self.analysis_interval = 1000 # 1 ثانية للتحليل
+
+6️⃣ حماية الاحتياطي (للأمان فقط) إذا انقطع اتصال WebSocket: نسخ التعليمات البرمجية Python class FailSafeSystem: """ نظام أمان للتعامل مع انقطاعات الاتصال """ @staticmethod def on_websocket_disconnect(): """ تنفيذ عند انقطاع WebSocket """ # إيقاف جميع التداولات فوراً TradingGuard.BLOCK_ALL_TRADING = True TradingGuard.BLOCK_REASON = "WebSocket disconnected - Trading paused" # تسجيل الحدث logging.critical("🔴 WebSocket disconnected - Trading paused") # إرسال تنبيه فوري FailSafeSystem.send_emergency_alert() # محاولة إعادة الاتصال التلقائي FailSafeSystem.attempt_recovery() @staticmethod def send_emergency_alert(): """ إرسال تنبيه طارئ """ alert_message = ( "🚨 **انتباه: انقطاع في تدفق الأسعار**\n\n" "تم اكتشاف انقطاع في اتصال WebSocket.\n" "تم إيقاف جميع التداولات تلقائياً.\n" "يتم محاولة إعادة الاتصال...\n\n" f"الوقت: {time.strftime('%Y-%m-%d %H:%M:%S')}" ) # إرسال عبر Telegram send_telegram_message(alert_message, priority="HIGH") # إرسال إشعار بديلة (إن وجد) if has_discord: send_discord_alert(alert_message) @staticmethod def attempt_recovery(): """ محاولة استعادة النظام """ # تسجيل محاولة الاستعادة logging.info("Attempting system recovery...") # 1. إيقاف المحرك القديم PriceEngine.stop() # 2. انتظار قصير time.sleep(2) # 3. إعادة تشغيل المحرك PriceEngine.start() # 4. مراقبة الاستعادة FailSafeSystem.monitor_recovery() @staticmethod def monitor_recovery(): """ مراقبة عملية الاستعادة """ def recovery_check(): attempts = 0 max_attempts = 30 # 30 محاولة (60 ثانية) while attempts < max_attempts: time.sleep(2) # انتظار 2 ثانية attempts += 1 # فحص الاتصال if PriceEngine.ws_connected and PriceEngine.last_price: # استعادة ناجحة TradingGuard.BLOCK_ALL_TRADING = False TradingGuard.BLOCK_REASON = "" success_message = ( "✅ **تم استعادة الاتصال**\n\n" "تمت إعادة اتصال WebSocket بنجاح.\n" "التداول مفعل مرة أخرى.\n\n" f"السعر الحالي: {PriceEngine.last_price:.4f}\n" f"الكمون: {PriceEngine.get_latency():.0f}ms" ) send_telegram_message(success_message) logging.info("System recovery successful") return True # تشغيل الفحص في خلفية recovery_thread = threading.Thread(target=recovery_check, daemon=True) recovery_thread.start() @staticmethod def on_critical_latency(latency: float): """ التعامل مع الكمون الحرج """ if latency > 1000: # أكثر من ثانية alert_message = ( f"⚠️ **كمون عالي للغاية**\n\n" f"الكمون: {latency:.0f}ms\n" "قد يؤثر على أداء التداول.\n" "يتم مراقبة الوضع..." ) send_telegram_message(alert_message) # الاستخدام في PriceEngine def _on_close(self, ws, close_status_code, close_msg): """عند إغلاق اتصال WebSocket""" self.ws_connected = False logging.warning(f"WebSocket closed: {close_status_code} - {close_msg}") # تنشيط نظام الأمان FailSafeSystem.on_websocket_disconnect() التداول يستأنف فقط بعد استعادة التدفق الآني. 
+
+🧪 فحوصات التحقق (إلزامي)
+نفذ فحوصات وقت التشغيل:
+نسخ التعليمات البرمجية
+Python
+class ValidationChecks:
+"""
+فحوصات تحقق مستمرة من أداء النظام
+"""
+
+تهيئة نظام التحقق
+
+validation = ValidationChecks()
+
+📌 معايير النجاح ✔ تحديثات الأسعار تطابق واجهة البورصة في الوقت الحقيقي ✔ لا يوجد تأخير مرئي على فترات 1 دقيقة / 5 دقائق ✔ سلوك الإستراتيجية لم يتغير ✔ تكرار التداول لم يتغير ✔ لا يوجد سلوك "دخول متأخر / خروج متأخر" إذا تجاوز كمون السعر 500 مللي ثانية → هذا الإصلاح يعتبر فاشلاً. 🏷 علامة الإصدار نسخ التعليمات البرمجية Python # في بداية الملف الرئيسي PATCH_VERSION = "2.0.0" PATCH_NAME = "Real-Time Price Engine Fix" PATCH_DATE = "2024-01-28" RELEASE_NOTES = """ الإصدار 2.0.0 - إصلاح كمون السعر ================================ ✅ محرك أسعار آني منفصل بـ WebSocket ✅ فصل كامل بين تحديث السعر وتحليله ✅ حارس أمان لمنع التداول على أسعار قديمة ✅ نظام استعادة تلقائي عند انقطاع الاتصال ✅ تقارير Telegram تعكس الأسعار الحقيقية ✅ فحوصات تحقق مستمرة من الأداء ⚠️ ملاحظة: هذا إصلاح للكمون فقط - لا تغييرات في الإستراتيجية """ # تسجيل بدء التشغيل logging.info(f"Starting {PATCH_NAME} v{PATCH_VERSION}") logging.info(RELEASE_NOTES) 🚨 تحذير نهائي هذا البوت نظام تداول سريع. أي تأخير في السعر > 300 مللي ثانية يبطل كل المنطق، بغض النظر عن جودة الإستراتيجية. السرعة ليست تحسينًا — السرعة هي الصحة. --- 🎯 **مخطط التنفيذ النهائي:** 1. **إضافة ملف `price_engine.py`** مع الكود أعلاه 2. **تعديل الملف الرئيسي** لبدء تشغيل المحرك: ```python # في main() PriceEngine.start() time.sleep(2) # انتظار الاتصال استبدال جميع استدعاءات get_price() بـ PriceEngine.last_price إضافة فحوصات الحارس قبل كل عملية تداول تحديث تقارير Telegram لاستخدام TelegramReporter اختبار شامل مع مقارنة مع واجهة Binance 

@@ -10,6 +10,9 @@ import csv
 import asyncio
 import logging
 import time
+import threading
+import json
+import websocket
 from datetime import datetime, timezone, timedelta
 try:
     from zoneinfo import ZoneInfo
@@ -1729,13 +1732,120 @@ async def check_downtrend_alerts(bot: Bot, chat_id: str, analysis: dict, candles
             state.last_downtrend_alert_time = now
 
 
+# Real-time Price Engine (v3.8)
+class PriceEngine:
+    last_price: Optional[float] = None
+    last_update_time: float = 0
+    latency_ms: float = 0
+    is_connected: bool = False
+    
+    @classmethod
+    def update_price(cls, price: float):
+        cls.last_price = price
+        cls.last_update_time = time.time()
+        cls.is_connected = True
+
+    @classmethod
+    def on_message(cls, ws, message):
+        try:
+            data = json.loads(message)
+            if 'p' in data:
+                price = float(data['p'])
+                cls.update_price(price)
+                if 'E' in data:
+                    cls.latency_ms = (time.time() * 1000) - data['E']
+        except Exception as e:
+            logger.error(f"PriceEngine error: {e}")
+
+    @classmethod
+    def on_error(cls, ws, error):
+        logger.error(f"WebSocket Error: {error}")
+        cls.is_connected = False
+        FailSafeSystem.on_websocket_disconnect()
+
+    @classmethod
+    def on_close(cls, ws, close_status_code, close_msg):
+        logger.warning("WebSocket Closed")
+        cls.is_connected = False
+        FailSafeSystem.on_websocket_disconnect()
+
+    @classmethod
+    def start(cls):
+        def run():
+            while True:
+                try:
+                    ws_url = "wss://stream.binance.com:9443/ws/xrpusdt@aggTrade"
+                    ws = websocket.WebSocketApp(
+                        ws_url,
+                        on_message=cls.on_message,
+                        on_error=cls.on_error,
+                        on_close=cls.on_close
+                    )
+                    ws.run_forever()
+                except Exception as e:
+                    logger.error(f"WebSocket restart error: {e}")
+                time.sleep(5)
+        
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+
+class TradingGuard:
+    BLOCK_ALL_TRADING = False
+    BLOCK_REASON = ""
+    MAX_LATENCY_MS = 500
+
+    @classmethod
+    def enforce_guard(cls, operation_type: str) -> bool:
+        if cls.BLOCK_ALL_TRADING:
+            logger.warning(f"Guard Blocked {operation_type}: {cls.BLOCK_REASON}")
+            return False
+            
+        if PriceEngine.last_price is None:
+            logger.warning(f"Guard Blocked {operation_type}: No price data")
+            return False
+            
+        if (time.time() - PriceEngine.last_update_time) > 2:
+            logger.warning(f"Guard Blocked {operation_type}: Stale price (>2s)")
+            return False
+            
+        if PriceEngine.latency_ms > cls.MAX_LATENCY_MS:
+            logger.warning(f"Guard Blocked {operation_type}: High latency ({PriceEngine.latency_ms:.0f}ms)")
+            return False
+            
+        return True
+
+class FailSafeSystem:
+    @staticmethod
+    def on_websocket_disconnect():
+        TradingGuard.BLOCK_ALL_TRADING = True
+        TradingGuard.BLOCK_REASON = "WebSocket disconnected"
+        logger.critical("FAILSAFE: Trading Blocked due to connection loss")
+
+    @staticmethod
+    def on_websocket_connect():
+        TradingGuard.BLOCK_ALL_TRADING = False
+        TradingGuard.BLOCK_REASON = ""
+        logger.info("FAILSAFE: Trading Resumed")
+
+def execute_trade_operation(operation_type: str, logic_function, *args, **kwargs):
+    if not TradingGuard.enforce_guard(operation_type):
+        return None
+    return logic_function(*args, **kwargs)
+
 def get_binance_ticker():
+    # Primary source is now PriceEngine
+    if PriceEngine.last_price:
+        return {"price": PriceEngine.last_price}
+    
+    # Fallback to REST for initialization only
     try:
         url = f"https://api.binance.com/api/v3/ticker/price?symbol={SYMBOL}"
         response = requests.get(url, timeout=5)
         if response.status_code == 200:
             data = response.json()
-            return {"price": float(data["price"])}
+            price = float(data["price"])
+            PriceEngine.update_price(price)
+            return {"price": price}
     except Exception as e:
         logger.error(f"Error fetching ticker: {e}")
     return None
@@ -1760,11 +1870,14 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                 return
         
         # Use Real-time Price for Aggressive Mode
-        ticker = get_binance_ticker()
-        if ticker:
-            current_price = ticker["price"]
+        if state.mode == "AGGRESSIVE" and PriceEngine.last_price:
+            current_price = PriceEngine.last_price
         else:
-            return
+            ticker = get_binance_ticker()
+            if ticker:
+                current_price = ticker["price"]
+            else:
+                return
 
         candles = get_klines(SYMBOL, state.timeframe)
         if candles is None:
@@ -1862,6 +1975,9 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
 
 
 async def main() -> None:
+    # Start Price Engine
+    PriceEngine.start()
+    
     tg_token = os.environ.get("TG_TOKEN")
     chat_id = os.environ.get("TG_CHAT_ID")
     
