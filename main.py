@@ -11,7 +11,17 @@ import asyncio
 import logging
 import time
 from datetime import datetime, timezone, timedelta
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    from backports.zoneinfo import ZoneInfo
 from typing import Optional, List, Dict
+
+# توقيت مكة المكرمة (GMT+3)
+MECCA_TZ = ZoneInfo("Asia/Riyadh")
+
+def get_now():
+    return datetime.now(MECCA_TZ)
 
 import requests
 from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
@@ -241,7 +251,7 @@ def log_loss_event(loss_type: str, pnl_pct: float, entry_price: float, exit_pric
         if not file_exists:
             writer.writerow(['timestamp', 'loss_type', 'pnl_pct', 'entry_price', 'exit_price'])
         writer.writerow([
-            datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+            get_now().strftime("%Y-%m-%d %H:%M:%S"),
             loss_type,
             f"{pnl_pct:.2f}",
             f"{entry_price:.4f}",
@@ -467,7 +477,7 @@ def log_paper_trade(action: str, entry_price: float, exit_price: Optional[float]
     with open(PAPER_TRADES_FILE, 'a', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
         writer.writerow([
-            datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+            get_now().strftime("%Y-%m-%d %H:%M:%S"),
             action,
             f"{entry_price:.4f}" if entry_price else "",
             f"{exit_price:.4f}" if exit_price else "",
@@ -634,7 +644,7 @@ def log_trade(trade_type: str, reason: str, price: float, result_pct: Optional[f
         writer = csv.writer(f)
         result_str = f"{result_pct:.2f}" if result_pct is not None else ""
         writer.writerow([
-            datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+            get_now().strftime("%Y-%m-%d %H:%M:%S"),
             trade_type,
             reason,
             f"{price:.4f}",
@@ -1699,7 +1709,7 @@ async def check_downtrend_alerts(bot: Bot, chat_id: str, analysis: dict, candles
             f"{reason}\n\n"
             "الهدف المحتمل للكسر:\n"
             f"{target_text}\n\n"
-            f"⏱ الوقت: {datetime.now(timezone.utc).strftime('%H:%M:%S')} UTC\n\n"
+            f"⏱ الوقت (مكة): {get_now().strftime('%H:%M:%S')}\n\n"
             "❌ تنبيه فقط – لا يوجد أي تنفيذ تداول"
         )
         if await send_signal_message(bot, chat_id, msg, "downtrend_alert"):
