@@ -447,6 +447,11 @@ PRICE_REENTRY_BAND = 0.05      # % منطقة منع إعادة الدخول (م
 PRICE_INVALIDATION = 0.08      # % لتحرير الذاكرة
 MAX_CONSECUTIVE_LOOPS = 3      # أقصى تكرار للمكاسب الصغيرة
 
+# Zero-Move Loop Fix Constants (v3.7.3)
+MIN_EXIT_PRICE_MOVE_PCT = 0.01   # أقل حركة سعر تعتبر خروجًا حقيقيًا
+MIN_EXIT_TIME_SECONDS = 10       # أقل مدة صفقة قبل السماح بالخروج التقني
+HARD_EXIT_REASONS = ["STOP_LOSS", "MANUAL_CLOSE", "FORCE_CLOSE", "MAINTENANCE"]
+
 class BotState:
     def __init__(self):
         self.mode: str = "AGGRESSIVE"  # Force Aggressive Mode
@@ -1221,6 +1226,20 @@ def execute_paper_exit(entry_price: float, exit_price: float, reason: str,
     pnl_usdt = (exit_price - entry_price) * qty
     pnl_pct = ((exit_price - entry_price) / entry_price) * 100
     
+    # Calculate price move percentage
+    price_move_pct = abs(pnl_pct)
+    trade_duration_sec = duration_min * 60
+    
+    # Zero-Move Loop Fix (v3.7.3): Block fake exits
+    # Hard exits always allowed (STOP_LOSS, MANUAL_CLOSE, etc.)
+    if reason.upper() not in HARD_EXIT_REASONS:
+        if price_move_pct < MIN_EXIT_PRICE_MOVE_PCT and trade_duration_sec < MIN_EXIT_TIME_SECONDS:
+            logger.info(
+                f"[HOTFIX] Exit blocked | reason={reason}, "
+                f"move={price_move_pct:.4f}%, duration={trade_duration_sec}s"
+            )
+            return 0.0, 0.0, paper_state.balance
+    
     # Logging Validation (Hard Check - 3.6.2)
     if not (qty > 0 and (abs(pnl_usdt) > 0 or exit_price == entry_price)):
         logger.error(f"Validation failed: Qty={qty}, PnL={pnl_usdt}. Skipping balance update.")
@@ -1231,14 +1250,16 @@ def execute_paper_exit(entry_price: float, exit_price: float, reason: str,
     paper_state.balance += pnl_usdt
     paper_state.update_peak()
     
-    # LPEM Activation Logic (v3.7.2 - Fixed Wiring)
-    # Activate LPEM only for small profits (0.01% to 0.06%)
-    if 0.01 <= pnl_pct <= 0.06:
-        activate_lpem("LONG", exit_price, pnl_pct, reason)
+    # LPEM Activation Logic (v3.7.2 - Fixed Wiring + v3.7.3 Zero-Move Protection)
+    # Only record LPEM if there's actual price movement
+    if price_move_pct >= MIN_EXIT_PRICE_MOVE_PCT:
+        if 0.01 <= pnl_pct <= 0.06:
+            activate_lpem("LONG", exit_price, pnl_pct, reason)
+        else:
+            if pnl_pct <= 0 or pnl_pct > 0.06:
+                release_lpem("major_exit_or_loss")
     else:
-        # If exit is outside small profit range, release LPEM
-        if pnl_pct <= 0 or pnl_pct > 0.06:
-            release_lpem("major_exit_or_loss")
+        logger.info(f"[LPEM] Ignored zero-move exit: move={price_move_pct:.4f}%")
     
     if pnl_usdt < 0:
         paper_state.loss_streak += 1
