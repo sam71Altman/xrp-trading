@@ -1,0 +1,103 @@
+Maintain aggressive scalping behavior
+WHILE fixing two confirmed critical weaknesses:
+دخول صفقات ضعيفة جدًا (Score منخفض + تشبع)
+الدخول عند القمم بسبب شموع ممتدة أو رفض سعري واضح
+❗ بدون تقليل سرعة التداول
+❗ بدون تحويل الاستراتيجية إلى محافظة
+❗ بدون انتظار إغلاق شموع
+⚙️ GENERAL CONSTRAINTS (صارمة)
+❌ لا انتظار إغلاق شمعة
+❌ لا انتظار شمعتين
+❌ لا Trend-only logic
+❌ لا مؤشرات جديدة
+❌ لا تغيير TP / SL
+❌ لا تغيير Paper Trading
+❌ لا تغيير Telegram UI أو الأزرار
+❌ لا تغيير سرعة التنفيذ (<100ms)
+✔ المنطق الحالي يبقى كما هو
+✔ هذا فلتر حماية فقط
+1️⃣ SCORE + RSI HARD BLOCK (إصلاح مباشر)
+الهدف:
+منع أسوأ الصفقات فقط (اللي تثبت أنها خاسرة)
+نسخ التعليمات البرمجية
+Python
+IF score <= 2 AND (RSI > 68 OR RSI < 32):
+    BLOCK ENTRY COMPLETELY
+    LOSS_CLASSIFICATION = "WEAK_ENTRY"
+📌 ملاحظات:
+لا يُطبق إلا على Score ≤ 2
+RSI لا يؤثر على الصفقات المتوسطة أو القوية
+لا تغيير في حساب الـ Score نفسه
+الـ Score يظل يُعرض للمستخدم
+2️⃣ EXTENDED PRICE PROTECTION (بسيط وفعّال)
+تعريف السعر الممتد (ANY condition):
+نسخ التعليمات البرمجية
+Python
+EXTENDED = False
+
+# A) EMA Distance
+IF abs(price - EMA20) >= 0.20%:
+    EXTENDED = True
+
+# B) Candle Body Expansion
+current_body = abs(open - close)
+avg_body_5 = average(last_5_bodies)
+IF current_body > avg_body_5 * 1.5:
+    EXTENDED = True
+
+# C) Wick Rejection (أهم إضافة)
+upper_wick = high - max(open, close)
+candle_range = high - low
+IF candle_range > 0 AND (upper_wick / candle_range) > 0.65:
+    EXTENDED = True
+3️⃣ EXTENDED + WEAK SIGNAL = BLOCK (بدون انتظار)
+نسخ التعليمات البرمجية
+Python
+IF EXTENDED AND score <= 3:
+    BLOCK ENTRY
+    LOSS_CLASSIFICATION = "WEAK_ENTRY"
+✔ لا انتظار
+✔ لا شموع
+✔ لا تباطؤ
+✔ حماية مباشرة من القمم والانعكاسات الوهمية
+4️⃣ EXTENDED + STRONG SIGNAL = ALLOW (بدون تعديل)
+نسخ التعليمات البرمجية
+Python
+IF EXTENDED AND score >= 4:
+    ALLOW ENTRY
+📌 لا:
+تقليل حجم
+انتظار
+تأخير
+شروط إضافية
+السكالبينغ يبقى عدواني.
+5️⃣ WHAT MUST NOT CHANGE (تأكيد نهائي)
+يحظر تعديل أو لمس:
+Take Profit logic
+Stop Loss logic
+Re-entry speed
+Execution timing
+Cooldown system
+Paper Trading mechanics
+Telegram messages / buttons
+Existing loss classification system
+🏷️ VERSION TAG
+نسخ التعليمات البرمجية
+Python
+VERSION = "3.6-B – Clean Aggressive Scalping"
+✅ EXPECTED REALISTIC RESULTS
+❌ اختفاء صفقات:
+Score 1/10
+الدخول بعد شمعة ممتدة
+✔ نفس سرعة الدخول
+✔ نفس عدد الصفقات تقريبًا (±5%)
+✔ انخفاض ملحوظ في:
+WEAK_ENTRY losses
+انعكاسات فورية بعد الدخول
+✔ الإحساس العام:
+“نفس البوت… بس أقل غباء عند القمم”
+🔒 ROLLBACK CONDITION
+Rollback فوري إذا:
+قلّ عدد الصفقات >10%
+المستخدم شعر إن البوت “صار ثقيل”
+أي latency فوق 100ms

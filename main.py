@@ -655,6 +655,54 @@ def is_low_liquidity_session() -> bool:
     return False
 
 
+def calculate_rsi(prices: List[float], period: int = 14) -> float:
+    if len(prices) < period + 1:
+        return 50.0
+    
+    deltas = [prices[i+1] - prices[i] for i in range(len(prices)-1)]
+    gains = [d if d > 0 else 0 for d in deltas]
+    losses = [-d if d < 0 else 0 for d in deltas]
+    
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+    
+    if avg_loss == 0:
+        return 100.0
+        
+    for i in range(period, len(deltas)):
+        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+        
+    if avg_loss == 0:
+        return 100.0
+        
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
+
+def check_extended_price(price: float, analysis: dict, candles: List[dict]) -> bool:
+    # A) EMA Distance
+    ema20 = analysis.get("ema_short", 0)
+    if ema20 > 0 and abs(price - ema20) / ema20 >= 0.0020:
+        return True
+        
+    # B) Candle Body Expansion
+    if len(candles) >= 6:
+        bodies = [abs(c["open"] - c["close"]) for c in candles[-6:-1]]
+        avg_body_5 = sum(bodies) / 5
+        current_body = abs(candles[-1]["open"] - candles[-1]["close"])
+        if current_body > avg_body_5 * 1.5:
+            return True
+            
+    # C) Wick Rejection
+    last_candle = candles[-1]
+    candle_range = last_candle["high"] - last_candle["low"]
+    if candle_range > 0:
+        upper_wick = last_candle["high"] - max(last_candle["open"], last_candle["close"])
+        if (upper_wick / candle_range) > 0.65:
+            return True
+            
+    return False
+
 def check_buy_signal(analysis: dict, candles: List[dict]) -> bool:
     if "error" in analysis:
         return False
@@ -667,22 +715,42 @@ def check_buy_signal(analysis: dict, candles: List[dict]) -> bool:
     prev_close = analysis["prev_close"]
     ema20 = analysis["ema_short"]
     
+    # Calculate Score and RSI for filtering
+    score, reasons = calculate_signal_score(analysis, candles)
+    prices = [c["close"] for c in candles]
+    rsi = calculate_rsi(prices)
+    is_extended = check_extended_price(current_close, analysis, candles)
+    
+    # 1. SCORE + RSI HARD BLOCK
+    if score <= 2 and (rsi > 68 or rsi < 32):
+        logger.info(f"[AGG] Blocked: Weak Entry (Score={score}, RSI={rsi:.1f})")
+        return False
+        
+    # 2. EXTENDED + WEAK SIGNAL = BLOCK
+    if is_extended and score <= 3:
+        logger.info(f"[AGG] Blocked: Weak Extended (Score={score}, Extended=True)")
+        return False
+    
+    # Entry Logic (Same as before)
     # 1. Price touches/dips below EMA20 and rejects upward
     low_hit = any(c["low"] <= ema20 for c in candles[-2:])
     if low_hit and current_close > ema20:
         state.last_signal_reason = "EMA bounce"
+        state.last_signal_score = score
         return True
     
-    # 2. Momentum: +0.05% to +0.10% within short window
+    # 2. Momentum
     price_change = (current_close - prev_close) / prev_close * 100
     if price_change >= 0.05:
         state.last_signal_reason = "Momentum"
+        state.last_signal_score = score
         return True
         
-    # 3. Micro breakout of recent high (last 3 candles)
+    # 3. Micro breakout
     recent_high = max([c["high"] for c in candles[-4:-1]])
     if current_close > recent_high:
         state.last_signal_reason = "Micro breakout"
+        state.last_signal_score = score
         return True
         
     return False
@@ -922,11 +990,12 @@ def get_confirm_keyboard():
 
 def format_welcome_message() -> str:
     return (
-        f"🤖 *بوت إشارات {SYMBOL_DISPLAY} V3.5.1*\n"
+        f"🤖 *بوت إشارات {SYMBOL_DISPLAY} V3.6-B*\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"🔥 نمط المضاربة العنيف: مفعّل (Aggressive Mode)\n"
         f"💰 الرصيد الحالي: {paper_state.balance:.2f} USDT\n"
         f"🛡️ نظام Kill Switch: مُعطل (Aggressive Mode)\n"
+        f"🛡️ حماية السعر الممتد: مفعّلة (Price Protection)\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"استخدم الأزرار أدناه للتحكم"
     )
@@ -942,14 +1011,14 @@ def format_status_message() -> str:
         pos_status = f"✅ صفقة مفتوحة ({pnl:+.2f}%)"
     
     return (
-        f"📊 *حالة البوت الحالية V3.5.1*\n"
+        f"📊 *حالة البوت الحالية V3.6-B*\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"🤖 الحالة: {status}\n"
         f"🛡️ Kill Switch: {ks_status}\n"
         f"⏱️ الفريم: {state.timeframe}\n"
         f"💰 الرصيد: {paper_state.balance:.2f} USDT\n"
         f"📍 الصفقة: {pos_status}\n"
-        f"🚀 النمط: Aggressive Scalping\n"
+        f"🚀 النمط: Clean Aggressive Scalping\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"آخر سعر: {state.last_close if state.last_close else '---'}"
     )
@@ -1585,7 +1654,7 @@ async def main() -> None:
     logger.info("Starting polling...")
     await application.updater.start_polling(drop_pending_updates=True)
     
-    print(f"🚀 بوت إشارات {SYMBOL_DISPLAY} V3.5.1 يعمل...")
+    print(f"🚀 بوت إشارات {SYMBOL_DISPLAY} V3.6-B يعمل...")
     
     # Keep running
     try:
