@@ -248,19 +248,24 @@ def log_loss_event(loss_type: str, pnl_pct: float, entry_price: float, exit_pric
             f"{exit_price:.4f}"
         ])
 
-# ثوابت زمنية (v3.7)
-MIN_MONITOR_DELAY = 5      # ثواني: لا تبدأ المراقبة قبل
-MAX_MONITOR_WINDOW = 180   # ثواني: توقف بعد 3 دقائق
-SHORT_TIME_WINDOW = 30     # ثواني: نافذة "الرفض المبكر"
+# Monitoring (v3.7.1-lite)
+MIN_MONITOR_DELAY = 5        # seconds after entry
+DEBOUNCE_WINDOW = 15         # seconds (ticks approximate)
 
-# ثوابت السعر
-REJECTION_ZONE = 0.03      # %: منطقة العودة للدخول
-SLOPE_DEGRADATION = 0.3    # %: انخفاض منحدر EMA20 المسموح
+# Required persistence per flag type (3.7.1-lite)
+REQUIRED_FLAGS = {
+    'early_rejection': 2,    # strongest signal
+    'momentum_decay': 3,     # medium strength
+    'weak_momentum': 3       # weakest signal
+}
 
-# منطق الاستجابة
-ACTION_1_FLAG = "MONITOR"      # راقب فقط
-ACTION_2_FLAGS = "TIGHTEN_SL"  # شد وقف الخسارة
-ACTION_3_FLAGS = "EXIT_EARLY"  # اخرج مبكراً
+# Bounce Guard (3.7.1-lite)
+RECOVERY_THRESHOLD = 0.015   # % recovery
+MAX_BOUNCE_TIME = 45         # seconds
+
+# Fast Exit Zone (3.7.1-lite)
+FAST_EXIT_ZONE_SECONDS = 20
+FAST_EXIT_REQUIRED_FLAGS = 2
 
 class ExitIntelligenceLayer:
     def __init__(self):
@@ -269,12 +274,16 @@ class ExitIntelligenceLayer:
         self.entry_time = None
         self.entry_ema_slope = 0.0
         self.max_price_seen = 0.0
+        self.min_price_since_high = 0.0
         self.last_high_time = None
+        self.flag_history = [] # List of dicts per tick
+        self.recent_prices = [] # (timestamp, price)
         self.stats = {
             "total_monitored_trades": 0,
             "early_exits_triggered": 0,
             "losses_prevented": 0,
-            "false_exits": 0
+            "false_exits": 0,
+            "bounce_protected": 0
         }
 
     def start_monitoring(self, entry_price: float, ema_slope: float):
@@ -283,12 +292,35 @@ class ExitIntelligenceLayer:
         self.entry_time = datetime.now(timezone.utc)
         self.entry_ema_slope = ema_slope
         self.max_price_seen = entry_price
+        self.min_price_since_high = entry_price
         self.last_high_time = self.entry_time
+        self.flag_history = []
+        self.recent_prices = []
         self.stats["total_monitored_trades"] += 1
-        logger.info(f"[INTEL] Started monitoring at {entry_price}")
+        logger.info(f"[INTEL] Started monitoring v3.7.1-lite at {entry_price}")
 
     def stop_monitoring(self):
         self.monitoring_active = False
+
+    def is_healthy_bounce(self, current_price: float) -> bool:
+        # Prevent early exit during healthy pullbacks (LONG only assumed as per logic)
+        if not self.recent_prices:
+            return False
+            
+        now = datetime.now(timezone.utc)
+        # last 10 seconds low
+        ten_sec_ago = now - timedelta(seconds=10)
+        recent_ticks = [p for t, p in self.recent_prices if t >= ten_sec_ago]
+        if not recent_ticks:
+            return False
+            
+        recent_low = min(recent_ticks)
+        
+        if self.entry_price > recent_low:
+            recovery_ratio = (current_price - recent_low) / (self.entry_price - recent_low)
+            return recovery_ratio > 0.5 # recovered >50%
+            
+        return False
 
     def monitor(self, current_price: float, current_ema_slope: float) -> str:
         if not self.monitoring_active or not self.entry_time:
@@ -296,6 +328,11 @@ class ExitIntelligenceLayer:
 
         now = datetime.now(timezone.utc)
         duration = (now - self.entry_time).total_seconds()
+        self.recent_prices.append((now, current_price))
+        
+        # Cleanup old prices
+        if len(self.recent_prices) > 60: # Keep roughly 5 mins of ticks
+            self.recent_prices.pop(0)
 
         if duration < MIN_MONITOR_DELAY:
             return "NO_ACTION"
@@ -308,34 +345,59 @@ class ExitIntelligenceLayer:
             self.max_price_seen = current_price
             self.last_high_time = now
 
-        flags_count = 0
+        # 1. Capture momentary flags
+        current_flags = {
+            'weak_momentum': False,
+            'momentum_decay': False,
+            'early_rejection': False
+        }
         
         # A) فشل استمرار الزخم
         time_since_high = (now - self.last_high_time).total_seconds()
         dist_from_entry = (current_price - self.entry_price) / self.entry_price
         if time_since_high >= 15 and dist_from_entry < 0.001:
-            flags_count += 1
+            current_flags['weak_momentum'] = True
             
         # B) تدهور منحدر EMA20
         if duration >= 10 and self.entry_ema_slope != 0:
             slope_ratio = current_ema_slope / self.entry_ema_slope
             if slope_ratio < SLOPE_DEGRADATION:
-                flags_count += 1
+                current_flags['momentum_decay'] = True
                 
         # C) العودة السريعة لمنطقة الدخول
         if duration <= SHORT_TIME_WINDOW:
             price_diff_pct = abs(current_price - self.entry_price) / self.entry_price * 100
             if price_diff_pct <= REJECTION_ZONE and (self.max_price_seen / self.entry_price - 1) > 0.0005:
-                flags_count += 1
+                current_flags['early_rejection'] = True
 
-        # Response logic
-        if flags_count == 1:
-            return ACTION_1_FLAG
-        elif flags_count == 2:
-            return ACTION_2_FLAGS if duration < 60 else ACTION_1_FLAG
-        elif flags_count >= 3:
-            return ACTION_3_FLAGS if duration < 45 else ACTION_2_FLAGS
-            
+        self.flag_history.append(current_flags)
+        if len(self.flag_history) > 30: # Max history for debounce
+            self.flag_history.pop(0)
+
+        # 2. Check Persistence (v3.7.1-lite)
+        effective_flags = 0
+        for ftype, req in REQUIRED_FLAGS.items():
+            count = sum(1 for tick in self.flag_history if tick[ftype])
+            if count >= req:
+                effective_flags += 1
+
+        # 3. Healthy Bounce Protection (v3.7.1-lite)
+        if self.is_healthy_bounce(current_price):
+            self.flag_history = [] # Reset flags
+            self.stats["bounce_protected"] += 1
+            logger.info(f"[INTEL] Bounce Guard blocked exit at {current_price}")
+            return "NO_ACTION"
+
+        # 4. Final Decision (v3.7.1-lite)
+        if duration < FAST_EXIT_ZONE_SECONDS:
+            if effective_flags >= FAST_EXIT_REQUIRED_FLAGS:
+                return ACTION_3_FLAGS
+        else:
+            if effective_flags >= 3:
+                return ACTION_3_FLAGS
+            elif effective_flags >= 2:
+                return ACTION_2_FLAGS
+                
         return "NO_ACTION"
 
 exit_intel = ExitIntelligenceLayer()
@@ -1066,7 +1128,7 @@ def update_cooldown_after_exit(reason: str):
         state.current_cooldown = COOLDOWN_NORMAL
 
 
-VERSION = "3.7 – Exit Intelligence (Aggressive)"
+VERSION = "3.7.1-lite – Exit Intelligence Calibration"
 
 def get_main_keyboard():
     keyboard = [
@@ -1696,7 +1758,7 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                 logger.warning(f"[INTEL] Execution exceeded 100ms: {(time.time() - start_intel)*1000:.2f}ms")
             
             if intel_action == ACTION_3_FLAGS:
-                exit_reason = "intel_early_exit"
+                exit_reason = "TREND_REVERSAL_PREVENTED" # v3.7.1-lite
                 pnl_pct, pnl_usdt, balance = execute_paper_exit(state.entry_price, current_price, exit_reason, 10, 0)
                 reset_position_state()
                 update_cooldown_after_exit(exit_reason)

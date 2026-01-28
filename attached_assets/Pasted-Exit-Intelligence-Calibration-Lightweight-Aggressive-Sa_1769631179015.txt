@@ -1,0 +1,130 @@
+Exit Intelligence Calibration (Lightweight & Aggressive-Safe)
+You are updating an existing XRP/USDT aggressive scalping bot.
+The bot is already running v3.7 – Exit Intelligence successfully.
+This update is a calibration patch ONLY to reduce false early exits,
+without changing entry behavior, speed, or trade frequency.
+🎯 OBJECTIVE
+Reduce false early exits by ~40–60%
+while preserving:
+≥90% of v3.7 trend-reversal prevention
+Execution speed <100ms
+Same trade frequency (±5%)
+Same aggressive scalping feel
+🚫 ABSOLUTE CONSTRAINTS (NON-NEGOTIABLE)
+❌ Do NOT modify entry logic
+❌ Do NOT modify score system
+❌ Do NOT add indicators
+❌ Do NOT use volume logic
+❌ Do NOT wait for candle close
+❌ Do NOT add throttling or cooldowns
+❌ Do NOT add confidence scores
+❌ Do NOT change Telegram UI or commands
+❌ Do NOT reduce trade frequency
+If any of the above occurs → rollback immediately.
+🧠 CORE PHILOSOPHY (v3.7.1-lite)
+Exit only when weakness PERSISTS
+AND price action does NOT show a healthy bounce.
+Exit Intelligence remains a post-entry observer, not a governor.
+⚙️ PARAMETERS (LIGHT & SAFE)
+نسخ التعليمات البرمجية
+Python
+# Monitoring
+MIN_MONITOR_DELAY = 5        # seconds after entry
+DEBOUNCE_WINDOW = 15         # seconds
+
+# Required persistence per flag type
+REQUIRED_FLAGS = {
+    'early_rejection': 2,    # strongest signal
+    'momentum_decay': 3,     # medium strength
+    'weak_momentum': 3       # weakest signal
+}
+
+# Bounce Guard
+RECOVERY_THRESHOLD = 0.015   # % recovery
+MAX_BOUNCE_TIME = 45         # seconds
+
+# Fast Exit Zone
+FAST_EXIT_ZONE_SECONDS = 20
+FAST_EXIT_REQUIRED_FLAGS = 2
+1️⃣ TEMPORAL DEBOUNCE (SIMPLIFIED)
+Flags must be persistent, not momentary.
+نسخ التعليمات البرمجية
+Python
+def is_flag_persistent(flag_type, flag_history):
+    count = sum(1 for tick in flag_history if tick[flag_type])
+    return count >= REQUIRED_FLAGS[flag_type]
+Flags that are not persistent are ignored.
+2️⃣ BOUNCE GUARD (PRICE ACTION ONLY)
+Prevent early exit during healthy pullbacks.
+نسخ التعليمات البرمجية
+Python
+def is_healthy_bounce(position_type, price_data):
+    recent_low = price_data.recent_low(10)   # last 10 seconds
+    current = price_data.current_price
+    entry = price_data.entry_price
+
+    if position_type == 'LONG':
+        if entry > recent_low:
+            recovery_ratio = (current - recent_low) / (entry - recent_low)
+            return recovery_ratio > 0.5   # recovered >50%
+
+    return False
+If a healthy bounce is detected:
+نسخ التعليمات البرمجية
+Python
+RESET all exit flags
+BLOCK early exit
+3️⃣ EXIT DECISION LOGIC (FINAL)
+نسخ التعليمات البرمجية
+Python
+def should_exit_early(trade, market_data):
+    t = trade.time_since_entry()
+
+    # Too early to judge
+    if t < MIN_MONITOR_DELAY:
+        return False
+
+    persistent_flags = get_persistent_flags(trade, market_data)
+    effective_flags = count_true(persistent_flags)
+
+    # Healthy bounce protection
+    if is_healthy_bounce(trade.position_type, market_data):
+        reset_all_flags()
+        return False
+
+    # Fast Exit Zone (first seconds only)
+    if t < FAST_EXIT_ZONE_SECONDS:
+        return effective_flags >= FAST_EXIT_REQUIRED_FLAGS
+
+    # Normal behavior
+    return effective_flags >= 3
+📌 No confidence scoring
+📌 No throttling
+📌 No cooldowns
+4️⃣ LOSS CLASSIFICATION
+When early exit occurs:
+نسخ التعليمات البرمجية
+Python
+LOSS_TYPE = "TREND_REVERSAL_PREVENTED"
+When bounce guard blocks exit:
+نسخ التعليمات البرمجية
+Python
+LOG_EVENT = "BOUNCE_PROTECTED"
+No other classification changes allowed.
+🏷 VERSION TAG
+نسخ التعليمات البرمجية
+Python
+VERSION = "3.7.1-lite – Exit Intelligence Calibration"
+✅ EXPECTED OUTCOME
+↓ False early exits by ~50%
+↓ Premature exits during healthy pullbacks
+Same trade frequency (±5%)
+Same execution speed (<100ms)
+Same aggressive scalping behavior
+Cleaner post-entry exits
+🔄 ROLLBACK CONDITIONS
+Rollback to v3.7 if ANY occurs:
+Trade frequency drops >5%
+Execution latency increases
+Trend-reversal losses increase noticeably
+User feedback: “البوت صار ثقيل / متردد”
