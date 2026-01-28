@@ -13,6 +13,7 @@ import time
 import threading
 import json
 import websocket
+from version import BOT_VERSION
 from price_engine import PriceEngine, TradingGuard, TelegramReporter, FailSafeSystem, ValidationChecks
 from datetime import datetime, timezone, timedelta
 try:
@@ -190,7 +191,7 @@ DOWNTREND_ALERT_COOLDOWN = 300  # 5 minutes in seconds
 
 ATR_PERIOD = 14
 ATR_MULTIPLIER = 2.0
-VERSION = "3.4 – ATR SL + Loss Analysis Button"
+VERSION = BOT_VERSION
 LOSS_EVENTS_FILE = "loss_events.csv"
 
 # --- In-memory counters for loss analysis ---
@@ -1117,8 +1118,21 @@ def execute_paper_exit(entry_price: float, exit_price: float, reason: str,
     if state.consecutive_losses >= 2:
         state.pause_until = get_now() + timedelta(minutes=COOLDOWN_PAUSE_MINUTES)
     
+    # 1. Store raw values
+    trade_pnl_pct = pnl_pct
+    trade_pnl_usdt = pnl_usdt
+    
+    # 2. Format for display (rounding only here)
+    display_pnl_pct = round(trade_pnl_pct, 2)
+    display_pnl_usdt = round(trade_pnl_usdt, 2)
+    
+    # 3. Handle 0.00 rounding issues
+    if abs(display_pnl_pct) < 0.01:
+        display_pnl_pct = 0.00
+        display_pnl_usdt = 0.00
+
     log_paper_trade(
-        "EXIT", entry_price, exit_price, pnl_pct, pnl_usdt,
+        "EXIT", entry_price, exit_price, trade_pnl_pct, trade_pnl_usdt,
         paper_state.balance, score, paper_state.entry_reason,
         reason, duration_min
     )
