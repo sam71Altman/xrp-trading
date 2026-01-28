@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-XRP/USDT Telegram Signals Bot V3.3 + Paper Trading
+XRP/USDT Telegram Signals Bot {BOT_VERSION} + Paper Trading
 بوت إشارات تداول يرسل إشارات دخول/خروج لزوج XRP/USDT
-V3.3: TP Trigger & Risk-Free Management
+{BOT_VERSION}: TP Trigger & Risk-Free Management
 """
 
 import os
@@ -273,7 +273,7 @@ def log_loss_event(loss_type: str, pnl_pct: float, entry_price: float, exit_pric
             f"{exit_price:.4f}"
         ])
 
-# Monitoring (v3.7.1-lite)
+# Monitoring ({BOT_VERSION})
 MIN_MONITOR_DELAY = 5        # seconds after entry
 DEBOUNCE_WINDOW = 15         # seconds (ticks approximate)
 MAX_MONITOR_WINDOW = 180     # seconds (v3.7)
@@ -284,18 +284,18 @@ ACTION_1_FLAG = "MONITOR"
 ACTION_2_FLAGS = "PREPARE"
 ACTION_3_FLAGS = "EXIT"
 
-# Required persistence per flag type (3.7.1-lite)
+# Required persistence per flag type ({BOT_VERSION})
 REQUIRED_FLAGS = {
     'early_rejection': 2,    # strongest signal
     'momentum_decay': 3,     # medium strength
     'weak_momentum': 3       # weakest signal
 }
 
-# Bounce Guard (3.7.1-lite)
+# Bounce Guard ({BOT_VERSION})
 RECOVERY_THRESHOLD = 0.015   # % recovery
 MAX_BOUNCE_TIME = 45         # seconds
 
-# Fast Exit Zone (3.7.1-lite)
+# Fast Exit Zone ({BOT_VERSION})
 FAST_EXIT_ZONE_SECONDS = 20
 FAST_EXIT_REQUIRED_FLAGS = 2
 
@@ -329,7 +329,7 @@ class ExitIntelligenceLayer:
         self.flag_history = []
         self.recent_prices = []
         self.stats["total_monitored_trades"] += 1
-        logger.info(f"[INTEL] Started monitoring v3.7.1-lite at {entry_price}")
+        logger.info(f"[INTEL] Started monitoring {BOT_VERSION} at {entry_price}")
 
     def stop_monitoring(self):
         self.monitoring_active = False
@@ -407,21 +407,21 @@ class ExitIntelligenceLayer:
         if len(self.flag_history) > 30: # Max history for debounce
             self.flag_history.pop(0)
 
-        # 2. Check Persistence (v3.7.1-lite)
+        # 2. Check Persistence ({BOT_VERSION})
         effective_flags = 0
         for ftype, req in REQUIRED_FLAGS.items():
             count = sum(1 for tick in self.flag_history if tick[ftype])
             if count >= req:
                 effective_flags += 1
 
-        # 3. Healthy Bounce Protection (v3.7.1-lite)
+        # 3. Healthy Bounce Protection ({BOT_VERSION})
         if self.is_healthy_bounce(current_price):
             self.flag_history = [] # Reset flags
             self.stats["bounce_protected"] += 1
             logger.info(f"[INTEL] Bounce Guard blocked exit at {current_price}")
             return "NO_ACTION"
 
-        # 4. Final Decision (v3.7.1-lite)
+        # 4. Final Decision ({BOT_VERSION})
         if duration < FAST_EXIT_ZONE_SECONDS:
             if effective_flags >= FAST_EXIT_REQUIRED_FLAGS:
                 return ACTION_3_FLAGS
@@ -1324,7 +1324,7 @@ def get_confirm_keyboard():
 
 def format_welcome_message() -> str:
     return (
-        f"🤖 *بوت إشارات {SYMBOL_DISPLAY} V3.6-B*\n"
+        f"🤖 *بوت إشارات {SYMBOL_DISPLAY} {BOT_VERSION}*\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"🔥 نمط المضاربة العنيف: مفعّل (Aggressive Mode)\n"
         f"💰 الرصيد الحالي: {paper_state.balance:.2f} USDT\n"
@@ -1345,7 +1345,7 @@ def format_status_message() -> str:
         pos_status = f"✅ صفقة مفتوحة ({pnl:+.2f}%)"
     
     return (
-        f"📊 *حالة البوت الحالية V3.6-B*\n"
+        f"📊 *حالة البوت الحالية {BOT_VERSION}*\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"🤖 الحالة: {status}\n"
         f"🛡️ Kill Switch: {ks_status}\n"
@@ -1402,7 +1402,7 @@ def format_stats_message() -> str:
 
 def format_rules_message() -> str:
     return (
-        f"⚖️ *قواعد التداول V3.3*\n"
+        f"⚖️ *قواعد التداول {BOT_VERSION}*\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"🔹 حجم الصفقة: {FIXED_TRADE_SIZE} USDT\n"
         f"🔹 محفز الربح (Trigger): {TAKE_PROFIT_PCT}%\n"
@@ -1994,7 +1994,7 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                 logger.warning(f"[INTEL] Execution exceeded 100ms: {(time.time() - start_intel)*1000:.2f}ms")
             
             if intel_action == ACTION_3_FLAGS:
-                exit_reason = "TREND_REVERSAL_PREVENTED" # v3.7.1-lite
+                exit_reason = "TREND_REVERSAL_PREVENTED" # {BOT_VERSION}
                 pnl_pct, pnl_usdt, balance = execute_paper_exit(state.entry_price, current_price, exit_reason, 10, 0)
                 reset_position_state()
                 update_cooldown_after_exit(exit_reason)
@@ -2033,7 +2033,7 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
             if exit_reason:
                 exit_price = analysis["close"]
                 duration = get_trade_duration_minutes()
-                # Pass consistent score (v3.7.1-lite)
+                # Pass consistent score ({BOT_VERSION})
                 pnl_pct, pnl_usdt, balance = execute_paper_exit(state.entry_price, exit_price, exit_reason, state.last_signal_score, duration)
                 log_trade("EXIT", exit_reason.upper(), exit_price, pnl_pct)
                 msg = format_exit_message(state.entry_price, exit_price, pnl_pct, pnl_usdt, exit_reason, duration, balance)
@@ -2046,7 +2046,7 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
             elif state.mode == "AGGRESSIVE" and check_sell_signal(analysis, candles):
                 exit_price = analysis["close"]
                 duration = get_trade_duration_minutes()
-                # Pass consistent score (v3.7.1-lite)
+                # Pass consistent score ({BOT_VERSION})
                 pnl_pct, pnl_usdt, balance = execute_paper_exit(state.entry_price, exit_price, "aggressive_flip", state.last_signal_score, duration)
                 log_trade("EXIT", "AGGRESSIVE_FLIP", exit_price, pnl_pct)
                 msg = format_exit_message(state.entry_price, exit_price, pnl_pct, pnl_usdt, "aggressive_flip", duration, balance)
@@ -2070,7 +2070,7 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                 
                 tp, sl = calculate_targets(entry_price, candles)
                 
-                # Fixed Score Calculation: Single source of truth (v3.7.1-lite)
+                # Fixed Score Calculation: Single source of truth ({BOT_VERSION})
                 score, reasons = calculate_signal_score(analysis, candles)
                 state.last_signal_score = score
                 state.last_signal_reasons = reasons
@@ -2108,10 +2108,12 @@ async def main() -> None:
         print("❌ الرجاء تعيين TG_TOKEN و TG_CHAT_ID")
         return
     
-    # v3.7.1-lite Integrity Check
+    # {BOT_VERSION} Integrity Check
     def validate_data_integrity():
         from version import BOT_VERSION
         import math
+        
+        logger.info(f"[BOOT] Bot version loaded: {BOT_VERSION}")
         
         # 1. Test PnL Calculation & Rounding Protection
         test_entry = 1.0000
@@ -2180,7 +2182,7 @@ async def main() -> None:
     logger.info("Starting polling...")
     await application.updater.start_polling(drop_pending_updates=True)
     
-    print(f"🚀 بوت إشارات {SYMBOL_DISPLAY} V3.6-B يعمل...")
+    print(f"🚀 بوت إشارات {SYMBOL_DISPLAY} {BOT_VERSION} يعمل...")
     
     # Keep running
     try:
