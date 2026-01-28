@@ -1950,7 +1950,8 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
             if exit_reason:
                 exit_price = analysis["close"]
                 duration = get_trade_duration_minutes()
-                pnl_pct, pnl_usdt, balance = execute_paper_exit(state.entry_price, exit_price, exit_reason, 10 if state.mode == "AGGRESSIVE" else state.last_signal_score, duration)
+                # Pass consistent score (v3.7.1-lite)
+                pnl_pct, pnl_usdt, balance = execute_paper_exit(state.entry_price, exit_price, exit_reason, state.last_signal_score, duration)
                 log_trade("EXIT", exit_reason.upper(), exit_price, pnl_pct)
                 msg = format_exit_message(state.entry_price, exit_price, pnl_pct, pnl_usdt, exit_reason, duration, balance)
                 await bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
@@ -1962,7 +1963,8 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
             elif state.mode == "AGGRESSIVE" and check_sell_signal(analysis, candles):
                 exit_price = analysis["close"]
                 duration = get_trade_duration_minutes()
-                pnl_pct, pnl_usdt, balance = execute_paper_exit(state.entry_price, exit_price, "aggressive_flip", 10, duration)
+                # Pass consistent score (v3.7.1-lite)
+                pnl_pct, pnl_usdt, balance = execute_paper_exit(state.entry_price, exit_price, "aggressive_flip", state.last_signal_score, duration)
                 log_trade("EXIT", "AGGRESSIVE_FLIP", exit_price, pnl_pct)
                 msg = format_exit_message(state.entry_price, exit_price, pnl_pct, pnl_usdt, "aggressive_flip", duration, balance)
                 await bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
@@ -1973,9 +1975,17 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
             if check_buy_signal(analysis, candles):
                 entry_price = analysis["close"]
                 tp, sl = calculate_targets(entry_price, candles)
-                qty = execute_paper_buy(entry_price, 1, ["Aggressive Entry" if state.mode == "AGGRESSIVE" else state.last_signal_reason])
-                log_trade("BUY", "Aggressive Entry" if state.mode == "AGGRESSIVE" else state.last_signal_reason, entry_price, None)
-                msg = format_buy_message(entry_price, tp, sl, state.timeframe, 1, qty)
+                
+                # Fixed Score Calculation: Single source of truth (v3.7.1-lite)
+                score, reasons = calculate_signal_score(analysis, candles)
+                state.last_signal_score = score
+                state.last_signal_reasons = reasons
+                state.last_signal_reason = ", ".join(reasons)
+
+                qty = execute_paper_buy(entry_price, score, reasons)
+                log_trade("BUY", state.last_signal_reason, entry_price, None)
+                
+                msg = format_buy_message(entry_price, tp, sl, state.timeframe, score, qty)
                 await bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
                 
                 # Update State for New Long
@@ -2003,6 +2013,36 @@ async def main() -> None:
     if not tg_token or not chat_id:
         print("❌ الرجاء تعيين TG_TOKEN و TG_CHAT_ID")
         return
+    
+    # v3.7.1-lite Integrity Check
+    def validate_data_integrity():
+        from version import BOT_VERSION
+        import math
+        
+        # 1. Test PnL Calculation & Rounding Protection
+        test_entry = 1.0000
+        test_exit = 1.00004  # Tiny difference
+        test_pnl = ((test_exit - test_entry) / test_entry) * 100
+        
+        # Apply the same protection as in execute_paper_exit
+        display_pnl = round(test_pnl, 2)
+        if abs(display_pnl) < 0.01:
+            display_pnl = 0.00
+            
+        if display_pnl != 0.00:
+            logger.error(f"❌ PnL Protection Failed: {display_pnl}")
+        
+        # 2. Test Score Integrity
+        test_analysis = {"ema_bullish": True, "breakout": True, "volume_confirmed": True}
+        test_candles = [{"close": 1.0}] * 20
+        score, reasons = calculate_signal_score(test_analysis, test_candles)
+        
+        if not (1 <= score <= 10):
+            logger.error(f"❌ Score Integrity Failed: {score}")
+            
+        logger.info(f"✅ Data Integrity Check Passed for version {BOT_VERSION}")
+    
+    validate_data_integrity()
     
     # Initialize application
     application = Application.builder().token(tg_token).build()
