@@ -3,3 +3,4 @@ requests>=2.28.0
 python-telegram-bot[job-queue]
 telegram
 websocket-client
+websocket
