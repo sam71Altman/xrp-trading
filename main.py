@@ -30,7 +30,7 @@ def get_now():
 
 import requests
 from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
 # --- Configuration ---
 MODE = "PAPER"
@@ -493,6 +493,74 @@ class BotState:
 state = BotState()
 
 
+def clear_trade_history():
+    """
+    تصفير سجل الصفقات فقط (Paper Trading)
+    """
+    try:
+        # حذف ملفات السجل
+        if os.path.exists(PAPER_TRADES_FILE):
+            os.remove(PAPER_TRADES_FILE)
+        if os.path.exists(TRADES_FILE):
+            os.remove(TRADES_FILE)
+        if os.path.exists(LOSS_EVENTS_FILE):
+            os.remove(LOSS_EVENTS_FILE)
+            
+        # إعادة تهيئة ملفات السجل
+        init_paper_trades_file()
+        
+        # تصفير الإحصائيات في الذاكرة (إن وجدت)
+        global loss_counters
+        loss_counters = {
+            "STOP_HUNT": 0,
+            "NOISE": 0,
+            "TREND_REVERSAL": 0,
+            "WEAK_ENTRY": 0,
+            "UNKNOWN": 0
+        }
+        
+        # تحديث رصيد القمة ليتناسب مع الرصيد الحالي بعد التصفير
+        paper_state.peak_balance = paper_state.balance
+        paper_state.loss_streak = 0
+        
+        logger.info(f"[HISTORY] Trade history cleared by user action ({BOT_VERSION})")
+        return True
+    except Exception as e:
+        logger.error(f"Error clearing trade history: {e}")
+        return False
+
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data == "CLEAR_TRADE_HISTORY":
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ نعم، صفّر السجل", callback_data="CONFIRM_CLEAR_HISTORY"),
+                InlineKeyboardButton("❌ إلغاء", callback_data="CANCEL_CLEAR")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        msg = (
+            "⚠️ *تأكيد تصفير سجل الصفقات*\n\n"
+            "سيتم حذف:\n"
+            "• جميع الصفقات المغلقة\n"
+            "• جميع بيانات الأداء السابقة\n\n"
+            "لن يتم حذف:\n"
+            "• الرصيد الحالي\n"
+            "• الصفقة المفتوحة (إن وجدت)\n"
+            "• إعدادات البوت"
+        )
+        await query.edit_message_text(msg, reply_markup=reply_markup, parse_mode="Markdown")
+        
+    elif query.data == "CONFIRM_CLEAR_HISTORY":
+        if clear_trade_history():
+            await query.edit_message_text("✅ تم تصفير سجل الصفقات بنجاح.\nابدأ فترة اختبار جديدة.")
+        else:
+            await query.edit_message_text("❌ فشل تصفير السجل. تحقق من السجلات.")
+            
+    elif query.data == "CANCEL_CLEAR":
+        await query.edit_message_text("❌ تم إلغاء عملية التصفير.")
 def init_paper_trades_file():
     if not os.path.exists(PAPER_TRADES_FILE):
         with open(PAPER_TRADES_FILE, 'w', newline='', encoding='utf-8') as f:
@@ -503,7 +571,6 @@ def init_paper_trades_file():
                 'entry_reason', 'exit_reason', 'duration_minutes',
                 'kill_switch_triggered', 'kill_switch_reason', 'balance_peak'
             ])
-
 
 def log_paper_trade(action: str, entry_price: float, exit_price: Optional[float],
                     pnl_pct: Optional[float], pnl_usdt: Optional[float],
@@ -1501,10 +1568,18 @@ async def cmd_balance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     )
 
 
+def get_trades_keyboard():
+    keyboard = [
+        [InlineKeyboardButton("📊 عرض السجل", callback_data="VIEW_TRADES")],
+        [InlineKeyboardButton("📈 إحصائيات السجل", callback_data="VIEW_STATS")],
+        [InlineKeyboardButton("🗑️ تصفير سجل الصفقات", callback_data="CLEAR_TRADE_HISTORY")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
 async def cmd_trades(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
-        format_trades_message(),
-        reply_markup=get_main_keyboard(),
+        "📂 *سجل الصفقات*",
+        reply_markup=get_trades_keyboard(),
         parse_mode="Markdown"
     )
 
@@ -2178,7 +2253,8 @@ async def main() -> None:
     application.add_handler(CommandHandler("diagnostic", cmd_diagnostic))
     application.add_handler(CommandHandler("frame", cmd_الفريم))
     
-    # Handle ReplyKeyboard text commands
+    # Add CallbackQueryHandler for buttons
+    application.add_handler(CallbackQueryHandler(handle_callback))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     # Initialize the application
