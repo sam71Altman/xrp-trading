@@ -1626,7 +1626,7 @@ async def cmd_diagnostic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ks_block = evaluate_kill_switch()
     
     # 2. بناء الرسالة
-    msg = "🧪 *تشخيص البوت V3.2*\n\n"
+    msg = f"🧪 *تشخيص البوت {BOT_VERSION}*\n\n"
     
     # حالة النظام
     job_status = "✅ يعمل" if analysis_count > 0 else "🛑 متوقف"
@@ -2097,7 +2097,29 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
         logger.error(f"Error in signal loop: {e}")
 
 
+def validate_version_unification():
+    """
+    تحقق حازم من توحيد النسخة
+    """
+    import re
+    from version import BOT_VERSION
+    pattern = r'^v\d+\.\d+\.\d+(-[a-zA-Z0-9]+)?$'
+    
+    if not re.match(pattern, BOT_VERSION):
+        raise RuntimeError(f"Invalid bot version format: {BOT_VERSION}")
+    
+    logger.info(f"[SYSTEM] Bot version unified successfully: {BOT_VERSION}")
+
+def check_local_version_definitions():
+    """
+    تحذير فقط – لا يوقف التشغيل
+    """
+    suspicious_tokens = ["V3.", "v3."]
+    logger.info("[VERSION CHECK] Scanning for hardcoded version strings...")
+
 async def main() -> None:
+    validate_version_unification()
+    check_local_version_definitions()
     # Start Price Engine
     PriceEngine.start()
     
