@@ -13,6 +13,7 @@ import time
 import threading
 import json
 import websocket
+from price_engine import PriceEngine, TradingGuard, TelegramReporter, FailSafeSystem, ValidationChecks
 from datetime import datetime, timezone, timedelta
 try:
     from zoneinfo import ZoneInfo
@@ -381,6 +382,7 @@ class ExitIntelligenceLayer:
         
         # A) فشل استمرار الزخم
         time_since_high = (now - self.last_high_time).total_seconds()
+        current_price = PriceEngine.last_price if PriceEngine.last_price else current_price
         dist_from_entry = (current_price - self.entry_price) / self.entry_price
         if time_since_high >= 15 and dist_from_entry < 0.001:
             current_flags['weak_momentum'] = True
