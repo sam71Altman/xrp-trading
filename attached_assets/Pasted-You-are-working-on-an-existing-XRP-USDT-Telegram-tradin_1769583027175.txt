@@ -1,0 +1,139 @@
+You are working on an existing XRP/USDT Telegram trading bot.
+The bot logic and strategy are CORRECT and MUST NOT be changed.
+This task is a pure accounting, balance, and trade logging bug fix.
+🚨 PROBLEM SUMMARY (CONFIRMED BUG)
+The bot:
+Executes paper trades correctly
+Opens and closes positions
+Displays % gains correctly
+BUT:
+Shows $0.00 profit on winning trades
+Balance sometimes decreases after profitable trades
+Trade history shows correct % but incorrect PnL
+Aggregated performance stats are wrong
+➡️ This is a desynchronization bug between:
+trade execution
+PnL calculation
+balance update
+trade history persistence
+❌ WHAT MUST NOT CHANGE (STRICT)
+Do NOT modify:
+Entry logic
+Exit logic
+Aggressive mode
+Score system
+Risk logic
+Position sizing logic
+Trade frequency
+Strategy behavior
+Indicators
+Cooldowns
+Telegram UI
+Commands or buttons
+⚠️ This is NOT a strategy update.
+✅ OBJECTIVE
+Fix only:
+PnL calculation
+Balance updates
+Trade logging consistency
+Trade history accuracy
+Performance aggregation accuracy
+🧠 ROOT CAUSE (LIKELY)
+One or more of the following bugs exist:
+position_size or quantity is zero or rounded to zero before PnL calc
+PnL is calculated as % only, not absolute USDT value
+Balance update happens before PnL is calculated
+Balance variable is overwritten instead of incremented
+Trade history reads from a different variable than balance
+CSV / storage writes incorrect or partial data
+Float → int conversion truncates values
+Trade closes without committing PnL to state
+🛠️ REQUIRED FIXES (MANDATORY)
+1️⃣ Enforce Valid Position Size
+Before executing any paper trade:
+نسخ التعليمات البرمجية
+Python
+assert position_size > 0
+assert quantity > 0
+If not:
+Abort trade execution
+Log warning
+Do NOT open trade
+2️⃣ Correct PnL Calculation (ABSOLUTE VALUE)
+PnL MUST be calculated as:
+نسخ التعليمات البرمجية
+Python
+pnl = (exit_price - entry_price) * quantity
+❌ Do NOT calculate profit from percentage alone
+3️⃣ Correct Balance Update Order
+Balance update MUST occur after trade close:
+نسخ التعليمات البرمجية
+Python
+balance = balance + pnl
+NOT:
+نسخ التعليمات البرمجية
+Python
+balance = pnl
+4️⃣ Single Source of Truth
+Ensure ALL of the following read from the same state:
+Current balance
+Trade history
+Performance summary
+Telegram output
+No duplicate balance variables allowed.
+5️⃣ Trade History Integrity
+Each closed trade MUST persist:
+نسخ التعليمات البرمجية
+Json
+{
+  "timestamp": "...",
+  "symbol": "XRP/USDT",
+  "entry_price": float,
+  "exit_price": float,
+  "quantity": float,
+  "pnl_usdt": float,
+  "pnl_percent": float,
+  "balance_after": float,
+  "exit_reason": "TP | SL | EMA_EXIT | MANUAL"
+}
+6️⃣ Precision Handling
+Use float throughout
+Do NOT round before PnL calc
+Round only for display
+Preserve at least 6 decimal precision internally
+7️⃣ Performance Aggregation Fix
+Stats MUST be derived from actual trade records, not recalculated:
+total profit
+win/loss count
+drawdown
+equity curve
+last N trades summary
+8️⃣ Validation (MANDATORY)
+After fix, verify:
+Winning trades increase balance
+Losing trades decrease balance
+Trade history PnL matches balance delta
+Sum of trade PnL = balance change
+No $0.00 profit on non-zero % trades
+🧪 TEST CASE (MUST PASS)
+Simulate:
+BASE_SIZE = 100 USDT
+Entry = 1.9000
+Exit = 1.9050
+Quantity ≈ 52.63 XRP
+Expected:
+pnl ≈ +0.26 USDT
+balance increases accordingly
+trade history logs correct values
+🏷️ VERSION TAG
+نسخ التعليمات البرمجية
+Python
+VERSION = "3.6.1 – Accounting & Trade Logging Fix"
+🔒 FINAL NOTE
+This fix is non-negotiable and must not affect trading behavior.
+If any logic or performance changes are introduced → rollback and retry.
+✅ DELIVERABLE
+Correct balance updates
+Correct trade logs
+Accurate stats
+No UI or logic changes

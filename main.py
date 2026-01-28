@@ -851,7 +851,21 @@ def check_exit_signal(analysis: dict, candles: List[dict]) -> Optional[str]:
 
 
 def execute_paper_buy(price: float, score: int, reasons: List[str]) -> float:
-    qty = FIXED_TRADE_SIZE / price
+    # Use fixed trade size: 100 USDT from 1000 USDT starting balance (based on replit.md)
+    trade_size_usdt = 100.0
+    
+    # Enforce Valid Position Size (MANDATORY FIX 1)
+    if trade_size_usdt <= 0 or paper_state.balance < trade_size_usdt:
+        logger.warning(f"Abort trade execution: Invalid position size or insufficient balance. Size: {trade_size_usdt}, Balance: {paper_state.balance}")
+        return 0.0
+        
+    qty = trade_size_usdt / price
+    
+    # Enforce Valid Quantity (MANDATORY FIX 1)
+    if qty <= 0:
+        logger.warning(f"Abort trade execution: Quantity is zero. Price: {price}, Size: {trade_size_usdt}")
+        return 0.0
+        
     paper_state.position_qty = qty
     paper_state.entry_reason = ", ".join(reasons)
     
@@ -866,9 +880,18 @@ def execute_paper_buy(price: float, score: int, reasons: List[str]) -> float:
 def execute_paper_exit(entry_price: float, exit_price: float, reason: str,
                        score: int, duration_min: int) -> tuple:
     qty = paper_state.position_qty
-    pnl_pct = ((exit_price - entry_price) / entry_price) * 100
-    pnl_usdt = (exit_price - entry_price) * qty
     
+    # Enforce Valid Quantity (MANDATORY FIX 1)
+    if qty <= 0:
+        logger.warning("Abort exit execution: Quantity is zero.")
+        return 0.0, 0.0, paper_state.balance
+        
+    # Correct PnL Calculation (ABSOLUTE VALUE) (MANDATORY FIX 2)
+    pnl_usdt = (exit_price - entry_price) * qty
+    pnl_pct = ((exit_price - entry_price) / entry_price) * 100
+    
+    # Correct Balance Update Order (MANDATORY FIX 3)
+    # Balance update MUST occur after trade close
     paper_state.balance += pnl_usdt
     paper_state.update_peak()
     
@@ -878,7 +901,6 @@ def execute_paper_exit(entry_price: float, exit_price: float, reason: str,
         state.consecutive_wins = 0
         
         # Classify and log loss
-        # We need current candles for classification
         candles = get_klines(SYMBOL, state.timeframe)
         if candles:
             ltype = classify_loss(entry_price, exit_price, state.entry_candles_snapshot, candles)
@@ -897,6 +919,7 @@ def execute_paper_exit(entry_price: float, exit_price: float, reason: str,
         reason, duration_min
     )
     
+    # Reset position after logging
     paper_state.position_qty = 0.0
     paper_state.entry_reason = ""
     
@@ -932,7 +955,7 @@ def update_cooldown_after_exit(reason: str):
         state.current_cooldown = COOLDOWN_NORMAL
 
 
-VERSION = "3.5 – Aggressive Scalping Mode (Experimental)"
+VERSION = "3.6.1 – Accounting & Trade Logging Fix"
 
 def get_main_keyboard():
     keyboard = [
