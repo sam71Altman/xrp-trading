@@ -23,25 +23,45 @@ def check_bounce_entry(analysis, candles, score):
     if market_mode != "HARD_MARKET":
         return False
     
-    current_price = get_current_price()
+    current_price = candles[-1]['close'] if candles else 0
     
     # 1. القاع المحلي (Local Extreme)
-    recent_lows = [c['low'] for c in candles[-15:]]
+    recent_lows = [c['low'] for c in candles[-15:]] if len(candles) >= 15 else []
     is_local_extreme = current_price <= min(recent_lows) if recent_lows else False
     
-    # 2. RSI (Placeholder logic)
-    current_rsi = 30.0 # Placeholder
+    # 2. RSI (v3.7.5)
+    current_rsi = analysis.get('rsi', 50)
     
-    # 3. Volume Spike (Placeholder logic)
-    volume_spike = False 
+    # 3. Volume Spike (v3.7.5)
+    def volume_spike_detected(candles):
+        if len(candles) < 21: return False
+        current_volume = candles[-1]['volume']
+        avg_volume = sum(c['volume'] for c in candles[-21:-1]) / 20
+        return current_volume > avg_volume * 1.8
+
+    volume_spike = volume_spike_detected(candles)
     
     entry_is_bounce = (
         score <= 5 and
         is_local_extreme and
-        current_rsi <= 35
+        current_rsi <= 35 and
+        volume_spike
     )
     
     return entry_is_bounce
+
+def detect_bearish_strength(candle):
+    """تحديد قوة الشمعة الهابطة v3.7.5"""
+    if not candle: return "WEAK"
+    body_size = abs(candle['close'] - candle['open'])
+    candle_range = candle['high'] - candle['low']
+    body_ratio = body_size / candle_range if candle_range > 0 else 0
+    
+    if candle['close'] < candle['open'] and body_ratio > 0.7:
+        return "STRONG"
+    elif candle['close'] < candle['open'] and body_ratio > 0.5:
+        return "MEDIUM"
+    return "WEAK"
 
 def check_buy_signal(analysis, candles):
     """
@@ -72,20 +92,21 @@ def check_buy_signal(analysis, candles):
     # الدخول العادي في السوق السهل
     return current_price > ema20 and score >= MIN_SIGNAL_SCORE
 
-def check_hold_exit_conditions():
+def check_hold_exit_conditions(candles):
     """فحص شروط الخروج أثناء الـ Hold v3.7.5"""
     if not state.hold_active:
         return None
     
-    current_price = get_current_price()
+    current_price = candles[-1]['close'] if candles else 0
+    current_candle = candles[-1] if candles else None
     
     # 1️⃣ STOP LOSS (أولوية قصوى)
     if state.current_sl and current_price <= state.current_sl:
         return "SL Hit (Hold)"
     
     # 2️⃣ فشل سعري (دروداون محدود)
-    max_drawdown = state.hold_start_price * 0.9990  # -0.10%
-    if current_price <= max_drawdown:
+    max_drawdown_price = state.hold_start_price * 0.9990  # -0.10%
+    if current_price <= max_drawdown_price:
         return "Hold Failed - Max Drawdown"
     
     # 3️⃣ تحقيق هدف واقعي للسكالب
@@ -95,9 +116,21 @@ def check_hold_exit_conditions():
     
     # 4️⃣ فشل زمني مع ضعف الزخم
     if state.hold_candles >= 5:
-        return "Hold Failed - Time/Momentum Limit"
+        if len(candles) >= 21:
+            recent_volume_avg = sum(c['volume'] for c in candles[-3:]) / 3
+            normal_volume_avg = sum(c['volume'] for c in candles[-21:-1]) / 20
+            if recent_volume_avg < normal_volume_avg * 0.65:
+                return "Hold Failed - No Momentum"
+    
+    # 5️⃣ كسر هابط قوي
+    if current_candle and detect_bearish_strength(current_candle) == "STRONG":
+        return "Hold Failed - Strong Breakdown"
     
     # 6️⃣ قيد الخسارة اليومية التراكمية
+    if state.daily_cumulative_loss >= 1.0:
+        return "Hold Disabled - Daily Loss Limit"
+    
+    return None
     if state.daily_cumulative_loss >= 1.0:
         return "Hold Disabled - Daily Loss Limit"
     
