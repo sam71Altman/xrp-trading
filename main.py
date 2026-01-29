@@ -66,18 +66,65 @@ def detect_bearish_strength(candle):
 def check_buy_signal(analysis, candles):
     """
     منطق v3.7.5 المطور لفحص إشارة الشراء.
+    يتكيف مع وضع التداول الحالي (Smart Trading System)
     """
     if not analysis or not candles:
         return False
+    
+    # Get current mode and params (Smart Trading System)
+    current_trade_mode = get_current_mode()
+    mode_params = get_mode_params()
         
     current_price = candles[-1]['close']
     ema20 = analysis.get('ema20', 0)
     ema50 = analysis.get('ema50', 0)
     ema200 = analysis.get('ema200', 0)
     score = analysis.get('score', 0)
+    rsi = analysis.get('rsi', 50)
     
     market_mode = "EASY_MARKET" if (ema20 > ema50 and ema50 > ema200) else "HARD_MARKET"
     
+    # ⚡ FAST_SCALP Mode: Relaxed entry conditions
+    if current_trade_mode == "FAST_SCALP":
+        # Fast scalp: minimal filtering, enter quickly
+        min_score = mode_params.get('min_signal_score', 0)
+        if score >= min_score:
+            state.valid_entries += 1
+            logger.info(f"[FAST_SCALP] Entry allowed: score={score}, price={current_price}")
+            return True
+        state.rejected_entries += 1
+        state.last_rejection_reason = "FAST_SCALP (Score too low)"
+        return False
+    
+    # 🧲 BOUNCE Mode: Only enter on bounces in oversold conditions
+    if current_trade_mode == "BOUNCE":
+        min_rsi = mode_params.get('min_rsi', 20)
+        max_rsi = mode_params.get('max_rsi', 40)
+        
+        # Must be in oversold territory
+        if rsi > max_rsi:
+            state.rejected_entries += 1
+            state.rejected_due_to_rsi += 1
+            state.last_rejection_reason = f"BOUNCE (RSI too high: {rsi:.1f})"
+            return False
+        
+        # Check for bounce entry
+        is_bounce = check_bounce_entry(analysis, candles, score)
+        if is_bounce and rsi <= max_rsi:
+            state.hold_active = True
+            state.hold_candles = 0
+            state.hold_start_price = current_price
+            state.hold_activated_count += 1
+            state.valid_entries += 1
+            logger.info(f"[BOUNCE] Entry allowed: RSI={rsi:.1f}, bounce=True")
+            return True
+        
+        state.rejected_entries += 1
+        state.rejected_due_to_no_bounce += 1
+        state.last_rejection_reason = "BOUNCE (No valid bounce signal)"
+        return False
+    
+    # 🧠 DEFAULT Mode: Original logic
     # تحسين الدخول في السوق الصعب (ارتدادات فقط)
     if market_mode == "HARD_MARKET":
         is_bounce = check_bounce_entry(analysis, candles, score)
@@ -176,6 +223,13 @@ import requests
 from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from post_exit_guard import PostExitGuard, market_recovered, EntryGateMonitor
+from trade_modes import (
+    TradeMode, TradingLogicController, ModePerformanceTracker, ModeStateManager,
+    ModeRecommender, ModeValidator, performance_tracker, mode_state, logic_controller,
+    mode_recommender, mode_validator, get_current_mode, get_mode_params, change_trade_mode,
+    record_mode_trade, get_mode_recommendation, format_mode_stats_message,
+    format_mode_confirmation_message, format_dashboard_message, format_recommendation_message
+)
 
 # --- Configuration ---
 MODE = "PAPER"
@@ -767,6 +821,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     elif query.data == "CANCEL_CLEAR":
         # Return to the single clear button
         await query.edit_message_reply_markup(reply_markup=get_trades_keyboard())
+    
+    elif query.data.startswith("MODE_"):
+        await handle_mode_callback(query, query.data)
+
+
 def init_paper_trades_file():
     if not os.path.exists(PAPER_TRADES_FILE):
         with open(PAPER_TRADES_FILE, 'w', newline='', encoding='utf-8') as f:
@@ -1718,6 +1777,11 @@ def execute_paper_exit(entry_price: float, exit_price: float, reason: str,
         reason, duration_min
     )
     
+    # Record mode performance (Smart Trading System)
+    is_win = pnl_usdt >= 0
+    record_mode_trade(pnl_usdt, is_win)
+    logger.info(f"[MODE TRADE] Recorded for mode {get_current_mode()}: ${pnl_usdt:.4f}, win={is_win}")
+    
     # Reset position after logging
     paper_state.position_qty = 0.0
     paper_state.entry_reason = ""
@@ -1845,6 +1909,12 @@ def format_status_message() -> str:
         pnl = ((state.last_close - state.entry_price) / state.entry_price) * 100 if state.last_close and state.entry_price else 0
         pos_status = f"✅ صفقة مفتوحة ({pnl:+.2f}%)"
     
+    # Smart Trading Mode Info
+    current_mode = get_current_mode()
+    mode_display = TradeMode.DISPLAY_NAMES.get(current_mode, current_mode)
+    mode_risk = TradeMode.RISK_LEVELS.get(current_mode, "غير محدد")
+    mode_duration = mode_state.get_mode_duration()
+    
     return (
         f"📊 *حالة البوت {BOT_VERSION}*\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
@@ -1853,9 +1923,13 @@ def format_status_message() -> str:
         f"⏱️ الفريم: {state.timeframe}\n"
         f"💰 الرصيد: {paper_state.balance:.2f} USDT\n"
         f"📍 الصفقة: {pos_status}\n"
-        f"🚀 النمط: Clean Aggressive Scalping\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"آخر سعر: {state.last_close if state.last_close else '---'}"
+        f"🧠 *وضع التداول:* {mode_display}\n"
+        f"📊 *المخاطرة:* {mode_risk}\n"
+        f"🕒 *مفعل منذ:* {mode_duration}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"آخر سعر: {state.last_close if state.last_close else '---'}\n"
+        f"🔧 تغيير الوضع: /mode"
     )
 
 
@@ -1990,13 +2064,23 @@ async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Shows diagnostic health overview.
     """
+    current_mode = get_current_mode()
+    mode_display = TradeMode.DISPLAY_NAMES.get(current_mode, current_mode)
+    mode_params = get_mode_params()
+    
     msg = (
         f"🩺 **Bot Health Diagnostic**\n"
         f"Version: `{BOT_VERSION}`\n"
-        f"Mode: `{state.mode}`\n"
+        f"Trading Mode: `{state.mode}`\n"
+        f"🎯 Smart Mode: {mode_display}\n"
         f"Entries: {state.valid_entries} / Rejections: {state.rejected_entries}\n"
         f"Hold Count: {state.hold_activations}\n"
         f"EMA Overrides: {state.ema_overrides}\n"
+        f"\n⚙️ **Mode Settings:**\n"
+        f"• Price Filter: {'✅' if mode_params.get('price_protection') else '❌'}\n"
+        f"• Volume Filter: {'✅' if mode_params.get('volume_filter') else '❌'}\n"
+        f"• Hold Logic: {'✅' if mode_params.get('hold_logic_enabled') else '❌'}\n"
+        f"• TP: {mode_params.get('tp_target', 0)*100:.1f}% | SL: {mode_params.get('sl_target', 0)*100:.1f}%\n"
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
@@ -2051,6 +2135,185 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         reply_markup=get_main_keyboard(),
         parse_mode="Markdown"
     )
+
+
+def get_mode_keyboard():
+    """إنشاء كيبورد اختيار الأوضاع"""
+    current_mode = get_current_mode()
+    buttons = []
+    for mode_key in TradeMode.ALL_MODES:
+        display_name = TradeMode.DISPLAY_NAMES.get(mode_key, mode_key)
+        prefix = "✅ " if mode_key == current_mode else "➡️ "
+        buttons.append([InlineKeyboardButton(prefix + display_name, callback_data=f"MODE_{mode_key}")])
+    buttons.append([InlineKeyboardButton("📊 إحصائيات الأوضاع", callback_data="MODE_STATS")])
+    buttons.append([InlineKeyboardButton("🎯 اقتراح ذكي", callback_data="MODE_RECOMMEND")])
+    return InlineKeyboardMarkup(buttons)
+
+
+async def cmd_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """أمر تغيير وضع التداول"""
+    current_mode = get_current_mode()
+    display_name = TradeMode.DISPLAY_NAMES.get(current_mode, current_mode)
+    risk_level = TradeMode.RISK_LEVELS.get(current_mode, "غير محدد")
+    mode_duration = mode_state.get_mode_duration()
+    
+    message = f"""
+🎯 *أوضاع التداول الذكية*
+═══════════════════════
+
+🧠 *الوضع الحالي:* {display_name}
+📊 *مستوى المخاطرة:* {risk_level}
+🕒 *مفعل منذ:* {mode_duration}
+
+اختر الوضع الذي يناسب أسلوب تداولك:
+
+🧠 *الوضع الذكي:* التوازن بين الجودة والكمية
+⚡ *سكالب سريع:* صفقات متعددة سريعة
+🧲 *اصطياد الارتدادات:* تركيز على القيعان
+
+⚠️ التغيير يطبق من الشمعة القادمة
+    """
+    
+    await update.message.reply_text(
+        message,
+        reply_markup=get_mode_keyboard(),
+        parse_mode="Markdown"
+    )
+
+
+async def cmd_modestats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """أمر عرض إحصائيات الأوضاع"""
+    await update.message.reply_text(
+        format_mode_stats_message(),
+        reply_markup=get_main_keyboard(),
+        parse_mode="Markdown"
+    )
+
+
+async def cmd_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """لوحة التحكم الشاملة"""
+    candles = get_klines(SYMBOL, state.timeframe)
+    market_data = None
+    if candles:
+        analysis = analyze_market(candles)
+        if "error" not in analysis:
+            market_data = {
+                "candles": candles,
+                "ema20": analysis.get("ema_short", 0),
+                "ema50": analysis.get("ema_long", 0),
+                "ema200": 0,
+                "rsi": analysis.get("rsi", 50),
+                "ema_bullish": analysis.get("ema_bullish", True)
+            }
+    
+    await update.message.reply_text(
+        format_dashboard_message(market_data),
+        reply_markup=get_main_keyboard(),
+        parse_mode="Markdown"
+    )
+
+
+async def cmd_recommend(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """اقتراح الوضع الأمثل"""
+    candles = get_klines(SYMBOL, state.timeframe)
+    if not candles:
+        await update.message.reply_text("❌ لا توجد بيانات كافية للتحليل")
+        return
+    
+    analysis = analyze_market(candles)
+    if "error" in analysis:
+        await update.message.reply_text("❌ خطأ في تحليل السوق")
+        return
+    
+    market_data = {
+        "candles": candles,
+        "ema20": analysis.get("ema_short", 0),
+        "ema50": analysis.get("ema_long", 0),
+        "ema200": 0,
+        "rsi": analysis.get("rsi", 50),
+        "ema_bullish": analysis.get("ema_bullish", True)
+    }
+    
+    await update.message.reply_text(
+        format_recommendation_message(market_data),
+        reply_markup=get_mode_keyboard(),
+        parse_mode="Markdown"
+    )
+
+
+async def cmd_validate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """التحقق من تطبيق الوضع"""
+    current_mode = get_current_mode()
+    params = get_mode_params()
+    
+    validation = mode_validator.validate_mode_application(current_mode, params)
+    
+    status_emoji = "✅" if validation["applied_correctly"] else "⚠️"
+    display_name = TradeMode.DISPLAY_NAMES.get(current_mode, current_mode)
+    
+    message = f"""
+{status_emoji} *التحقق من تطبيق الوضع*
+═══════════════════════
+
+🧠 *الوضع الحالي:* {display_name}
+📊 *حالة التطبيق:* {'صحيح ✅' if validation['applied_correctly'] else 'يوجد تعارضات ⚠️'}
+
+⚙️ *تفاصيل المعاملات:*
+"""
+    
+    for detail in validation["details"][:10]:
+        message += f"{detail}\n"
+    
+    await update.message.reply_text(
+        message,
+        reply_markup=get_main_keyboard(),
+        parse_mode="Markdown"
+    )
+
+
+async def handle_mode_callback(query, data: str) -> None:
+    """معالجة callbacks الأوضاع"""
+    if data == "MODE_STATS":
+        await query.edit_message_text(
+            format_mode_stats_message(),
+            parse_mode="Markdown"
+        )
+        return
+    
+    if data == "MODE_RECOMMEND":
+        candles = get_klines(SYMBOL, state.timeframe)
+        if candles:
+            analysis = analyze_market(candles)
+            if "error" not in analysis:
+                market_data = {
+                    "candles": candles,
+                    "ema20": analysis.get("ema_short", 0),
+                    "ema50": analysis.get("ema_long", 0),
+                    "ema200": 0,
+                    "rsi": analysis.get("rsi", 50),
+                    "ema_bullish": analysis.get("ema_bullish", True)
+                }
+                await query.edit_message_text(
+                    format_recommendation_message(market_data),
+                    reply_markup=get_mode_keyboard(),
+                    parse_mode="Markdown"
+                )
+                return
+        await query.edit_message_text("❌ لا توجد بيانات كافية")
+        return
+    
+    if data.startswith("MODE_"):
+        new_mode = data.replace("MODE_", "")
+        if new_mode in TradeMode.ALL_MODES:
+            success, message = change_trade_mode(new_mode)
+            if success:
+                await query.edit_message_text(
+                    format_mode_confirmation_message(new_mode),
+                    parse_mode="Markdown"
+                )
+                logger.info(f"[MODE] Changed to {new_mode} via Telegram")
+            else:
+                await query.edit_message_text(f"⚠️ {message}")
 
 
 async def cmd_on(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2748,6 +3011,13 @@ async def main() -> None:
     application.add_handler(CommandHandler("stats", cmd_stats))
     application.add_handler(CommandHandler("diagnostic", cmd_diagnostic))
     application.add_handler(CommandHandler("frame", cmd_الفريم))
+    
+    # Mode commands (Smart Trading System)
+    application.add_handler(CommandHandler("mode", cmd_mode))
+    application.add_handler(CommandHandler("modestats", cmd_modestats))
+    application.add_handler(CommandHandler("dashboard", cmd_dashboard))
+    application.add_handler(CommandHandler("recommend", cmd_recommend))
+    application.add_handler(CommandHandler("validate", cmd_validate))
     
     # Add CallbackQueryHandler for buttons
     application.add_handler(CallbackQueryHandler(handle_callback))
