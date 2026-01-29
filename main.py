@@ -496,6 +496,46 @@ class BotState:
         self.lpem_strict_mode: bool = False
         self.last_exit_time: float = 0.0
 
+        # v3.7.5 Hold Logic State
+        self.hold_active = False
+        self.hold_candles = 0
+        self.hold_start_price = 0.0
+        self.daily_cumulative_loss = 0.0
+        self.hold_activation_count = 0
+
+    def reset_hold(self):
+        """إعادة تعيين حالة الـ Hold"""
+        self.hold_active = False
+        self.hold_candles = 0
+        self.hold_start_price = 0.0
+
+    def update_daily_loss(self, pnl_percent):
+        """تحديث الخسارة اليومية التراكمية"""
+        if pnl_percent < 0:
+            self.daily_cumulative_loss += abs(pnl_percent)
+
+    def reset_daily_counters(self):
+        """إعادة تعيين العدادات اليومية (عند منتصف الليل)"""
+        now = get_now()
+        if now.hour == 0 and now.minute == 0:
+            self.daily_cumulative_loss = 0.0
+            self.hold_activation_count = 0
+            logger.info("[DAILY RESET] Counters cleared")
+
+    def log_hold_status(self, current_price: float, market_mode: str):
+        """تسجيل مفصل لحالة الـ Hold"""
+        drawdown = ((self.hold_start_price - current_price) / self.hold_start_price * 100) if self.hold_start_price > 0 else 0
+        logger.info(f"""
+        📊 HOLD STATUS
+        ├── Active: {self.hold_active}
+        ├── Candles Held: {self.hold_candles}
+        ├── Market Mode: {market_mode}
+        ├── Entry Price: {self.hold_start_price:.6f}
+        ├── Current Price: {current_price:.6f}
+        ├── Drawdown: {drawdown:.4f}%
+        └── Daily Loss: {self.daily_cumulative_loss:.2f}%
+        """)
+
 state = BotState()
 
 
@@ -988,7 +1028,125 @@ def check_extended_price(price: float, analysis: dict, candles: List[dict]) -> b
             
     return False
 
-def check_buy_signal(analysis: dict, candles: List[dict]) -> bool:
+def volume_spike_detected(candles: List[dict]) -> bool:
+    """اكتشاف ارتفاع مفاجئ في الحجم"""
+    if len(candles) < 21:
+        return False
+    current_volume = candles[-1]['volume']
+    avg_volume = sum(c['volume'] for c in candles[-21:-1]) / 20
+    return current_volume > avg_volume * 1.8  # +80%
+
+def detect_bearish_strength(candle: dict) -> str:
+    """تحديد قوة الشمعة الهابطة"""
+    try:
+        open_p = float(candle.get('open', 0))
+        close_p = float(candle.get('close', 0))
+        high = float(candle.get('high', 0))
+        low = float(candle.get('low', 0))
+        
+        body_size = abs(close_p - open_p)
+        candle_range = high - low
+        body_ratio = body_size / candle_range if candle_range > 0 else 0
+        
+        if close_p < open_p and body_ratio > 0.7:
+            return "STRONG"
+        elif close_p < open_p and body_ratio > 0.5:
+            return "MEDIUM"
+    except:
+        pass
+    return "WEAK"
+
+def is_local_extreme(current_price: float, candles: List[dict], lookback: int = 15) -> bool:
+    """اكتشف إذا كان السعر عند قاع محلي"""
+    if len(candles) < lookback:
+        return False
+    recent_lows = [c['low'] for c in candles[-lookback:]]
+    return current_price <= min(recent_lows)
+
+def check_bounce_entry(analysis: dict, candles: List[dict], score: int) -> bool:
+    """شروط دخول الارتداد في السوق الهابط"""
+    ema20 = analysis.get("ema_short", 0)
+    ema50 = analysis.get("ema_long", 0)
+    ema200_vals = calculate_ema([c['close'] for c in candles], 200)
+    ema200 = ema200_vals[-1] if ema200_vals else 0
+    
+    # 1. Market Regime
+    if ema20 > ema50 and ema50 > ema200:
+        market_mode = "EASY_MARKET"
+    else:
+        market_mode = "HARD_MARKET"
+        
+    if market_mode != "HARD_MARKET":
+        return False
+    
+    current_price = analysis["close"]
+    prices = [c["close"] for c in candles]
+    current_rsi = calculate_rsi(prices)
+    
+    entry_is_bounce = (
+        score <= 5 and                           # فرصة جيدة حسب سكور البوت
+        is_local_extreme(current_price, candles) and  # قاع محلي
+        current_rsi <= 35 and                    # تشبع بيع
+        volume_spike_detected(candles)           # ارتفاع حجم مفاجئ
+    )
+    
+    return entry_is_bounce
+
+def check_hold_exit_conditions(analysis: dict, candles: List[dict]) -> Optional[str]:
+    """فحص شروط الخروج أثناء الـ Hold"""
+    if not state.hold_active:
+        return None
+    
+    current_price = analysis["close"]
+    current_candle = candles[-1]
+    entry_price = state.hold_start_price
+    
+    # 1️⃣ STOP LOSS (أولوية قصوى - لا تغيير)
+    if state.current_sl and current_price <= state.current_sl:
+        return "SL Hit (Hold)"
+    
+    # 2️⃣ فشل سعري (دروداون محدود)
+    max_drawdown_price = entry_price * 0.9990  # -0.10% كحد أقصى
+    if current_price <= max_drawdown_price:
+        return "Hold Failed - Max Drawdown"
+    
+    # 3️⃣ تحقيق هدف واقعي للسكالب
+    scalp_target = entry_price * 1.003  # +0.3%
+    if current_price >= scalp_target:
+        return "Scalp Target Hit"
+    
+    # 4️⃣ فشل زمني مع ضعف الزخم
+    if state.hold_candles >= 5:
+        if len(candles) >= 23:
+            recent_volume_avg = sum(c['volume'] for c in candles[-3:]) / 3
+            normal_volume_avg = sum(c['volume'] for c in candles[-23:-3]) / 20
+            if recent_volume_avg < normal_volume_avg * 0.65:
+                return "Hold Failed - No Momentum"
+    
+    # 5️⃣ كسر هابط قوي (شمعة هابطة كبيرة)
+    bearish_strength = detect_bearish_strength(current_candle)
+    if bearish_strength == "STRONG":
+        return "Hold Failed - Strong Breakdown"
+    
+    # 6️⃣ قيد الخسارة اليومية التراكمية
+    if state.daily_cumulative_loss >= 1.0:  # 1% كحد يومي
+        return "Hold Disabled - Daily Loss Limit"
+    
+    return None
+
+def log_hold_status(current_price: float, market_mode: str):
+    """تسجيل مفصل لحالة الـ Hold"""
+    drawdown = ((state.hold_start_price - current_price) / state.hold_start_price * 100) if state.hold_start_price > 0 else 0
+    logger.info(f"""
+    📊 HOLD STATUS
+    ├── Active: {state.hold_active}
+    ├── Candles Held: {state.hold_candles}
+    ├── Market Mode: {market_mode}
+    ├── Entry Price: {state.hold_start_price:.6f}
+    ├── Current Price: {current_price:.6f}
+    ├── Drawdown: {drawdown:.4f}%
+    └── Daily Loss: {state.daily_cumulative_loss:.2f}%
+    """)
     if "error" in analysis:
         return False
     
@@ -1124,6 +1282,10 @@ def check_exit_signal(analysis: dict, candles: List[dict]) -> Optional[str]:
     if not state.tp_triggered and TAKE_PROFIT_PCT is not None and pnl_pct >= TAKE_PROFIT_PCT:
         state.tp_triggered = True
         state.risk_free_sl = entry_price * 1.001  # +0.1% Small profit
+        # v3.7.5: Release hold once TP is triggered to allow normal exit
+        if state.hold_active:
+            logger.info("[HOLD] TP Triggered - Releasing hold for normal exit")
+            state.hold_active = False
         return "tp_trigger"
 
     # v3.3: Exit Conditions after TP Triggered or Smart SL
@@ -1131,6 +1293,9 @@ def check_exit_signal(analysis: dict, candles: List[dict]) -> Optional[str]:
         if state.risk_free_sl is not None and current_price <= state.risk_free_sl:
             return "risk_free_sl_hit"
         if "ema_short" in analysis and analysis["ema_short"] is not None and current_price < analysis["ema_short"]:
+            if state.hold_active:
+                logger.info(f"[HOLD] Ignoring EMA exit (Post TP) | Candles: {state.hold_candles}")
+                return None
             return "ema_exit_post_tp"
     else:
         # Check Smart SL
@@ -1164,6 +1329,9 @@ def check_exit_signal(analysis: dict, candles: List[dict]) -> Optional[str]:
         state.candles_below_ema = 0
     
     if state.candles_below_ema >= 2:
+        if state.hold_active:
+            logger.info(f"[HOLD] Ignoring EMA confirmation exit | Candles: {state.hold_candles}")
+            return None
         return "ema_confirmation"
     
     return None
@@ -1188,6 +1356,17 @@ def execute_paper_buy(price: float, score: int, reasons: List[str]) -> float:
     # Freeze Quantity at Entry (CRITICAL - 3.6.2)
     paper_state.position_qty = qty
     paper_state.entry_reason = ", ".join(reasons)
+    
+    # v3.7.5: Activate Hold Logic if it's a bounce entry in hard market
+    klines = get_klines(SYMBOL, state.timeframe)
+    analysis = analyze_market(klines) if klines else {}
+    if analysis and check_bounce_entry(analysis, klines, score):
+        state.hold_active = True
+        state.hold_candles = 0
+        state.hold_start_price = price
+        logger.info("[HOLD ACTIVATED] Bounce trade in bear market")
+    else:
+        state.hold_active = False
     
     # Start Exit Intelligence Monitoring (v3.7)
     ema20_vals = calculate_ema([c['close'] for c in get_klines(SYMBOL, state.timeframe)], EMA_SHORT)
