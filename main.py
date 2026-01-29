@@ -31,7 +31,7 @@ def get_now():
 import requests
 from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
-from post_exit_guard import PostExitGuard, market_recovered
+from post_exit_guard import PostExitGuard, market_recovered, EntryGateMonitor
 
 # --- Configuration ---
 MODE = "PAPER"
@@ -1000,14 +1000,21 @@ def check_buy_signal(analysis: dict, candles: List[dict]) -> bool:
     prev_close = analysis["prev_close"]
     ema20 = analysis["ema_short"]
     
-    # Post-Exit Market Quality Gate (PEG v1.3)
-    score, reasons = calculate_signal_score(analysis, candles)
-    prices = [c["close"] for c in candles]
-    rsi = calculate_rsi(prices)
-    is_extended = check_extended_price(current_close, analysis, candles)
+    # Post-Exit Integration (LPEM + PEG v1.3)
+    monitor = EntryGateMonitor.get()
     
+    # 1. LPEM Check (سعري - سريع)
+    if state.lpem_active:
+        # Simplified LPEM check directly using state variables
+        price_diff = abs(current_close - state.lpem_exit_price) / state.lpem_exit_price * 100
+        if price_diff < 0.25: # Standard LPEM threshold
+            monitor.record_decision(lpem_blocked=True, peg_blocked=False, entered=False)
+            if analysis_count % 12 == 0:
+                logger.info("[ENTRY GATE] BLOCKED by LPEM")
+            return False
+
+    # 2. PEG Check (سياقي - فقط إذا سمح LPEM)
     guard = PostExitGuard.get()
-    
     if guard.active:
         if guard.expired():
             guard.clear("max_duration_reached")
@@ -1015,12 +1022,19 @@ def check_buy_signal(analysis: dict, candles: List[dict]) -> bool:
             recovered, recovery_reason = market_recovered(guard, current_close, candles, analysis["ema_short"], analysis["ema_long"])
             if not recovered:
                 guard.record_block()
-                if analysis_count % 12 == 0: # Log every minute
-                    logger.info(f"[PEG] Entry BLOCKED | Market not recovered since exit @ {guard.exit_price}")
+                monitor.record_decision(lpem_blocked=False, peg_blocked=True, entered=False)
+                if analysis_count % 12 == 0:
+                    logger.info(f"[ENTRY GATE] BLOCKED by PEG | Exit price: {guard.exit_price}")
                 return False
             else:
                 guard.clear(f"recovered_{recovery_reason}")
                 guard.record_allow(recovery_reason)
+
+    # Calculate Score and RSI for filtering
+    score, reasons = calculate_signal_score(analysis, candles)
+    prices = [c["close"] for c in candles]
+    rsi = calculate_rsi(prices)
+    is_extended = check_extended_price(current_close, analysis, candles)
 
     # 1. SCORE + RSI HARD BLOCK
     if score <= 2 and (rsi > 68 or rsi < 32):
@@ -1036,6 +1050,7 @@ def check_buy_signal(analysis: dict, candles: List[dict]) -> bool:
     # 1. Price touches/dips below EMA20 and rejects upward
     low_hit = any(c["low"] <= ema20 for c in candles[-2:])
     if low_hit and current_close > ema20:
+        EntryGateMonitor.get().record_decision(lpem_blocked=False, peg_blocked=False, entered=True)
         state.last_signal_reason = "EMA bounce"
         state.last_signal_score = score
         return True
@@ -1043,6 +1058,7 @@ def check_buy_signal(analysis: dict, candles: List[dict]) -> bool:
     # 2. Momentum
     price_change = (current_close - prev_close) / prev_close * 100
     if price_change >= 0.05:
+        EntryGateMonitor.get().record_decision(lpem_blocked=False, peg_blocked=False, entered=True)
         state.last_signal_reason = "Momentum"
         state.last_signal_score = score
         return True
@@ -1050,6 +1066,7 @@ def check_buy_signal(analysis: dict, candles: List[dict]) -> bool:
     # 3. Micro breakout
     recent_high = max([c["high"] for c in candles[-4:-1]])
     if current_close > recent_high:
+        EntryGateMonitor.get().record_decision(lpem_blocked=False, peg_blocked=False, entered=True)
         state.last_signal_reason = "Micro breakout"
         state.last_signal_score = score
         return True

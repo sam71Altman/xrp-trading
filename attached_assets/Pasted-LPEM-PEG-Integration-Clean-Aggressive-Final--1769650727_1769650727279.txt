@@ -1,0 +1,214 @@
+LPEM + PEG Integration – Clean Aggressive Final
+⚠️ تنبيه إلزامي قبل التنفيذ
+هذا التحديث ليس:
+❌ تعديل استراتيجية التداول
+❌ تغيير شروط الدخول
+❌ تغيير EMA / SL / TP
+❌ إضافة مؤشرات جديدة
+❌ إضافة cooldown زمني
+❌ تقليل عدوانية البوت
+هذا دمج سلوكي بعد الخروج فقط.
+🎯 الهدف الوحيد
+منع سلوكين مختلفين لكن متكاملين:
+❌ إعادة الدخول من نفس المنطقة السعرية بعد خروج صغير
+❌ إعادة الدخول في سوق لم يتعافَ بعد الخروج
+مع:
+✅ السماح الفوري بالدخول عند أول فرصة صحيحة
+✅ الحفاظ الكامل على العدوانية والسرعة
+🧠 الفلسفة المعتمدة (ثابتة)
+قرار دخول ثنائي فقط:
+Enter ✅
+Block ❌
+🚫 لا Partial
+🚫 لا Penalty
+🚫 لا Multiplier
+🚫 لا تعقيد عددي
+🧩 المكونات (فصل تام – لا تعارض)
+1️⃣ LPEM – Light Post-Exit Memory
+الدور:
+منع إعادة الدخول من نفس المنطقة السعرية بعد خروج بربح صغير.
+فلتر سعري (Micro)
+سريع جدًا
+لا يعرف حالة السوق
+لا يتعامل مع الاتجاه العام
+LPEM موجود مسبقًا – لا تعاد كتابته
+2️⃣ PEG – Post-Exit Market Quality Gate
+الدور:
+منع الدخول بعد الخروج إذا السوق لم يتعافَ.
+فلتر سياقي (Macro)
+يعتمد على:
+Breakout
+Higher Low
+EMA20 > EMA50
+Strong Immediate Recovery
+له حد أقصى للمنع (حماية فقط)
+3️⃣ EntryGateMonitor (قراءة فقط)
+الدور:
+مراقبة قرارات الدخول بدون أي تأثير.
+🏗️ ترتيب الفحص (إلزامي)
+نسخ التعليمات البرمجية
+Python
+1. LPEM check  (سعري – سريع)
+2. PEG check   (سياقي – فقط إذا سمح LPEM)
+3. تسجيل القرار
+4. فتح الصفقة أو منعها
+⚠️ ممنوع تغيير هذا الترتيب
+📁 PEG – PostExitGuard
+نسخ التعليمات البرمجية
+Python
+# post_exit_guard.py
+
+class PostExitGuard:
+    _instance = None
+    MAX_BLOCK_DURATION = 3600  # 1 ساعة (حماية فقط)
+
+    @classmethod
+    def get(cls):
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+
+    def __init__(self):
+        self.active = False
+        self.exit_price = None
+        self.exit_time = None
+
+    def record_exit(self, exit_price, timestamp):
+        self.active = True
+        self.exit_price = exit_price
+        self.exit_time = timestamp
+        log(f"[PEG] Exit recorded @ {exit_price}")
+
+    def clear(self, reason):
+        if self.active:
+            log(f"[PEG] Cleared | reason={reason}")
+        self.active = False
+        self.exit_price = None
+        self.exit_time = None
+
+    def expired(self):
+        if not self.active or not self.exit_time:
+            return False
+        return (now() - self.exit_time) > self.MAX_BLOCK_DURATION
+📁 Market Recovery Logic
+نسخ التعليمات البرمجية
+Python
+# market_recovery.py
+
+def market_recovered(guard):
+    # 1️⃣ Breakout after exit
+    last_high = get_pullback_high_since_exit(guard)
+    if last_high and current_price > last_high:
+        return True, "breakout"
+
+    # 2️⃣ Higher Low confirmed
+    if higher_low_confirmed(guard):
+        return True, "higher_low"
+
+    # 3️⃣ EMA recovery
+    if ema20 > ema50:
+        return True, "ema_recovery"
+
+    # 4️⃣ Strong immediate recovery
+    lowest = get_lowest_price_since_exit(guard)
+    if lowest:
+        recovery_pct = (current_price - lowest) / lowest * 100
+        if recovery_pct >= 1.5:
+            return True, "strong_recovery"
+
+    return False, None
+📁 try_open_trade (نقطة القرار الوحيدة)
+نسخ التعليمات البرمجية
+Python
+def try_open_trade(signal):
+    if not signal or not signal.valid:
+        return None
+
+    lpem = PostExitMemory.get_instance()
+    peg = PostExitGuard.get()
+    monitor = EntryGateMonitor.get()
+
+    # 1️⃣ LPEM check
+    lpem_blocked = lpem.is_active() and lpem.blocks_entry(
+        direction=signal.type,
+        current_price=signal.price
+    )
+
+    if lpem_blocked:
+        monitor.record_decision(lpem_blocked=True, peg_blocked=False, entered=False)
+        log("[ENTRY GATE] BLOCKED by LPEM")
+        return None
+
+    # 2️⃣ PEG check
+    if peg.active:
+        if peg.expired():
+            peg.clear("max_duration_reached")
+        else:
+            recovered, reason = market_recovered(peg)
+            if not recovered:
+                monitor.record_decision(lpem_blocked=False, peg_blocked=True, entered=False)
+                log("[ENTRY GATE] BLOCKED by PEG")
+                return None
+            peg.clear(f"recovered_{reason}")
+
+    # 3️⃣ دخول نظيف
+    monitor.record_decision(lpem_blocked=False, peg_blocked=False, entered=True)
+    log("[ENTRY GATE] ENTRY ALLOWED")
+    return open_trade(signal)
+📁 ربط PEG بالخروج (سطر واحد فقط)
+نسخ التعليمات البرمجية
+Python
+# داخل exit_trade()
+PostExitGuard.get().record_exit(
+    exit_price=trade.exit_price,
+    timestamp=now()
+)
+❌ لا تعديل سبب الخروج
+❌ لا منع Stop Loss
+❌ لا تغيير إدارة المخاطر
+📊 EntryGateMonitor (قراءة فقط)
+نسخ التعليمات البرمجية
+Python
+class EntryGateMonitor:
+    _instance = None
+
+    @classmethod
+    def get(cls):
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+
+    def __init__(self):
+        self.stats = {
+            "clean_entries": 0,
+            "lpem_only_blocks": 0,
+            "peg_only_blocks": 0
+        }
+
+    def record_decision(self, lpem_blocked, peg_blocked, entered):
+        if entered:
+            self.stats["clean_entries"] += 1
+        elif lpem_blocked:
+            self.stats["lpem_only_blocks"] += 1
+        elif peg_blocked:
+            self.stats["peg_only_blocks"] += 1
+🧪 السلوك المتوقع بعد الدمج
+❌ السلوك القديم (يختفي):
+نسخ التعليمات البرمجية
+
+Exit
+→ Enter فورًا
+→ Exit خسارة
+✅ السلوك الجديد:
+نسخ التعليمات البرمجية
+
+Exit
+→ LPEM يمنع (نفس المنطقة)
+→ أو PEG يمنع (سوق لم يتعافَ)
+→ دخول واحد نظيف عند أول فرصة صحيحة
+🛡️ ضمانات السلامة
+✅ لا منع دائم (PEG له حد زمني)
+✅ لا تأخير زمني ثابت
+✅ لا تقليل عدوانية
+✅ لا تأثير على المنطق الأصلي
+✅ قرار واحد – نقطة واحدة – سلوك واضح
