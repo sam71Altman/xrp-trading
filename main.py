@@ -2816,6 +2816,7 @@ async def cmd_validate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     display_name = TradeMode.DISPLAY_NAMES.get(current_mode, current_mode)
     
     # 8 Validation Checks as per spec
+    displayed_version = SYSTEM_VERSION
     checks = [
         ("أوضاع التداول (3/3)", True, "DEFAULT, FAST_SCALP, BOUNCE"),
         ("أوضاع الذكاء (3/3)", ai_status['mode'] in ['OFF', 'LEARN', 'FULL'], "OFF, LEARN, FULL"),
