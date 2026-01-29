@@ -2465,10 +2465,24 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
         analysis = analyze_market(candles)
         if "error" in analysis:
             return
-            
+
         # Override analysis price with real-time ticker price
         analysis["close"] = current_price
         state.last_close = current_price
+
+        # [HOLD PROBE] v3.7.5
+        ema20 = analysis.get('ema20', 0)
+        ema50 = analysis.get('ema50', 0)
+        ema200 = analysis.get('ema200', 0)
+        market_mode = "EASY_MARKET" if (ema20 > ema50 and ema50 > ema200) else "HARD_MARKET"
+        score = analysis.get('score', 0)
+        rsi = analysis.get('rsi', 50)
+        logger.warning(
+            f"[HOLD PROBE] mode={market_mode}, "
+            f"score={score}, rsi={rsi:.1f}, "
+            f"bounce={check_bounce_entry(analysis, candles, score)}, "
+            f"hold_active={state.hold_active}"
+        )
             
         # Downtrend Alerts (Monitoring Only)
         await check_downtrend_alerts(bot, chat_id, analysis, candles)
