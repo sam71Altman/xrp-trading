@@ -1759,7 +1759,7 @@ VERSION = "3.7.1-lite – Exit Intelligence Calibration"
 
 def get_main_keyboard():
     keyboard = [
-        ["تحديث الحالة 🔄", "تشخيص البوت 🧪"],
+        ["تحديث الحالة 🔄", "🧠 تشخيص البوت"],
         ["الإحصائيات 📊", "الرصيد 💰"],
         ["سجل الصفقات 📜", "تحليل الخسائر 📉"],
         ["1m", "5m"],
@@ -1772,8 +1772,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if text == "تحديث الحالة 🔄":
         await cmd_status(update, context)
-    elif text == "تشخيص البوت 🧪":
-        await cmd_diagnostic(update, context)
+    elif text == "🧠 تشخيص البوت":
+        await health_command(update, context)
     elif text == "الإحصائيات 📊":
         await cmd_stats(update, context)
     elif text == "الرصيد 💰":
@@ -1988,15 +1988,18 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Shows diagnostic health overview.
+    Shows diagnostic health overview in Arabic with Hold Logic integration.
     """
+    hold_status = "✅ نعم" if state.hold_active else "❌ لا"
     msg = (
-        f"🩺 **Bot Health Diagnostic**\n"
-        f"Version: `{BOT_VERSION}`\n"
-        f"Mode: `{state.mode}`\n"
-        f"Entries: {state.valid_entries} / Rejections: {state.rejected_entries}\n"
-        f"Hold Count: {state.hold_activations}\n"
-        f"EMA Overrides: {state.ema_overrides}\n"
+        f"📊 **تشخيص البوت**\n"
+        f"الإصدار: `{BOT_VERSION}`\n"
+        f"الوضع الحالي: `{state.mode}`\n"
+        f"الدخول: {state.valid_entries} / الرفض: {state.rejected_entries}\n\n"
+        f"🧠 **حالة Hold Logic:**\n"
+        f"- مفعل حالياً: {hold_status}\n"
+        f"- مرات التفعيل: {state.hold_activations}\n"
+        f"- مرات تجاهل الخروج المبكر: {state.ema_overrides}"
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
@@ -2719,7 +2722,8 @@ async def main() -> None:
     # Remove obsolete CallbackQueryHandler as we switched to MessageHandler for ReplyKeyboard
     # application.add_handler(CallbackQueryHandler(handle_callback))
     application.add_handler(CommandHandler("start", cmd_start))
-    # Removed duplicated status command registration
+    # Updated Diagnostic registration
+    application.add_handler(MessageHandler(filters.Regex("^🧠 تشخيص البوت$"), health_command))
     application.add_handler(CommandHandler("health", health_command))
     application.add_handler(CommandHandler("balance", cmd_balance))
     application.add_handler(CommandHandler("trades", cmd_trades))
