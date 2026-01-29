@@ -1,0 +1,227 @@
+SMART ADAPTIVE TRADING SYSTEM
+GOVERNED INTELLIGENCE — FINAL PROMPT
+🆔 v4.2.PRO-AI | 📅 2024 | 🚀 PRODUCTION READY
+🧠 الفلسفة الحاكمة (إلزامية)
+هذا النظام لا يستبدل الاستراتيجية الأساسية، بل يضيف فوقها ذكاءً محكومًا:
+الذكاء مساعد وليس صاحب قرار
+المنطق الأساسي هو المرجع النهائي دائمًا
+الذكاء يمكن تعطيله فورًا بزر واحد
+كل تصرف ذكي مقيَّد + قابل للقياس + قابل للإيقاف
+لا يوجد أي تعديل خفي أو غير مرئي للمستخدم
+⚡ القواعد الصلبة (NON-NEGOTIABLE)
+نسخ التعليمات البرمجية
+Python
+HARD_RULES = {
+    "NO_DELETION": True,              # ممنوع حذف أي كود موجود
+    "NO_CORE_MODIFICATION": True,     # ممنوع تعديل منطق التداول الأساسي
+    "AI_LAYER_ONLY": True,            # الذكاء طبقة فوقية فقط
+    "NEXT_CANDLE_ONLY": True,         # كل التغييرات من الشمعة القادمة
+    "OPEN_TRADES_SAFE": True,         # لا تأثير على الصفقات المفتوحة
+    "ONE_CLICK_DISABLE": True,        # زر واحد يعطل الذكاء فورًا
+    "VERSION_UNIFIED": "v4.2.PRO-AI"  # نفس الإصدار في كل الواجهات
+}
+🔒 الضمانات النهائية (يجب التحقق منها)
+نسخ التعليمات البرمجية
+Python
+FINAL_GUARANTEES = {
+    "NO_SYSTEM_RESTART": True,
+    "NO_TRADE_INTERFERENCE": True,
+    "NO_RISK_OVERRIDE": True,
+    "AI_NO_MARTINGALE": True,
+    "AI_NO_AVERAGING": True,
+    "AI_LIMITS_ENFORCED": True,
+    "INSTANT_REVERT": True,
+    "FULL_TRANSPARENCY": True,
+    "IMPACT_CAP_ACTIVE": True,
+    "AUTO_SWITCH_ACTIVE": True,
+    "WARNING_SYSTEM_ACTIVE": True,
+    "DAILY_RESET_ACTIVE": True
+}
+🎯 1. نظام التحكم في الإصدار (إلزامي)
+نسخ التعليمات البرمجية
+Python
+VERSION = "v4.2.PRO-AI"
+BUILD_DATE = "2024"
+يُعرض بنفس التنسيق التالي في كل الواجهات:
+نسخ التعليمات البرمجية
+
+🆔 v4.2.PRO-AI | 📅 2024
+ويظهر في:
+/status
+/health
+/dashboard
+كل رسائل التغيير
+كل التقارير
+/validate
+🎯 2. أوضاع التداول (موجودة — لا تغيير)
+نسخ التعليمات البرمجية
+Python
+TRADE_MODES = {
+    "DEFAULT_CLEAN_AGGRESSIVE": "🧠 الوضع الذكي",
+    "FAST_SCALP_AGGRESSIVE": "⚡ سكالب سريع",
+    "BOUNCE_FOCUS_MODE": "🧲 اصطياد الارتدادات"
+}
+❌ ممنوع تعديل شروط الدخول أو الخروج
+✅ الذكاء يربط فقط كطبقة فوقية
+🧠 3. نظام الذكاء التكيفي (AI SYSTEM)
+نسخ التعليمات البرمجية
+Python
+class BotState:
+    def __init__(self):
+        self.trade_mode = "DEFAULT_CLEAN_AGGRESSIVE"
+        self.ai_system = {
+            "enabled": True,
+            "mode": "FULL",  # OFF / LEARN / FULL
+            "toggle_cooldown": 60,
+            "guard_active": True,
+            "impact_stats": {
+                "adjustments_made": 0,
+                "suggestions_given": 0,
+                "user_accepted": 0,
+                "performance_boost": 0.0
+            },
+            "toggle_history": []
+        }
+أوضاع الذكاء:
+نسخ التعليمات البرمجية
+Python
+AI_MODES = {
+    "OFF":   "❌ معطل — منطق ثابت فقط",
+    "LEARN": "📚 تعليمي — اقتراحات بدون تعديل",
+    "FULL":  "✅ مفعل — تعديلات ذكية ضمن حدود آمنة"
+}
+🛡️ 4. سقف تأثير الذكاء (AI IMPACT CAP)
+نسخ التعليمات البرمجية
+Python
+AI_IMPACT_LEVELS = {
+    "LOW": {
+        "label": "🟢 منخفض",
+        "max_daily": 15,
+        "max_change_pct": 0.15
+    },
+    "MEDIUM": {
+        "label": "🟡 متوسط",
+        "max_daily": 25,
+        "max_change_pct": 0.25
+    },
+    "HIGH": {
+        "label": "🔴 عالي",
+        "max_daily": 40,
+        "max_change_pct": 0.35,
+        "confirmation_required": True
+    }
+}
+سلوك السقف:
+70% → تحذير مرة واحدة يوميًا
+90% → تحذير حرج
+100% → تحويل تلقائي إلى LEARN + إيقاف التعديلات
+⚙️ 5. ربط الذكاء بالمنطق (النقطة الوحيدة المسموحة)
+نسخ التعليمات البرمجية
+Python
+def get_trading_params(trade_mode, market_data):
+    base_params = get_base_params(trade_mode)
+
+    if not ai_system["enabled"]:
+        return base_params
+    if ai_system["mode"] == "OFF":
+        return base_params
+    if has_open_trades():
+        return base_params
+    if not impact_guard.can_adjust():
+        return base_params
+
+    if ai_system["mode"] == "LEARN":
+        base_params["ai_suggestions"] = generate_suggestions(base_params)
+        return base_params
+
+    if ai_system["mode"] == "FULL":
+        adjusted = apply_safe_adjustments(base_params)
+        adjusted = apply_change_limits(adjusted, base_params)
+        adjusted["ai_adjusted"] = True
+        adjusted["ai_timestamp"] = now()
+        return adjusted
+❌ ممنوع:
+تعديل TP/SL أثناء صفقة مفتوحة
+تغيير حجم المخاطرة
+Martingale / Averaging
+تغيير وضع التداول تلقائيًا
+🧠 تحسين إضافي (حوكمة صامتة)
+عند 3 خسائر متتالية:
+يتوقف الذكاء عن التعديل على هذا الزوج مؤقتًا
+بدون إشعار
+بدون تغيير الوضع
+📲 6. واجهة تيليجرام (تحسين بدون كسر)
+مبادئ:
+❌ لا حذف أي زر موجود
+✅ إضافة أقسام فقط
+✅ تعريب كامل + أيقونات
+⚠️ كل تحذير يُرسل مرة واحدة يوميًا
+لوحة الذكاء:
+حالة الذكاء (ON/OFF)
+وضع الذكاء الحالي
+شريط استهلاك السقف
+مستوى السقف
+أزرار:
+🔓 تفعيل / تعطيل
+🏠 رجوع
+🩺 7. تحديث كل العروض
+/status
+الإصدار
+وضع التداول
+وضع الذكاء
+استهلاك السقف
+الأداء الأسبوعي
+/health
+حالة النظام
+محرك الذكاء
+نظام السقف
+وقت إعادة العد
+/dashboard
+ملخص شامل
+اقتراح ذكي حي
+مقارنة سريعة
+أزرار تحكم مباشرة
+🔍 8. نظام التحقق /validate
+يفحص:
+أوضاع التداول (3/3)
+أوضاع الذكاء (3/3)
+سقف التأثير
+حماية الصفقات المفتوحة
+قاعدة الشمعة القادمة
+توحيد الإصدار
+واجهة تيليجرام
+نظام الطوارئ
+✅ النتيجة المطلوبة: 8/8 PASS
+🛑 9. نظام الطوارئ
+نسخ التعليمات البرمجية
+Python
+def emergency_ai_shutdown(reason):
+    ai_system["enabled"] = False
+    ai_system["mode"] = "OFF"
+    notify_user(f"🚨 إيقاف طارئ للذكاء: {reason}")
+    log_emergency(reason)
+🎯 10. التعليمات النهائية للمبرمج
+نسخ التعليمات البرمجية
+
+IMPLEMENT SMART ADAPTIVE TRADING SYSTEM v4.2.PRO-AI EXACTLY AS SPECIFIED
+
+RULES:
+- NO deletion
+- NO core logic modification
+- AI layer ON TOP only
+- Next candle only
+- Open trades NEVER affected
+- Version unified everywhere
+
+MANDATORY:
+✓ 3 trade modes (unchanged)
+✓ 3 AI modes
+✓ Impact Cap with warnings
+✓ One-click disable
+✓ Emergency shutdown
+✓ Full transparency
+
+DELIVERABLE:
+Fully functional v4.2.PRO-AI
+Production-ready
+All tests passing
