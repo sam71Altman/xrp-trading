@@ -2,6 +2,7 @@
 """
 Smart Adaptive Trading System - Trade Modes Module
 نظام التداول الذكي التكيفي - وحدة أوضاع التداول
+v4.2.PRO-AI | GOVERNED INTELLIGENCE
 """
 
 from datetime import datetime, timedelta
@@ -12,8 +13,67 @@ import os
 
 logger = logging.getLogger(__name__)
 
+# Version Control (Unified)
+AI_VERSION = "v4.2.PRO-AI"
+BUILD_DATE = "2026"
+
 MODE_PERFORMANCE_FILE = "mode_performance.json"
 MODE_HISTORY_FILE = "mode_history.json"
+AI_STATE_FILE = "ai_state.json"
+
+# ⚡ HARD RULES (NON-NEGOTIABLE)
+HARD_RULES = {
+    "NO_DELETION": True,
+    "NO_CORE_MODIFICATION": True,
+    "AI_LAYER_ONLY": True,
+    "NEXT_CANDLE_ONLY": True,
+    "OPEN_TRADES_SAFE": True,
+    "ONE_CLICK_DISABLE": True,
+    "VERSION_UNIFIED": AI_VERSION
+}
+
+# 🔒 FINAL GUARANTEES
+FINAL_GUARANTEES = {
+    "NO_SYSTEM_RESTART": True,
+    "NO_TRADE_INTERFERENCE": True,
+    "NO_RISK_OVERRIDE": True,
+    "AI_NO_MARTINGALE": True,
+    "AI_NO_AVERAGING": True,
+    "AI_LIMITS_ENFORCED": True,
+    "INSTANT_REVERT": True,
+    "FULL_TRANSPARENCY": True,
+    "IMPACT_CAP_ACTIVE": True,
+    "AUTO_SWITCH_ACTIVE": True,
+    "WARNING_SYSTEM_ACTIVE": True,
+    "DAILY_RESET_ACTIVE": True
+}
+
+# AI MODES
+AI_MODES = {
+    "OFF": "❌ معطل — منطق ثابت فقط",
+    "LEARN": "📚 تعليمي — اقتراحات بدون تعديل",
+    "FULL": "✅ مفعل — تعديلات ذكية ضمن حدود آمنة"
+}
+
+# AI IMPACT LEVELS
+AI_IMPACT_LEVELS = {
+    "LOW": {
+        "label": "🟢 منخفض",
+        "max_daily": 15,
+        "max_change_pct": 0.15
+    },
+    "MEDIUM": {
+        "label": "🟡 متوسط",
+        "max_daily": 25,
+        "max_change_pct": 0.25
+    },
+    "HIGH": {
+        "label": "🔴 عالي",
+        "max_daily": 40,
+        "max_change_pct": 0.35,
+        "confirmation_required": True
+    }
+}
 
 
 class TradeMode:
@@ -445,11 +505,253 @@ class ModeValidator:
         }
 
 
+class AIImpactGuard:
+    """نظام سقف تأثير الذكاء - AI Impact Cap"""
+    
+    def __init__(self):
+        self.impact_level = "LOW"
+        self.daily_adjustments = 0
+        self.daily_reset_time = datetime.now()
+        self.warning_sent_70 = False
+        self.warning_sent_90 = False
+        self._load_state()
+    
+    def _load_state(self):
+        """تحميل حالة الحارس"""
+        if os.path.exists(AI_STATE_FILE):
+            try:
+                with open(AI_STATE_FILE, 'r') as f:
+                    data = json.load(f)
+                    self.daily_adjustments = data.get("daily_adjustments", 0)
+                    self.impact_level = data.get("impact_level", "LOW")
+                    reset_str = data.get("daily_reset_time")
+                    if reset_str:
+                        self.daily_reset_time = datetime.fromisoformat(reset_str)
+            except:
+                pass
+    
+    def _save_state(self):
+        """حفظ حالة الحارس"""
+        try:
+            with open(AI_STATE_FILE, 'w') as f:
+                json.dump({
+                    "daily_adjustments": self.daily_adjustments,
+                    "impact_level": self.impact_level,
+                    "daily_reset_time": self.daily_reset_time.isoformat()
+                }, f)
+        except Exception as e:
+            logger.error(f"Error saving AI state: {e}")
+    
+    def check_daily_reset(self):
+        """إعادة تعيين العداد اليومي"""
+        now = datetime.now()
+        if now.date() > self.daily_reset_time.date():
+            self.daily_adjustments = 0
+            self.daily_reset_time = now
+            self.warning_sent_70 = False
+            self.warning_sent_90 = False
+            self._save_state()
+            logger.info("[AI GUARD] Daily reset performed")
+    
+    def can_adjust(self) -> bool:
+        """التحقق من إمكانية إجراء تعديل"""
+        self.check_daily_reset()
+        max_daily = AI_IMPACT_LEVELS[self.impact_level]["max_daily"]
+        return self.daily_adjustments < max_daily
+    
+    def record_adjustment(self):
+        """تسجيل تعديل"""
+        self.daily_adjustments += 1
+        self._save_state()
+        logger.info(f"[AI GUARD] Adjustment recorded: {self.daily_adjustments}/{AI_IMPACT_LEVELS[self.impact_level]['max_daily']}")
+    
+    def get_usage_percentage(self) -> float:
+        """نسبة الاستخدام"""
+        max_daily = AI_IMPACT_LEVELS[self.impact_level]["max_daily"]
+        return (self.daily_adjustments / max_daily) * 100 if max_daily > 0 else 0
+    
+    def get_warning_status(self) -> Optional[str]:
+        """حالة التحذيرات"""
+        usage = self.get_usage_percentage()
+        
+        if usage >= 100:
+            return "CRITICAL_100"
+        elif usage >= 90 and not self.warning_sent_90:
+            self.warning_sent_90 = True
+            return "WARNING_90"
+        elif usage >= 70 and not self.warning_sent_70:
+            self.warning_sent_70 = True
+            return "WARNING_70"
+        return None
+    
+    def set_impact_level(self, level: str) -> bool:
+        """تغيير مستوى التأثير"""
+        if level not in AI_IMPACT_LEVELS:
+            return False
+        self.impact_level = level
+        self._save_state()
+        return True
+    
+    def get_status(self) -> Dict:
+        """حالة الحارس الكاملة"""
+        self.check_daily_reset()
+        return {
+            "level": self.impact_level,
+            "level_label": AI_IMPACT_LEVELS[self.impact_level]["label"],
+            "daily_used": self.daily_adjustments,
+            "daily_max": AI_IMPACT_LEVELS[self.impact_level]["max_daily"],
+            "usage_pct": round(self.get_usage_percentage(), 1),
+            "can_adjust": self.can_adjust(),
+            "time_to_reset": self._get_time_to_reset()
+        }
+    
+    def _get_time_to_reset(self) -> str:
+        """الوقت المتبقي للإعادة"""
+        now = datetime.now()
+        tomorrow = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        remaining = tomorrow - now
+        hours = int(remaining.total_seconds() // 3600)
+        minutes = int((remaining.total_seconds() % 3600) // 60)
+        return f"{hours}س {minutes}د"
+
+
+class AISystem:
+    """نظام الذكاء التكيفي - AI System v4.2.PRO-AI"""
+    
+    def __init__(self):
+        self.enabled = True
+        self.mode = "FULL"  # OFF / LEARN / FULL
+        self.toggle_cooldown = 60
+        self.guard_active = True
+        self.impact_stats = {
+            "adjustments_made": 0,
+            "suggestions_given": 0,
+            "user_accepted": 0,
+            "performance_boost": 0.0
+        }
+        self.toggle_history = []
+        self.last_toggle_time = None
+        self.consecutive_losses = 0
+        self.silent_pause_active = False
+        self._load_state()
+    
+    def _load_state(self):
+        """تحميل حالة الذكاء"""
+        if os.path.exists(AI_STATE_FILE):
+            try:
+                with open(AI_STATE_FILE, 'r') as f:
+                    data = json.load(f)
+                    self.enabled = data.get("ai_enabled", True)
+                    self.mode = data.get("ai_mode", "FULL")
+            except:
+                pass
+    
+    def _save_state(self):
+        """حفظ حالة الذكاء"""
+        try:
+            if os.path.exists(AI_STATE_FILE):
+                with open(AI_STATE_FILE, 'r') as f:
+                    data = json.load(f)
+            else:
+                data = {}
+            data["ai_enabled"] = self.enabled
+            data["ai_mode"] = self.mode
+            with open(AI_STATE_FILE, 'w') as f:
+                json.dump(data, f)
+        except Exception as e:
+            logger.error(f"Error saving AI state: {e}")
+    
+    def toggle(self) -> tuple:
+        """تبديل حالة الذكاء"""
+        now = datetime.now()
+        if self.last_toggle_time:
+            elapsed = (now - self.last_toggle_time).total_seconds()
+            if elapsed < self.toggle_cooldown:
+                remaining = int(self.toggle_cooldown - elapsed)
+                return False, f"انتظر {remaining} ثانية"
+        
+        self.enabled = not self.enabled
+        self.last_toggle_time = now
+        self.toggle_history.append({
+            "time": now.isoformat(),
+            "action": "enabled" if self.enabled else "disabled"
+        })
+        self._save_state()
+        
+        status = "مفعل" if self.enabled else "معطل"
+        logger.info(f"[AI SYSTEM] Toggled to: {status}")
+        return True, f"الذكاء الآن {status}"
+    
+    def set_mode(self, new_mode: str) -> tuple:
+        """تغيير وضع الذكاء"""
+        if new_mode not in AI_MODES:
+            return False, "وضع غير صالح"
+        
+        if new_mode == self.mode:
+            return False, "أنت بالفعل في هذا الوضع"
+        
+        old_mode = self.mode
+        self.mode = new_mode
+        self._save_state()
+        
+        logger.info(f"[AI SYSTEM] Mode changed: {old_mode} -> {new_mode}")
+        return True, f"تم تغيير وضع الذكاء إلى {AI_MODES[new_mode]}"
+    
+    def emergency_shutdown(self, reason: str):
+        """إيقاف طارئ للذكاء"""
+        self.enabled = False
+        self.mode = "OFF"
+        self._save_state()
+        logger.warning(f"[AI EMERGENCY] Shutdown triggered: {reason}")
+        return f"🚨 إيقاف طارئ للذكاء: {reason}"
+    
+    def record_loss(self):
+        """تسجيل خسارة للحوكمة الصامتة"""
+        self.consecutive_losses += 1
+        if self.consecutive_losses >= 3:
+            self.silent_pause_active = True
+            logger.info("[AI SYSTEM] Silent pause activated after 3 losses")
+    
+    def record_win(self):
+        """تسجيل ربح"""
+        self.consecutive_losses = 0
+        self.silent_pause_active = False
+    
+    def can_make_adjustment(self, has_open_trade: bool, impact_guard: 'AIImpactGuard') -> bool:
+        """التحقق من إمكانية إجراء تعديل ذكي"""
+        if not self.enabled:
+            return False
+        if self.mode == "OFF":
+            return False
+        if has_open_trade:  # OPEN_TRADES_SAFE
+            return False
+        if not impact_guard.can_adjust():
+            return False
+        if self.silent_pause_active:
+            return False
+        return True
+    
+    def get_status(self) -> Dict:
+        """حالة النظام"""
+        return {
+            "enabled": self.enabled,
+            "mode": self.mode,
+            "mode_label": AI_MODES.get(self.mode, "غير معروف"),
+            "guard_active": self.guard_active,
+            "silent_pause": self.silent_pause_active,
+            "consecutive_losses": self.consecutive_losses,
+            "stats": self.impact_stats
+        }
+
+
+# Global instances
 performance_tracker = ModePerformanceTracker()
 mode_state = ModeStateManager()
 logic_controller = TradingLogicController()
 mode_recommender = ModeRecommender()
 mode_validator = ModeValidator(logic_controller)
+ai_system = AISystem()
+ai_impact_guard = AIImpactGuard()
 
 
 def get_current_mode() -> str:
