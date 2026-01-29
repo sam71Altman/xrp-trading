@@ -1,0 +1,534 @@
+Post-Exit Market Quality Gate
+
+(Clean Aggressive v1.3 – Logic Corrected)
+
+⚠️ تنبيه إلزامي قبل التنفيذ
+
+هذا التحديث ليس:
+❌ تعديل استراتيجية
+❌ تغيير شروط الدخول
+❌ تغيير EMA / SL / TP
+❌ إضافة مؤشرات جديدة
+❌ إضافة cooldown زمني ثابت
+❌ تقليل عدوانية البوت
+
+هذا إصلاح سلوكي بعد الخروج فقط.
+
+🎯 الهدف الوحيد
+
+منع الدخول الغبي بعد الخروج في سوق:
+
+· ضعيف
+· جانبي
+· بدون ارتداد حقيقي
+
+مع السماح الفوري بالدخول عند أول إشارة تعافي حقيقية.
+
+🔍 المشكلة التي يعالجها التحديث فقط
+
+```
+Exit صحيح  
+↓  
+Re-Enter مباشر  
+↓  
+السوق لم يتعافَ  
+↓  
+صفقة خاسرة / ربح تافه
+```
+
+🧠 الفلسفة (ثابتة – لا نقاش)
+
+قرار ثنائي فقط:
+
+· Enter ✅
+· Block ❌
+
+❌ لا Partial
+❌ لا Penalty
+❌ لا Multiplier
+❌ لا فلسفة رقمية
+
+🏗️ الهيكل المطلوب
+
+1️⃣ حارس خفيف بعد الخروج (Post-Exit Guard)
+
+```python
+# 📁 post_exit_guard.py
+
+class PostExitGuard:
+    """
+    حارس خفيف يمنع الدخول بعد الخروج في سوق غير متعافٍ
+    """
+    _instance = None
+    MAX_BLOCK_DURATION = 3600  # 1 ساعة (حماية فقط)
+
+    @classmethod
+    def get(cls):
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+
+    def __init__(self):
+        self.active = False
+        self.exit_price = None
+        self.exit_time = None
+        
+        # 📊 إحصاءات للقراءة فقط (لا تؤثر على القرارات)
+        self._stats = {
+            "entries_blocked": 0,
+            "entries_allowed": 0,
+            "total_block_duration": 0.0,
+            "clear_reasons": {},
+            "recovery_reasons": {}
+        }
+
+    def record_exit(self, exit_price, timestamp):
+        """تسجيل خروج جديد"""
+        self.active = True
+        self.exit_price = exit_price
+        self.exit_time = timestamp
+        log(f"[PEG] Exit recorded @ {exit_price}")
+
+    def clear(self, reason):
+        """مسح حالة الحارس"""
+        if self.active:
+            # حساب مدة المنع فقط للإحصائيات
+            if self.exit_time:
+                block_duration = now() - self.exit_time
+                self._stats["total_block_duration"] += block_duration
+            
+            # تسجيل سبب الإزالة
+            self._stats["clear_reasons"][reason] = self._stats["clear_reasons"].get(reason, 0) + 1
+            
+            log(f"[PEG] Cleared | reason={reason}")
+        
+        self.active = False
+        self.exit_price = None
+        self.exit_time = None
+
+    def expired(self):
+        """هل انتهت صلاحية الحارس؟"""
+        if not self.active or self.exit_time is None:
+            return False
+        return (now() - self.exit_time) > self.MAX_BLOCK_DURATION
+    
+    # ──────────────────────────────
+    # 📊 طرق الإحصاءات (قراءة فقط)
+    # ──────────────────────────────
+    
+    def record_block(self):
+        """تسجيل منع دخول (لإحصائيات فقط)"""
+        self._stats["entries_blocked"] += 1
+    
+    def record_allow(self, recovery_reason=None):
+        """تسجيل سماح بالدخول (لإحصائيات فقط)"""
+        self._stats["entries_allowed"] += 1
+        if recovery_reason:
+            self._stats["recovery_reasons"][recovery_reason] = \
+                self._stats["recovery_reasons"].get(recovery_reason, 0) + 1
+    
+    def get_stats_summary(self):
+        """الحصول على ملخص الإحصائيات (للقراءة فقط)"""
+        total = self._stats["entries_blocked"] + self._stats["entries_allowed"]
+        
+        summary = {
+            "entries_blocked": self._stats["entries_blocked"],
+            "entries_allowed": self._stats["entries_allowed"],
+            "block_percentage": (self._stats["entries_blocked"] / total * 100) if total > 0 else 0,
+            "avg_block_seconds": (
+                self._stats["total_block_duration"] / 
+                max(self._stats["entries_blocked"], 1)
+            ),
+            "clear_reasons": dict(self._stats["clear_reasons"]),
+            "recovery_reasons": dict(self._stats["recovery_reasons"])
+        }
+        return summary
+```
+
+2️⃣ شروط تعافي السوق (محسّنة ومصححة)
+
+يسمح بالدخول إذا تحقق أي شرط واحد فقط
+
+```python
+# 📁 market_recovery.py
+
+def market_recovered(guard):
+    """
+    تحديد تعافي السوق بعد الخروج
+    يُرجع: (تعافى: True/False, السبب: str أو None)
+    """
+    # ──────────────────────────────
+    # 1️⃣ اختراق قمة الارتداد بعد الخروج
+    # ──────────────────────────────
+    last_high = get_pullback_high_since_exit(guard)
+    if last_high is not None and current_price > last_high:
+        reason = f"breakout_above_{last_high:.4f}"
+        log(f"[PEG] Recovery: {reason}")
+        return True, reason
+
+    # ──────────────────────────────
+    # 2️⃣ Higher Low مؤكّد
+    # ──────────────────────────────
+    if higher_low_confirmed(guard):
+        reason = "higher_low_confirmed"
+        log(f"[PEG] Recovery: {reason}")
+        return True, reason
+
+    # ──────────────────────────────
+    # 3️⃣ عودة EMA20 فوق EMA50
+    # ──────────────────────────────
+    if ema20 > ema50:  # ✅ مباشر وواضح
+        reason = "ema20_above_ema50"
+        log(f"[PEG] Recovery: {reason}")
+        return True, reason
+
+    # ──────────────────────────────
+    # 4️⃣ ارتداد قوي فوري (للأسواق السريعة)
+    # ──────────────────────────────
+    lowest_since_exit = get_lowest_price_since_exit(guard)
+    if lowest_since_exit is not None:
+        recovery_pct = ((current_price - lowest_since_exit) / lowest_since_exit) * 100
+        
+        if recovery_pct >= 1.5:
+            reason = f"strong_recovery_{recovery_pct:.1f}%"
+            log(f"[PEG] Recovery: {reason}")
+            return True, reason
+
+    # ──────────────────────────────
+    # ❌ لا تعافي
+    # ──────────────────────────────
+    return False, None
+
+
+def get_pullback_high_since_exit(guard):
+    """
+    الحصول على أعلى قمة تشكلت بعد الخروج (pullback high)
+    """
+    if not guard.active or guard.exit_time is None:
+        return None
+    
+    candles = get_candles_since(guard.exit_time)
+    if len(candles) < 3:  # تحتاج على الأقل 3 شموع لتشكيل قمة
+        return None
+    
+    # نأخذ آخر 5 شموع (أو أقل إذا المتاح أقل)
+    recent_candles = candles[-min(5, len(candles)):]
+    return max(candle.high for candle in recent_candles)
+
+
+def get_lowest_price_since_exit(guard):
+    """
+    الحصول على أدنى سعر منذ الخروج
+    """
+    if not guard.active or guard.exit_time is None:
+        return None
+    
+    candles = get_candles_since(guard.exit_time)
+    if not candles:
+        return None
+    
+    return min(candle.low for candle in candles)
+```
+
+3️⃣ تعريف Higher Low (واضح ومصحح)
+
+```python
+def higher_low_confirmed(guard):
+    """
+    تأكيد تكوين Higher Low بعد الخروج
+    """
+    # الحصول على القاع السابق (قبل الخروج أو في بدايته)
+    prev_low = get_previous_swing_low(guard)
+    if prev_low is None:
+        return False
+    
+    # الحصول على القاع الحالي (بعد الخروج)
+    curr_low = get_current_swing_low(guard)
+    if curr_low is None:
+        return False
+    
+    # حساب نسبة التحسن
+    diff_pct = ((curr_low - prev_low) / prev_low) * 100
+    
+    # تأكيد عدد الشموع منذ تشكيل القاع الحالي
+    candles_since_current_low = count_candles_since_low(guard, curr_low)
+    
+    # الشروط النهائية
+    confirmed = (
+        curr_low > prev_low and          # القاع الحالي أعلى
+        diff_pct >= 0.3 and              # فرق كافٍ (0.3% على الأقل)
+        candles_since_current_low >= 3   # تأكيد بعد 3 شموع
+    )
+    
+    if confirmed:
+        log(f"[PEG] Higher Low: {prev_low:.4f} → {curr_low:.4f} (+{diff_pct:.2f}%)")
+    
+    return confirmed
+
+
+def get_previous_swing_low(guard):
+    """
+    الحصول على القاع السابق (آخر swing low قبل/أثناء الخروج)
+    """
+    # نبحث في آخر 15 شمعة قبل الخروج
+    candles_before = get_candles(count=15, before=guard.exit_time)
+    if not candles_before:
+        return None
+    
+    # نبحث عن أدنى قاع في هذه الفترة
+    return min(candle.low for candle in candles_before)
+
+
+def get_current_swing_low(guard):
+    """
+    الحصول على القاع الحالي بعد الخروج
+    """
+    candles_after = get_candles_since(guard.exit_time)
+    if not candles_after:
+        return None
+    
+    # نبحث عن أدنى قاع منذ الخروج
+    return min(candle.low for candle in candles_after)
+
+
+def count_candles_since_low(guard, low_price):
+    """
+    عد الشموع منذ تشكيل القاع المحدد
+    """
+    candles = get_candles_since(guard.exit_time)
+    if not candles:
+        return 0
+    
+    # نبحث عن الشمعة التي بها هذا القاع
+    for i in range(len(candles)-1, -1, -1):
+        if candles[i].low == low_price:
+            # عدد الشموع بعد هذه الشمعة
+            return len(candles) - i - 1
+    
+    return 0  # لم يتم العثور على القاع
+```
+
+4️⃣ ربط الحارس بمسار الدخول (النقطة الوحيدة)
+
+```python
+def try_open_trade(signal):
+    """
+    محاولة فتح صفقة مع تطبيق حارس ما بعد الخروج
+    """
+    guard = PostExitGuard.get()
+
+    # ──────────────────────────────
+    # حالة 1: حارس غير نشط → دخول طبيعي
+    # ──────────────────────────────
+    if not guard.active:
+        guard.record_allow("no_guard_active")
+        return open_trade(signal)
+
+    # ──────────────────────────────
+    # حالة 2: حارس منتهي الصلاحية → إزالة ودخول
+    # ──────────────────────────────
+    if guard.expired():
+        guard.clear("max_duration_reached")
+        guard.record_allow("guard_expired")
+        return open_trade(signal)
+
+    # ──────────────────────────────
+    # حالة 3: حارس نشط → تقييم تعافي السوق
+    # ──────────────────────────────
+    recovered, recovery_reason = market_recovered(guard)
+    
+    if not recovered:
+        # ❌ منع الدخول
+        guard.record_block()
+        log(f"[PEG] Entry BLOCKED | market not recovered")
+        return None
+    else:
+        # ✅ السماح بالدخول
+        guard.clear(f"recovered_{recovery_reason}")
+        guard.record_allow(recovery_reason)
+        log(f"[PEG] Entry ALLOWED | {recovery_reason}")
+        return open_trade(signal)
+```
+
+📌 تحذير مهم: موقع التنفيذ
+
+ضع هذا المنطق في:
+✅ try_open_trade() فقط (آخر نقطة قبل open_trade())
+
+لا تضعه في:
+❌ generate_signals()
+❌ calculate_scores()
+❌ analyze_market()
+❌ أي مكان آخر
+
+5️⃣ ربط الحارس بالخروج (سطر واحد فقط)
+
+```python
+# داخل exit_trade() - ❌ لا تغيير أي شيء آخر
+def exit_trade(trade, reason):
+    # ... منطق الخروج الحالي بدون تغيير ...
+    
+    # ──────────────────────────────
+    # ✅ إضافة واحدة فقط هنا:
+    # ──────────────────────────────
+    PostExitGuard.get().record_exit(
+        exit_price=trade.exit_price,
+        timestamp=now()
+    )
+    
+    # ... باقي منطق الخروج يبقى كما هو ...
+```
+
+❌ لا تغيير سبب الخروج
+❌ لا منع Stop Loss
+❌ لا لمس إدارة المخاطر
+
+🧪 سلوك النظام بعد الإصلاح
+
+❌ السلوك القديم (يجب أن يختفي)
+
+```
+Exit صحيح  
+↓  
+Enter فورًا  
+↓  
+Exit خسارة  
+```
+
+✅ السلوك الجديد (المتوقع)
+
+```
+Exit صحيح  
+↓  
+[PEG] Entry BLOCKED | market not recovered  
+↓  
+(انتظار ذكي حتى يتحقق شرط واحد)  
+↓  
+[PEG] Recovery detected: [breakout/higher_low/ema/recovery]  
+↓  
+Enter واحد نظيف في التوقيت الصحيح  
+```
+
+🛡️ ضمانات السلامة
+
+· ✅ لا منع دائم (حد أقصى ساعة واحدة تلقائياً)
+· ✅ لا تأخير زمني ثابت (يعتمد على السوق فقط)
+· ✅ لا قتل للعدوانية (يعود فور تحسن السوق)
+· ✅ دخول فوري عند أول تعافي حقيقي
+· ✅ تكلفة تنفيذ ≈ صفر (لا مؤشرات إضافية)
+· ✅ إحصائيات قراءة فقط (لا تؤثر على القرارات)
+
+🧾 لوق تشخيصي مؤقت (إجباري أثناء الاختبار)
+
+```python
+# 📁 peg_debug.py (يحذف بعد 48 ساعة)
+
+PEG_DEBUG_ENABLED = True  # ⚠️ ضع False بعد التأكد
+
+def log_peg_debug_info():
+    """تسجيل معلومات تشخيصية للحارس"""
+    if not PEG_DEBUG_ENABLED:
+        return
+    
+    guard = PostExitGuard.get()
+    
+    if not guard.active:
+        log(f"[PEG DEBUG] Guard inactive")
+        return
+    
+    # معلومات أساسية
+    time_since_exit = now() - guard.exit_time
+    log(f"[PEG DEBUG] Active for {time_since_exit:.1f}s")
+    log(f"[PEG DEBUG] Exit price: {guard.exit_price:.4f}, Current: {current_price:.4f}")
+    
+    # حالة الشروط
+    last_high = get_pullback_high_since_exit(guard)
+    hl_confirmed = higher_low_confirmed(guard)
+    lowest = get_lowest_price_since_exit(guard)
+    
+    log(f"[PEG DEBUG] Pullback high: {last_high:.4f if last_high else 'N/A'}")
+    log(f"[PEG DEBUG] Higher Low: {hl_confirmed}")
+    log(f"[PEG DEBUG] Lowest since exit: {lowest:.4f if lowest else 'N/A'}")
+    log(f"[PEG DEBUG] EMA20 > EMA50: {ema20 > ema50}")
+    
+    # تقييم تعافي
+    recovered, reason = market_recovered(guard)
+    log(f"[PEG DEBUG] Market recovered: {recovered} ({reason or 'N/A'})")
+```
+
+🗑️ يُحذف ملف peg_debug.py بعد 48 ساعة من التشغيل المستقر
+
+📊 لوحة مراقبة يدوية (للتحليل فقط)
+
+```python
+# 📁 peg_monitor.py (تشغيل يدوي عند الحاجة)
+
+def show_peg_monitor():
+    """
+    عرض إحصاءات أداء PEG (للتحليل اليدوي فقط)
+    """
+    guard = PostExitGuard.get()
+    stats = guard.get_stats_summary()
+    
+    print("\n" + "="*60)
+    print("📊 POST-EXIT GUARD MONITOR (READ-ONLY)")
+    print("="*60)
+    
+    print(f"\n📈 Entry Decisions:")
+    print(f"   Allowed: {stats['entries_allowed']}")
+    print(f"   Blocked: {stats['entries_blocked']}")
+    print(f"   Block %: {stats['block_percentage']:.1f}%")
+    
+    print(f"\n⏱️ Block Durations:")
+    print(f"   Average: {stats['avg_block_seconds']:.1f}s")
+    print(f"   Total: {stats['total_block_seconds']:.1f}s")
+    
+    if stats['recovery_reasons']:
+        print(f"\n✅ Recovery Reasons:")
+        for reason, count in sorted(stats['recovery_reasons'].items()):
+            print(f"   {reason}: {count}")
+    
+    if stats['clear_reasons']:
+        print(f"\n🗑️ Clear Reasons:")
+        for reason, count in sorted(stats['clear_reasons'].items()):
+            print(f"   {reason}: {count}")
+    
+    print("\n" + "="*60)
+    print("⚠️ Note: Statistics are read-only, never affect decisions")
+    print("="*60)
+```
+
+🎯 النتيجة النهائية المتوقعة
+
+· ✅ لا دخول غبي بعد الخروج
+· ✅ لا حرق رأس المال في سوق سيئ
+· ✅ دخول أقل لكن أعلى جودة
+· ✅ صفقات أوضح وأكثر تركيزاً
+· ✅ نفس العدوانية… لكن بتوقيت صحيح
+
+---
+
+⏱️ خطوات التنفيذ النهائية
+
+1. التنفيذ
+   ```bash
+   ├── post_exit_guard.py      # الحارس الرئيسي
+   ├── market_recovery.py      # شروط التعافي
+   ├── peg_debug.py           # 🔥 تشغيل أول 48 ساعة فقط
+   └── peg_monitor.py         # ⚠️ تشغيل يدوي عند الحاجة
+   ```
+2. الاختبار
+   · Backtest سريع (3 أيام)
+   · Paper Trading (48 ساعة مع DEBUG_ENABLED=True)
+3. المراجعة
+   · تشغيل show_peg_monitor() بعد 100 قرار
+   · تأكد من:
+     · عدم وجود over-blocking
+     · سرعة الاستجابة للتعافي
+4. التشغيل النهائي
+   · تعطيل DEBUG_ENABLED
+   · حذف peg_debug.py
+   · التشغيل الكامل
+5. المتابعة
+   · مراجعة إحصائيات أسبوعية
+   · ضبط بسيط للنسب إذا لزم الأمر (1.5% → 1.2% الخ)
