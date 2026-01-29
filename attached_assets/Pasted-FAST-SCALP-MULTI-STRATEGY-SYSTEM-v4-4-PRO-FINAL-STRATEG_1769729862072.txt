@@ -1,0 +1,239 @@
+FAST SCALP MULTI-STRATEGY SYSTEM
+v4.4.PRO-FINAL — STRATEGY-SCOPED | BANKING-GRADE
+🎯 ABSOLUTE SYSTEM PHILOSOPHY (NON-NEGOTIABLE)
+نسخ التعليمات البرمجية
+
+• TP = EXECUTION EVENT (not a condition)
+• SL = FINAL SAFETY EXIT
+• EMA Exit = CONFIRMED FAILURE JUDGMENT (not a signal)
+• UI = VIEW ONLY (never source of truth)
+• EXECUTION ENGINE = SINGLE SOURCE OF TRUTH
+• SAFETY > AVAILABILITY
+• MULTI-STRATEGY ≠ SHARED STATE
+⚡ HARD RULES (MUST NOT BE VIOLATED)
+نسخ التعليمات البرمجية
+Python
+HARD_RULES = {
+    "NO_ENTRY_LOGIC_CHANGES": True,
+    "NO_TP_SL_STRATEGY_CHANGES": True,
+    "NO_SIGNAL_FREQUENCY_TUNING": True,
+
+    "MULTI_STRATEGY_ISOLATION": True,
+    "STRATEGY_SCOPED_STATE_ONLY": True,
+
+    "TP_OVERRIDES_ALL_LOGIC": True,
+    "SL_FINAL_EXIT": True,
+
+    "UI_READ_ONLY": True,
+    "EXECUTION_ENGINE_SINGLE_SOURCE": True
+}
+🧱 ARCHITECTURE (STRICT + ISOLATED)
+نسخ التعليمات البرمجية
+
+GLOBAL (SHARED)
+└── EXECUTION ENGINE (TP / SL / MARKET CLOSE ONLY)
+
+PER-STRATEGY (ISOLATED)
+└── STATE MACHINE
+└── COOLDOWN
+└── BACKPRESSURE
+└── DESYNC COUNTER
+└── GOVERNANCE LOGIC
+└── METRICS
+❌ ممنوع:
+global cooldown
+global backpressure
+global trade state
+🧠 STRATEGY DEFINITIONS (EXPLICIT SCOPE)
+نسخ التعليمات البرمجية
+Python
+STRATEGIES = {
+    "SCALP_FAST": {
+        "timeframe": "1m",
+        "behavior": "HIGH_FREQUENCY",
+    },
+    "SCALP_PULLBACK": {
+        "timeframe": "5m",
+        "behavior": "SELECTIVE_REVERSALS",
+    },
+    "BREAKOUT": {
+        "timeframe": "5m",
+        "behavior": "LOW_FREQUENCY_HIGH_RISK",
+    }
+}
+🧠 PER-STRATEGY STATE (MANDATORY ISOLATION)
+نسخ التعليمات البرمجية
+Python
+STRATEGY_STATE = {
+    strategy_id: {
+        "state": "IDLE",
+        "active_trade": None,
+        "cooldown_until": None,
+        "desync_count": 0,
+        "last_close_time": None
+    }
+}
+❗ أي عملية إغلاق أو فشل تؤثر فقط على نفس strategy_id.
+⚡ EXECUTION PRIORITY (IMMUTABLE)
+نسخ التعليمات البرمجية
+Python
+EXECUTION_PRIORITY = [
+    "TAKE_PROFIT",        # Tick-level, HARD STOP
+    "STOP_LOSS",
+    "EMERGENCY_CLOSE",
+    "EMA_FAILURE_EXIT",
+    "MAX_TIME_ESCAPE"
+]
+⚡ LAYER 1 — TAKE PROFIT (GLOBAL, TICK-LEVEL)
+نسخ التعليمات البرمجية
+Python
+def process_tick(tick):
+    if best_bid >= (tp - dynamic_tp_margin()):
+        FORCE_CLOSE_TRADE(reason="TP_EXECUTED")
+        return  # HARD STOP — NOTHING ELSE EXECUTES
+TP لا يتأثر:
+بالذكاء
+بالاستراتيجية
+بالحوكمة
+بالـ cooldown
+🔒 FORCE CLOSE (ESCALATION SAFE)
+نسخ التعليمات البرمجية
+Python
+def FORCE_CLOSE_TRADE(reason):
+    for strategy in CLOSE_STRATEGIES:
+        for attempt in range(3):
+            if execute_close(strategy):
+                emit_event("TRADE_CLOSED", reason)
+                return
+    handle_critical_failure("CATASTROPHIC")
+🛡️ LAYER 2 — GOVERNANCE (PER-STRATEGY ONLY)
+⏱️ Time Lock (Per Strategy)
+نسخ التعليمات البرمجية
+Python
+MIN_TIME_BEFORE_EMA_EXIT = max(
+    60,
+    strategy.timeframe_minutes * 2 * 60
+)
+❌ Absolute Blocks (ANY = BLOCK)
+نسخ التعليمات البرمجية
+
+1. Time Lock Active
+2. Trade in Profit
+3. Bullish Reversal / Local Bottom
+4. Low Volume (unless high-liquidity asset)
+✅ EMA Failure (ALL REQUIRED)
+نسخ التعليمات البرمجية
+Python
+ema_failure = (
+    price_touched_ema and
+    rejection_candle and
+    RSI < 45 and
+    last_two_candles_red and
+    price < entry_price
+)
+🔁 SMART TRAILING SL (PER STRATEGY, EXECUTION-SAFE)
+1M — SCALP_FAST
+نسخ التعليمات البرمجية
+
+Activate @ +0.20%
+Lock Profit @ +0.10%
+Step = 0.05%
+5M — SCALP_PULLBACK / BREAKOUT
+نسخ التعليمات البرمجية
+
+Activate @ +0.35%
+Lock Profit @ +0.18%
+Step = 0.10%
+Rules:
+Trailing NEVER cancels TP
+Retry SL update x3
+Failure → log only (no block)
+🔄 CLOSE → RECHECK (PER STRATEGY ONLY)
+نسخ التعليمات البرمجية
+Python
+AFTER_CLOSE_COOLDOWN = {
+    "SCALP_FAST": 60,
+    "SCALP_PULLBACK": 180,
+    "BREAKOUT": 300
+}
+Rules:
+نسخ التعليمات البرمجية
+
+• No re-entry in same candle
+• No re-entry on same wick
+• Full signal reevaluation required
+• Cooldown applies ONLY to same strategy
+🧱 LAYER 3 — SAFETY CORE (PER STRATEGY)
+State Machine
+نسخ التعليمات البرمجية
+
+IDLE → ENTERED → OPEN → CLOSING
+     → WAITING_CONFIRMATION
+     → CONFIRMED_CLOSED → CLOSED
+Circuit Breaker (Per Strategy)
+نسخ التعليمات البرمجية
+Python
+if strategy.exec_state != strategy.ui_state:
+    sleep(100ms)
+    recheck()
+    if still_desynced:
+        strategy.desync_count += 1
+
+if strategy.desync_count >= 3:
+    handle_critical_failure("SEVERE", scope=strategy)
+❗ SEVERE affects strategy only — not global system
+🛑 FAILURE HANDLING (SCOPED)
+نسخ التعليمات البرمجية
+Python
+def handle_critical_failure(level, scope):
+    if level == "CATASTROPHIC":
+        SHUTDOWN_GLOBAL()
+    elif level == "SEVERE":
+        ENTER_SAFE_MODE(scope=strategy)
+    elif level == "MODERATE":
+        CONTINUE_WITH_ALERTS(scope=strategy)
+📊 METRICS (PER STRATEGY)
+نسخ التعليمات البرمجية
+Python
+METRICS[strategy] = {
+    "tp_hit_rate": None,
+    "false_ema_exits": None,
+    "desync_events": 0,
+    "avg_latency": None,
+    "trades_count": 0
+}
+🧪 REQUIRED TESTS (MUST PASS)
+نسخ التعليمات البرمجية
+
+✅ Close SCALP_FAST → PULLBACK still active
+✅ Cooldown SCALP_FAST → BREAKOUT allowed
+✅ EMA failure isolated
+✅ Trailing SL failure isolated
+✅ Global TP still absolute
+🏁 FINAL IMPLEMENTATION ORDER (MANDATORY)
+نسخ التعليمات البرمجية
+
+1. Enforce strategy-scoped state
+2. Remove all global cooldown/backpressure
+3. Keep execution engine global
+4. Validate isolation tests
+5. Deploy
+✅ FINAL EXPECTED RESULT
+نسخ التعليمات البرمجية
+
+✔ Independent strategies
+✔ No cross-blocking
+✔ No ghost trades
+✔ No TP misses
+✔ No silent lockouts
+✔ True multi-strategy behavior
+📌 FINAL COMMAND
+نسخ التعليمات البرمجية
+
+IMPLEMENT EXACTLY AS SPECIFIED.
+NO OPTIMIZATION.
+NO REFACTOR.
+NO LOGIC CHANGES.
+
+THIS UPDATE IS ABOUT SCOPE ISOLATION,
+NOT STRATEGY TUNING.
