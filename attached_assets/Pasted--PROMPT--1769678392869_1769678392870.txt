@@ -1,0 +1,662 @@
+🎯 تحديث نظام التداول الذكي - PROMPT الكامل
+
+🚀 الهدف الشامل
+
+تحويل البوت من نظام تداول ثابت إلى منصة تداول تكيفية ذكية مع 3 أوضاع تداول مختلفة، كل وضع يمثل شخصية تداول مستقلة تتكيف مع ظروف السوق ومزاج المتداول.
+
+---
+
+📋 المرحلة 1: البنية الأساسية (اللازمة)
+
+1️⃣ تعريف أوضاع التداول الذكية
+
+```python
+class TradeMode:
+    """الأنماط الرئيسية للتداول"""
+    DEFAULT_CLEAN_AGGRESSIVE = "DEFAULT"        # الوضع الافتراضي (منطقك الحالي)
+    FAST_SCALP_AGGRESSIVE = "FAST_SCALP"        # سرعة وكمية على حساب الجودة
+    BOUNCE_FOCUS_MODE = "BOUNCE"                # تركيز على الارتدادات في الأسواق الهابطة
+    
+    # معاني الأوضاع للواجهة
+    DISPLAY_NAMES = {
+        "DEFAULT": "🧠 الوضع الذكي (افتراضي)",
+        "FAST_SCALP": "⚡ سكالب سريع",
+        "BOUNCE": "🧲 اصطياد الارتدادات"
+    }
+    
+    # وصف المخاطر لكل وضع
+    RISK_LEVELS = {
+        "DEFAULT": "متوسطة",
+        "FAST_SCALP": "عالية",
+        "BOUNCE": "متوسطة إلى منخفضة"
+    }
+```
+
+2️⃣ نظام تخزين الحالة المتقدم
+
+```python
+class BotState:
+    """إدارة حالة البوت المتقدمة"""
+    
+    def __init__(self):
+        # الوضع الحالي
+        self.trade_mode = TradeMode.DEFAULT_CLEAN_AGGRESSIVE
+        
+        # تتبع تاريخ التغييرات
+        self.mode_change_history = []
+        
+        # إحصائيات كل وضع
+        self.mode_performance = {
+            "DEFAULT": {"trades": 0, "wins": 0, "total_profit": 0.0},
+            "FAST_SCALP": {"trades": 0, "wins": 0, "total_profit": 0.0},
+            "BOUNCE": {"trades": 0, "wins": 0, "total_profit": 0.0}
+        }
+        
+        # وقت آخر تغيير (للحماية)
+        self.last_mode_change = None
+        self.MIN_CHANGE_INTERVAL = 300  # 5 دقائق بين التغييرات
+```
+
+3️⃣ منطق التداول الخاص بكل وضع
+
+أ. منظم معاملات التداول:
+
+```python
+class TradingLogicController:
+    """التحكم في منطق التداول حسب الوضع"""
+    
+    def get_trading_params(self, trade_mode, market_data):
+        """إرجاع معاملات التداول الخاصة بكل وضع"""
+        
+        params = {
+            # المعاملات الأساسية
+            "price_protection": True,
+            "volume_filter": True,
+            "require_breakout": True,
+            "hold_logic_enabled": True,
+            "min_rsi": 30,
+            "max_rsi": 70,
+            "tp_target": 1.5,  # نسبة %
+            "sl_target": 0.8,   # نسبة %
+            
+            # معاملات التوقيت
+            "max_trade_duration": 3600,  # ثانية
+            "cooldown_between_trades": 60,  # ثانية
+        }
+        
+        # ⚡ وضع السكالب السريع
+        if trade_mode == TradeMode.FAST_SCALP_AGGRESSIVE:
+            params.update({
+                "price_protection": False,      # تعطيل الحماية
+                "volume_filter": False,         # تخفيف الفلتر
+                "require_breakout": False,      # السماح بدون كسر
+                "hold_logic_enabled": False,    # لا هولد
+                "tp_target": 0.8,              # TP صغير
+                "sl_target": 0.5,              # SL صغير
+                "max_trade_duration": 900,     # 15 دقيقة كحد أقصى
+                "cooldown_between_trades": 30, # توقف قصير بين الصفقات
+            })
+        
+        # 🧲 وضع اصطياد الارتدادات
+        elif trade_mode == TradeMode.BOUNCE_FOCUS_MODE:
+            params.update({
+                "price_protection": True,
+                "volume_filter": True,          # تأكيد الحجم إجباري
+                "require_breakout": True,
+                "hold_logic_enabled": True,     # تفعيل الهولد إجباري
+                "min_rsi": 20,                  # تشبع بيع عميق
+                "max_rsi": 40,                  # مساحة للارتداد
+                "tp_target": 1.2,              # TP متوسط
+                "sl_target": 0.6,              # SL محكم
+                "entry_conditions": self._get_bounce_conditions(market_data),
+            })
+        
+        return params
+    
+    def _get_bounce_conditions(self, market_data):
+        """شروط خاصة بالارتدادات"""
+        return {
+            "require_local_bottom": True,
+            "require_oversold_rsi": True,
+            "require_volume_spike": True,
+            "require_support_level": True,
+            "bounce_confirmation_candles": 2,
+        }
+```
+
+4️⃣ نظام أزرار التيليجرام الذكي
+
+```python
+class TelegramModeSwitcher:
+    """نظام التحكم بالأوضاع عبر التيليجرام"""
+    
+    def create_mode_keyboard(self, current_mode):
+        """إنشاء كيبورد ذكي يظهر الوضع الحالي"""
+        
+        buttons = []
+        for mode_key, display_name in TradeMode.DISPLAY_NAMES.items():
+            # وضع علامة على الوضع الحالي
+            prefix = "✅ " if mode_key == current_mode else "➡️ "
+            buttons.append([prefix + display_name])
+        
+        # إضافة أزرار إضافية
+        buttons.append(["📊 إحصائيات الأوضاع", "⚙️ الإعدادات المتقدمة"])
+        
+        return buttons
+    
+    def handle_mode_change(self, user_id, new_mode):
+        """معالجة تغيير الوضع بذكاء"""
+        
+        # التحقق من الوقت المسموح
+        if not self._can_change_mode(user_id):
+            return "⚠️ الرجاء الانتظار 5 دقائق بين تغييرات الوضع"
+        
+        # تحديث الحالة
+        BotState.trade_mode = new_mode
+        BotState.last_mode_change = datetime.now()
+        
+        # تسجيل التاريخ
+        BotState.mode_change_history.append({
+            "timestamp": datetime.now(),
+            "from": BotState.previous_mode,
+            "to": new_mode,
+            "user": user_id
+        })
+        
+        # إرسال التأكيد مع التفاصيل
+        return self._create_confirmation_message(new_mode)
+    
+    def _create_confirmation_message(self, new_mode):
+        """إنشاء رسالة تأكيد ذكية"""
+        
+        message = f"""
+🎯 *تم تغيير وضع التداول بنجاح*
+
+✅ **الوضع الجديد:** {TradeMode.DISPLAY_NAMES[new_mode]}
+📊 **مستوى المخاطرة:** {TradeMode.RISK_LEVELS[new_mode]}
+🕒 **وقت التفعيل:** الشمعة القادمة
+
+🔍 *التوقعات تحت هذا الوضع:*
+• عدد الصفقات/يوم: {self._get_expected_trades(new_mode)}
+• متوسط الربح المستهدف: {self._get_target_profit(new_mode)}%
+• نوع السوق المناسب: {self._get_suitable_market(new_mode)}
+
+💡 *نصيحة:* {self._get_mode_tip(new_mode)}
+
+📈 لمشاهدة الإحصائيات: /stats
+🔄 للتغيير مجدداً: /mode
+        """
+        return message
+```
+
+5️⃣ ربط الوضع بمنطق الدخول (النقطة الحساسة)
+
+```python
+def check_entry_conditions(symbol_data, market_conditions):
+    """فحص شروط الدخول مع مراعاة الوضع الحالي"""
+    
+    # جلب معاملات الوضع الحالي
+    params = TradingLogicController().get_trading_params(
+        BotState.trade_mode, 
+        market_conditions
+    )
+    
+    # 🔥 FAST_SCALP: منطق مخفف
+    if BotState.trade_mode == TradeMode.FAST_SCALP_AGGRESSIVE:
+        entry_allowed = (
+            check_rsi_condition(symbol_data, params) and
+            check_volume_minimal(symbol_data) and
+            check_trend_alignment_light(symbol_data)
+        )
+    
+    # 🧲 BOUNCE: منطق الارتدادات فقط
+    elif BotState.trade_mode == TradeMode.BOUNCE_FOCUS_MODE:
+        entry_allowed = (
+            is_oversold_condition(symbol_data, params) and
+            is_local_bottom(symbol_data) and
+            has_volume_confirmation(symbol_data) and
+            has_bounce_confirmation(symbol_data)
+        )
+    
+    # 🧠 DEFAULT: المنطق الأصلي
+    else:
+        entry_allowed = (
+            check_original_conditions(symbol_data) and
+            params["price_protection"] and
+            params["volume_filter"]
+        )
+    
+    # تسجيل الدخول مع ذكر الوضع
+    if entry_allowed:
+        log_entry(f"[{BotState.trade_mode}] دخول مسموح - {symbol_data['symbol']}")
+    
+    return entry_allowed
+```
+
+6️⃣ نظام التتبع والإحصائيات
+
+```python
+class PerformanceTracker:
+    """تتبع أداء كل وضع بشكل منفصل"""
+    
+    @staticmethod
+    def record_trade_result(trade_mode, trade_result):
+        """تسجيل نتيجة الصفقة للوضع الحالي"""
+        
+        stats = BotState.mode_performance[trade_mode]
+        stats["trades"] += 1
+        
+        if trade_result["profit"] > 0:
+            stats["wins"] += 1
+        
+        stats["total_profit"] += trade_result["profit"]
+        
+        # تحديث في الوقت الحقيقي
+        PerformanceTracker._update_live_stats(trade_mode)
+    
+    @staticmethod
+    def get_mode_stats(trade_mode):
+        """جلب إحصائيات الوضع المطلوب"""
+        
+        stats = BotState.mode_performance.get(trade_mode, {})
+        
+        if stats["trades"] > 0:
+            win_rate = (stats["wins"] / stats["trades"]) * 100
+            avg_profit = stats["total_profit"] / stats["trades"]
+        else:
+            win_rate = avg_profit = 0
+        
+        return {
+            "trades": stats["trades"],
+            "win_rate": round(win_rate, 2),
+            "avg_profit": round(avg_profit, 4),
+            "total_profit": round(stats["total_profit"], 4)
+        }
+```
+
+7️⃣ عرض الوضع الحالي في كل مكان
+
+```python
+def enhance_all_displays():
+    """إضافة معلومات الوضع لجميع العروض"""
+    
+    # في /status
+    status_message += f"""
+🧠 *وضع التداول الحالي:* {TradeMode.DISPLAY_NAMES[BotState.trade_mode]}
+📊 *مستوى المخاطرة:* {TradeMode.RISK_LEVELS[BotState.trade_mode]}
+🕒 *مفعل منذ:* {get_mode_duration()}
+🔧 *المعاملات النشطة:* {get_active_params_summary()}
+    """
+    
+    # في /health
+    health_message += f"""
+⚙️ *إعدادات الوضع الحالي:*
+• فلتر السعر: {'✅' if params['price_protection'] else '❌'}
+• فلتر الحجم: {'✅' if params['volume_filter'] else '❌'}
+• تأكيد الاختراق: {'✅' if params['require_breakout'] else '❌'}
+• نظام الهولد: {'✅' if params['hold_logic_enabled'] else '❌'}
+• TP الهدف: {params['tp_target']}%
+    """
+```
+
+---
+
+📈 المرحلة 2: الذكاء المتقدم (التعلم)
+
+8️⃣ نظام اقتراح الأوضاع الذكي
+
+```python
+class ModeRecommender:
+    """يقترح أفضل وضع بناءً على ظروف السوق"""
+    
+    def analyze_market_and_suggest(self, market_data):
+        """تحليل السوق واقتراح الوضع الأمثل"""
+        
+        analysis = {
+            "volatility": self._calculate_volatility(market_data),
+            "trend_strength": self._calculate_trend_strength(market_data),
+            "market_phase": self._identify_market_phase(market_data),
+            "time_of_day": self._get_trading_session(),
+            "volume_profile": self._analyze_volume_profile(market_data)
+        }
+        
+        # خوارزمية الاقتراح
+        recommendation = self._get_recommendation(analysis)
+        confidence = self._calculate_confidence(analysis)
+        
+        return {
+            "recommended_mode": recommendation,
+            "confidence": confidence,
+            "analysis": analysis,
+            "reason": self._get_recommendation_reason(analysis, recommendation)
+        }
+    
+    def _get_recommendation(self, analysis):
+        """تحديد الوضع المناسب"""
+        
+        if analysis["market_phase"] == "BEARISH" and analysis["volatility"] > 2.0:
+            return TradeMode.BOUNCE_FOCUS_MODE
+        
+        elif analysis["volatility"] > 1.5 and analysis["time_of_day"] in ["LONDON", "NY"]:
+            return TradeMode.FAST_SCALP_AGGRESSIVE
+        
+        else:
+            return TradeMode.DEFAULT_CLEAN_AGGRESSIVE
+```
+
+9️⃣ نظام الإنذارات والتعديل التلقائي
+
+```python
+class AutoModeAdjuster:
+    """تعديل تلقائي طفيف داخل الوضع الواحد"""
+    
+    def optimize_within_mode(self, trade_mode, recent_performance):
+        """تحسين المعاملات داخل الوضع الحالي"""
+        
+        adjustments = {}
+        
+        if trade_mode == TradeMode.FAST_SCALP_AGGRESSIVE:
+            if recent_performance["win_rate"] < 40:
+                adjustments = {"tp_target": 0.6, "cooldown_between_trades": 45}
+        
+        elif trade_mode == TradeMode.BOUNCE_FOCUS_MODE:
+            if recent_performance["avg_profit"] < 0.5:
+                adjustments = {"min_rsi": 25, "tp_target": 1.0}
+        
+        return adjustments
+```
+
+---
+
+🏆 المرحلة 3: التكامل والتحسين
+
+🔟 نظام الاختبار والتحقق
+
+```python
+class ModeValidator:
+    """التحقق من صحة تطبيق الأوضاع"""
+    
+    def validate_mode_application(self):
+        """تأكد أن التغيير طُبّق فعلياً"""
+        
+        current_params = TradingLogicController().get_trading_params(
+            BotState.trade_mode, 
+            get_market_data()
+        )
+        
+        logs = []
+        
+        # التحقق من كل معلمة
+        for param, value in current_params.items():
+            actual_value = self._get_actual_runtime_value(param)
+            
+            if actual_value != value:
+                logs.append(f"⚠️ mismatch: {param} (expected: {value}, actual: {actual_value})")
+            else:
+                logs.append(f"✅ {param}: {value}")
+        
+        return {
+            "mode": BotState.trade_mode,
+            "applied_correctly": len([l for l in logs if "⚠️" in l]) == 0,
+            "details": logs
+        }
+```
+
+1️⃣1️⃣ لوحة تحكم شاملة
+
+```python
+def get_trading_dashboard():
+    """لوحة تحكم كاملة للتداول"""
+    
+    dashboard = f"""
+📊 *لوحة تحكم التداول الذكي*
+────────────────────
+🧠 *الوضع الحالي:* {TradeMode.DISPLAY_NAMES[BotState.trade_mode]}
+⚡ *المخاطرة:* {TradeMode.RISK_LEVELS[BotState.trade_mode]}
+
+📈 *أداء الأوضاع:*
+{DashboardBuilder.build_mode_performance_table()}
+
+🎯 *اقتراح الذكاء الاصطناعي:*
+{DashboardBuilder.build_ai_recommendation()}
+
+⚙️ *المعاملات النشطة:*
+{DashboardBuilder.build_active_params()}
+
+🔄 *آخر 5 تغييرات:*
+{DashboardBuilder.build_recent_changes()}
+
+💡 *نصيحة اليوم:* {get_daily_tip()}
+────────────────────
+🔧 /mode - تغيير الوضع
+📈 /stats - إحصائيات مفصلة
+🎯 /recommend - اقتراح ذكي
+⚠️  /validate - التحقق من التطبيق
+    """
+    
+    return dashboard
+```
+
+---
+
+🚀 المرحلة 4: التحسين المستند إلى البيانات
+
+1️⃣2️⃣ نظام التعلم من البيانات
+
+```python
+class DataDrivenOptimizer:
+    """تحسين الأوضاع بناءً على البيانات التاريخية"""
+    
+    def analyze_optimal_settings(self):
+        """تحليل أفضل الإعدادات لكل وضع"""
+        
+        optimization_results = {}
+        
+        for mode in TradeMode.ALL_MODES:
+            historical_data = self._get_mode_history(mode)
+            
+            if len(historical_data) > 50:  # عينة كافية
+                optimal = self._find_optimal_params(historical_data)
+                optimization_results[mode] = {
+                    "optimal_params": optimal,
+                    "expected_improvement": self._calculate_improvement(optimal),
+                    "sample_size": len(historical_data)
+                }
+        
+        return optimization_results
+    
+    def _find_optimal_params(self, historical_trades):
+        """إيجاد المعاملات المثلى باستخدام تحليل البيانات"""
+        
+        # تحليل الارتباطات
+        correlations = self._analyze_correlations(historical_trades)
+        
+        # نمذجة المحاكاة
+        simulations = self._run_simulations(historical_trades)
+        
+        # استخراج الأفضل
+        best_params = self._extract_best_combination(simulations)
+        
+        return best_params
+```
+
+1️⃣3️⃣ نظام التقارير الأسبوعية
+
+```python
+class WeeklyReporter:
+    """تقارير أداء أسبوعية ذكية"""
+    
+    def generate_weekly_report(self):
+        """تقرير أسبوعي مفصل"""
+        
+        report = f"""
+📊 *التقرير الأسبوعي - التداول الذكي*
+────────────────────
+🗓️ الفترة: {get_week_range()}
+📈 إجمالي الصفقات: {total_trades}
+
+🏆 *أفضل وضع لهذا الأسبوع:*
+{self._get_top_performing_mode()}
+
+📉 *التحليل حسب نوع السوق:*
+{self._analyze_by_market_condition()}
+
+🎯 *اقتراحات التحسين:*
+{self._generate_improvement_suggestions()}
+
+🔮 *التوقعات للأسبوع القادم:*
+{self._generate_next_week_forecast()}
+
+💎 *الحكمة الأسبوعية:* {get_trading_wisdom()}
+────────────────────
+📥 تصدير البيانات: /export
+📈 تحليل مفصل: /deep_analysis
+        """
+        
+        return report
+```
+
+---
+
+🛡️ قواعد الأمان (غير قابلة للمساومة)
+
+الأمان والاستقرار:
+
+```python
+SAFETY_RULES = {
+    "NO_BOT_RESTART": "تغيير الوضع لا يتطلب إعادة تشغيل",
+    "NO_POSITION_CLOSING": "لا يتم إغلاق الصفقات المفتوحة",
+    "NEXT_CANDLE_APPLICATION": "التغيير يطبق من الشمعة القادمة فقط",
+    "MAX_MODE_CHANGES_PER_HOUR": 3,
+    "CONFIRMATION_REQUIRED": True,
+    "BACKTEST_MODE_AVAILABLE": True,
+}
+```
+
+نظام النسخ الاحتياطي:
+
+```python
+class ModeBackupSystem:
+    """حفظ واستعادة الإعدادات"""
+    
+    def create_mode_snapshot(self):
+        """حفظ لقطة من الإعدادات الحالية"""
+        
+        snapshot = {
+            "timestamp": datetime.now(),
+            "trade_mode": BotState.trade_mode,
+            "params": TradingLogicController().get_current_params(),
+            "performance": PerformanceTracker.get_all_stats(),
+            "market_conditions": get_current_market_state()
+        }
+        
+        save_snapshot(snapshot)
+        return snapshot
+    
+    def restore_mode(self, snapshot_id):
+        """استعادة وضع محفوظ"""
+        
+        snapshot = load_snapshot(snapshot_id)
+        
+        if snapshot:
+            BotState.trade_mode = snapshot["trade_mode"]
+            apply_params(snapshot["params"])
+            
+            return f"✅ تم استعادة الوضع من {snapshot['timestamp']}"
+        
+        return "❌ لم يتم العثور على اللقطة"
+```
+
+---
+
+🎯 نتيجة التنفيذ النهائية
+
+ماذا ستلاحظ بعد التنفيذ:
+
+1. ✅ تعدد الشخصيات: البوت يتصرف بـ 3 شخصيات تداول مختلفة
+2. ✅ تكيف ذكي: يتغير السلوك حسب السوق وقراراتك
+3. ✅ شفافية كاملة: تعرف بالضبط ماذا يحدث ولماذا
+4. ✅ أداء مقيس: تتبع دقيق لكل وضع على حدة
+5. ✅ تحسين مستمر: التعلم من البيانات السابقة
+
+أوامر التيليجرام الجديدة:
+
+```
+/mode - تغيير/عرض وضع التداول
+/stats - إحصائيات الأوضاع
+/dashboard - لوحة التحكم الشاملة
+/recommend - اقتراح ذكي للوضع
+/validate - التحقق من التطبيق
+/backtest - اختبار الأوضاع على تاريخ سابق
+/report - تقرير أداء مفصل
+/backup - حفظ/استعادة الإعدادات
+```
+
+مؤشرات النجاح:
+
+· 📈 زيادة في نسبة الربحية الإجمالية
+· 📉 تقليل في المخاطرة غير المحسوبة
+· ⚡ استجابة أفضل لظروف السوق
+· 🎯 تحسين في تجربة المستخدم
+· 🔄 مرونة أعلى في الاستراتيجية
+
+---
+
+📥 برومبت التنفيذ النهائي
+
+```
+🎯 OBJECTIVE: Implement Smart Adaptive Trading System with 3 Dynamic Personalities
+
+🔧 CORE REQUIREMENTS:
+1. THREE REAL TRADING MODES (not UI changes):
+   - DEFAULT_CLEAN_AGGRESSIVE (current logic)
+   - FAST_SCALP_AGGRESSIVE (quantity over quality)
+   - BOUNCE_FOCUS_MODE (bear market specialist)
+
+2. INTELLIGENT TELEGRAM INTEGRATION:
+   - Smart keyboard showing current mode
+   - Confirmation with risk disclosure
+   - Real-time performance tracking
+
+3. MODE-SPECIFIC LOGIC:
+   - Each mode has unique entry/exit/filtering conditions
+   - Parameters automatically adjust per mode
+   - No deletion of existing logic
+
+4. PERFORMANCE ANALYTICS:
+   - Separate tracking for each mode
+   - Win rate, average profit, risk metrics
+   - Historical comparison
+
+5. SAFETY & STABILITY:
+   - No bot restart required
+   - No open positions closed
+   - Changes apply from next candle
+   - Rate limiting on mode changes
+
+🔄 IMPLEMENTATION PHASES:
+PHASE 1: Core Structure (Mandatory)
+PHASE 2: Intelligence Layer (Learning & Suggestions)
+PHASE 3: Integration & Dashboard
+PHASE 4: Data-Driven Optimization
+
+📊 EXPECTED OUTCOME:
+One bot, three trading personalities, adaptive to:
+- Market conditions
+- Trader mood
+- Risk appetite
+- Time of day
+- Historical performance
+
+⚠️ VERIFICATION REQUIRED:
+- Each mode must demonstrably change trading behavior
+- All changes must be logged and verifiable
+- Performance must be trackable per mode
+- User must understand risk level per mode
+
+🚀 FINAL GOAL: Transform from static trading bot to intelligent adaptive trading assistant.
+```
+
+---
+
+الخلاصة: هذا النظام يحول البوت من أداة تداول عادية إلى شريك تداول ذكي يتكيف مع احتياجاتك وظروف السوق، مع الحفاظ على الاستقرار والشفافية الكاملة.
