@@ -19,3 +19,4 @@ timestamp,action,entry_price,exit_price,pnl_percent,pnl_usdt,balance_after,score
 2026-01-29 04:23:53,BUY,1.9015,,,,999.81,0,,,0,False,,1000.00
 2026-01-29 04:24:13,EXIT,1.9015,1.9011,-0.02,-0.02,999.79,0,,ema_confirmation,0,False,,1000.00
 2026-01-29 04:40:47,BUY,1.8967,,,,999.79,3,✅ كسر قمة 3 شموع (+3),,0,False,,1000.00
+2026-01-29 04:41:16,EXIT,1.8967,1.8971,0.02,0.02,999.81,3,✅ كسر قمة 3 شموع (+3),ema_confirmation,0,False,,1000.00
