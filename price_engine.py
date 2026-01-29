@@ -31,6 +31,7 @@ class PriceEngine:
         while cls._running:
             try:
                 # Binance WebSocket for XRP/USDT ticker
+                import websocket
                 cls._ws = websocket.WebSocketApp(
                     "wss://stream.binance.com:9443/ws/xrpusdt@ticker",
                     on_message=cls._on_message,

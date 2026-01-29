@@ -12,6 +12,111 @@ import logging
 import time
 import threading
 import json
+def check_bounce_entry(analysis, candles, score):
+    """شروط دخول الارتداد في السوق الهابط v3.7.5"""
+    ema20 = analysis.get('ema20', 0)
+    ema50 = analysis.get('ema50', 0)
+    ema200 = analysis.get('ema200', 0)
+    
+    market_mode = "EASY_MARKET" if (ema20 > ema50 and ema50 > ema200) else "HARD_MARKET"
+    
+    if market_mode != "HARD_MARKET":
+        return False
+    
+    current_price = get_current_price()
+    
+    # 1. القاع المحلي (Local Extreme)
+    recent_lows = [c['low'] for c in candles[-15:]]
+    is_local_extreme = current_price <= min(recent_lows) if recent_lows else False
+    
+    # 2. RSI (Placeholder logic)
+    current_rsi = 30.0 # Placeholder
+    
+    # 3. Volume Spike (Placeholder logic)
+    volume_spike = False 
+    
+    entry_is_bounce = (
+        score <= 5 and
+        is_local_extreme and
+        current_rsi <= 35
+    )
+    
+    return entry_is_bounce
+
+def check_buy_signal(analysis, candles):
+    """
+    منطق v3.7.5 المطور لفحص إشارة الشراء.
+    """
+    if not analysis or not candles:
+        return False
+        
+    current_price = candles[-1]['close']
+    ema20 = analysis.get('ema20', 0)
+    ema50 = analysis.get('ema50', 0)
+    ema200 = analysis.get('ema200', 0)
+    score = analysis.get('score', 0)
+    
+    market_mode = "EASY_MARKET" if (ema20 > ema50 and ema50 > ema200) else "HARD_MARKET"
+    
+    # تحسين الدخول في السوق الصعب (ارتدادات فقط)
+    if market_mode == "HARD_MARKET":
+        is_bounce = check_bounce_entry(analysis, candles, score)
+        if is_bounce:
+            state.hold_active = True
+            state.hold_candles = 0
+            state.hold_start_price = current_price
+            logger.info("[HOLD ACTIVATED] Bounce trade in bear market v3.7.5")
+            return True
+        return False
+    
+    # الدخول العادي في السوق السهل
+    return current_price > ema20 and score >= MIN_SIGNAL_SCORE
+
+def check_hold_exit_conditions():
+    """فحص شروط الخروج أثناء الـ Hold v3.7.5"""
+    if not state.hold_active:
+        return None
+    
+    current_price = get_current_price()
+    
+    # 1️⃣ STOP LOSS (أولوية قصوى)
+    if state.current_sl and current_price <= state.current_sl:
+        return "SL Hit (Hold)"
+    
+    # 2️⃣ فشل سعري (دروداون محدود)
+    max_drawdown = state.hold_start_price * 0.9990  # -0.10%
+    if current_price <= max_drawdown:
+        return "Hold Failed - Max Drawdown"
+    
+    # 3️⃣ تحقيق هدف واقعي للسكالب
+    scalp_target = state.hold_start_price * 1.003  # +0.3%
+    if current_price >= scalp_target:
+        return "Scalp Target Hit"
+    
+    # 4️⃣ فشل زمني مع ضعف الزخم
+    if state.hold_candles >= 5:
+        return "Hold Failed - Time/Momentum Limit"
+    
+    # 6️⃣ قيد الخسارة اليومية التراكمية
+    if state.daily_cumulative_loss >= 1.0:
+        return "Hold Disabled - Daily Loss Limit"
+    
+    return None
+
+def log_hold_status():
+    """تسجيل مفصل لحالة الـ Hold v3.7.5"""
+    current_price = get_current_price()
+    drawdown = calculate_drawdown()
+    logger.info(f"""
+    📊 HOLD STATUS
+    ├── Active: {state.hold_active}
+    ├── Candles Held: {state.hold_candles}
+    ├── Entry Price: {state.hold_start_price:.6f}
+    ├── Current Price: {current_price:.6f}
+    ├── Drawdown: {drawdown:.4f}%
+    └── Daily Loss: {state.daily_cumulative_loss:.2f}%
+    """)
+
 import websocket
 from version import BOT_VERSION
 from price_engine import PriceEngine, TradingGuard, TelegramReporter, FailSafeSystem, ValidationChecks
