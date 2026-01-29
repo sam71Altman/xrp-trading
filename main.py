@@ -2196,6 +2196,25 @@ async def cmd_diagnostic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg += f"{'✔️' if analysis['range_confirmed'] else '❌'} فلتر التذبذب (Range)\n"
     msg += f"• Score الحالي: {score} / 10\n\n"
     
+    # 🧠 حالة Hold Logic (New Section v3.7.7)
+    hold_status_emoji = "🟢" if state.hold_active else ("🟡" if (analysis.get('rsi', 50) < 45 and score < 3) else "🔴")
+    hold_status_text = "مفعل (في وضع حماية ذكي)" if state.hold_active else ("جاهز ولم يُفعل بعد" if hold_status_emoji == "🟡" else "غير مفعل")
+    
+    hold_count_emoji = "🟢" if state.hold_activations >= 1 else "🟡"
+    hold_count_text = f"{state.hold_activations} (تفعيل فعلي)" if state.hold_activations >= 1 else "0 (لم تتحقق شروط السوق)"
+    
+    ema_ignored_emoji = "🟢" if state.ema_exit_ignored_count > 0 else "🟡"
+    ema_ignored_text = "تم تجاهل EMA Exit" if state.ema_exit_ignored_count > 0 else "لم يحدث تجاهل"
+    
+    last_reason_emoji = "🟡" if state.hold_active else "🔴"
+    last_reason_text = getattr(state, 'last_hold_reason', "لا يوجد")
+    
+    msg += "🧠 *حالة Hold Logic*\n"
+    msg += f"• الحالة الحالية: {hold_status_emoji} {hold_status_text}\n"
+    msg += f"• عدد مرات التفعيل: {hold_count_emoji} {hold_count_text}\n"
+    msg += f"• تجاهل الخروج المبكر: {ema_ignored_emoji} {ema_ignored_text}\n"
+    msg += f"• آخر سبب منع الخروج: {last_reason_emoji} {last_reason_text}\n\n"
+    
     # Paper Trading
     closed_trades = get_closed_trades()
     msg += "🧾 *Paper Trading*\n"
