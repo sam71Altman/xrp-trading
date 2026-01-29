@@ -1759,7 +1759,7 @@ VERSION = "3.7.1-lite – Exit Intelligence Calibration"
 
 def get_main_keyboard():
     keyboard = [
-        ["تحديث الحالة 🔄", "🛡️ تشخيص Hold Logic"],
+        ["تحديث الحالة 🔄", "🧠 تشخيص البوت"],
         ["الإحصائيات 📊", "الرصيد 💰"],
         ["سجل الصفقات 📜", "تحليل الخسائر 📉"],
         ["1m", "5m"],
@@ -1772,7 +1772,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if text == "تحديث الحالة 🔄":
         await cmd_status(update, context)
-    elif text == "🛡️ تشخيص Hold Logic":
+    elif text == "🧠 تشخيص البوت":
         await health_command(update, context)
     elif text == "الإحصائيات 📊":
         await cmd_stats(update, context)
@@ -1990,19 +1990,16 @@ async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Shows diagnostic health overview.
     """
-    ema20 = state.last_close if state.last_close else 0 # Placeholder if not available
-    market_mode = "HARD_MARKET" # Default
-    if hasattr(state, 'last_market_mode'):
-        market_mode = state.last_market_mode
-        
     msg = (
-        f"🩺 **Bot Health Diagnostic**\n"
-        f"Version: `{BOT_VERSION}`\n"
-        f"Market Mode: `{market_mode}`\n"
-        f"Entries: {state.valid_entries} / Rejections: {state.rejected_entries}\n"
-        f"Hold Count: {state.hold_activations}\n"
-        f"EMA Exit Ignored: {state.ema_exit_ignored_count}\n"
-        f"Hold Active: {'✅ Yes' if state.hold_active else '❌ No'}\n"
+        f"🩺 **تشخيص حالة البوت**\n"
+        f"الإصدار: `{BOT_VERSION}`\n"
+        f"عدد الدخولات: {state.valid_entries}\n"
+        f"عدد الرفض: {state.rejected_entries}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🧠 **حالة Hold Logic:**\n"
+        f"- مفعل حالياً: {'✅ نعم' if state.hold_active else '❌ لا'}\n"
+        f"- مرات التفعيل: {state.hold_activations}\n"
+        f"- مرات تجاهل الخروج المبكر: {state.ema_exit_ignored_count}\n"
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
