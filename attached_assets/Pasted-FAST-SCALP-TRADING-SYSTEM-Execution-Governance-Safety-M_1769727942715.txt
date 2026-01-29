@@ -1,0 +1,283 @@
+FAST SCALP TRADING SYSTEM
+Execution · Governance · Safety · Monitoring
+VERSION: v4.4.PRO-FINAL (BANKING-GRADE)
+🎯 SYSTEM PHILOSOPHY (ABSOLUTE)
+نسخ التعليمات البرمجية
+
+• TP = EXECUTION EVENT (not a condition)
+• SL = FINAL SAFETY EXIT
+• EMA Exit = CONFIRMED FAILURE JUDGMENT (not a signal)
+• UI = VIEW ONLY (never source of truth)
+• EXECUTION ENGINE = SINGLE SOURCE OF TRUTH
+• ANY LOST EVENT = CRITICAL
+• ANY STATE DESYNC = CRITICAL
+• SAFETY > AVAILABILITY
+⚡ HARD RULES (NON-NEGOTIABLE)
+نسخ التعليمات البرمجية
+Python
+HARD_RULES = {
+    "NO_ENTRY_LOGIC_CHANGES": True,
+    "NO_TP_SL_STRATEGY_CHANGES": True,
+    "FAST_SCALP_ONLY": True,
+    "TP_OVERRIDES_ALL_LOGIC": True,
+    "SL_FINAL_EXIT": True,
+    "NO_AI_INTERFERENCE_WITH_EXECUTION": True,
+    "NEXT_CANDLE_RULE_FOR_GOVERNANCE": True,
+    "SINGLE_SOURCE_OF_TRUTH": "EXECUTION_ENGINE"
+}
+🧱 ARCHITECTURE (STRICT SEPARATION)
+نسخ التعليمات البرمجية
+
+LAYER 1 — EXECUTION (TICK LEVEL)
+    TP / SL / Emergency Close
+
+LAYER 2 — GOVERNANCE
+    EMA Failure Logic
+    Time Lock · Bounce · Volume · ATR
+
+LAYER 3 — SAFETY CORE
+    State Machine
+    Event Delivery Guarantee
+    Timeout Protection
+    Circuit Breaker
+    Graceful Degradation
+
+LAYER 4 — MONITORING
+    Metrics · Audit Logs · Health Check
+⚡ EXECUTION PRIORITY (IMMUTABLE ORDER)
+نسخ التعليمات البرمجية
+Python
+EXECUTION_PRIORITY = [
+    "TAKE_PROFIT",        # Tick-level, HARD STOP
+    "STOP_LOSS",
+    "EMERGENCY_CLOSE",
+    "EMA_FAILURE_EXIT",
+    "MAX_TIME_ESCAPE"
+]
+⚡ LAYER 1 — TAKE PROFIT (FORCED, REAL-TIME)
+Dynamic TP Execution Margin
+نسخ التعليمات البرمجية
+Python
+MIN_TP_MARGIN = 0.00005  # asset-specific floor
+
+def dynamic_spread_based():
+    spread = ask - bid
+    liquidity_factor = volume_ratio()  # current / avg
+    return max(
+        spread * 1.5,
+        MIN_TP_MARGIN,
+        ATR * 0.1
+    )
+Tick Processing (Hard Stop)
+نسخ التعليمات البرمجية
+Python
+def process_tick(tick):
+    if best_bid >= (take_profit - dynamic_spread_based()):
+        FORCE_CLOSE_TRADE(reason="TP_EXECUTED")
+        return  # NOTHING ELSE EXECUTES
+🔒 FORCE CLOSE WITH ESCALATION
+نسخ التعليمات البرمجية
+Python
+CLOSE_STRATEGIES = {
+    "MARKET": {"slippage_limit": 0.10},
+    "CANCEL_ALL_THEN_MARKET": {"timeout": 2},
+    "REDUCE_ONLY": {"partial_allowed": True}
+}
+
+def FORCE_CLOSE_TRADE(reason):
+    for strategy in CLOSE_STRATEGIES:
+        for attempt in range(3):
+            if execute_close(strategy):
+                emit_event("TRADE_CLOSED", reason)
+                return
+    handle_critical_failure("CATASTROPHIC")
+🛡️ LAYER 2 — EMA EXIT GOVERNANCE (FAILURE ONLY)
+Time Lock
+نسخ التعليمات البرمجية
+Python
+MIN_TIME_BEFORE_EMA_EXIT = max(
+    60,
+    timeframe_minutes * 2 * 60
+)
+Absolute Blocks (ANY = BLOCK)
+نسخ التعليمات البرمجية
+
+1. Time Lock Active
+2. Trade in Profit
+3. Bullish Reversal / Local Bottom
+4. Low Volume (unless high-liquidity asset)
+Failure Confirmation (ALL REQUIRED)
+نسخ التعليمات البرمجية
+Python
+ema_failure = (
+    price_touched_ema and
+    rejection_candle and
+    RSI < 45 and
+    last_two_candles_red and
+    price < entry_price
+)
+Max Time Escape (ATR-Based)
+نسخ التعليمات البرمجية
+Python
+small_range = ATR * 1.5
+
+if candles >= 10 and abs(price - entry) < small_range:
+    ALLOW_EXIT("MAX_TIME_ESCAPE")
+🔁 SMART TRAILING SL (EXECUTION-SAFE)
+1 Minute Frame
+نسخ التعليمات البرمجية
+
+Activate @ +0.20%
+Lock Profit @ +0.10%
+Step = 0.05%
+5 Minute Frame
+نسخ التعليمات البرمجية
+
+Activate @ +0.35%
+Lock Profit @ +0.18%
+Step = 0.10%
+Rules
+نسخ التعليمات البرمجية
+Python
+• Trailing NEVER cancels TP
+• Trailing updates retry x3
+• Failure → log + continue (no block)
+🔄 CLOSE → RECHECK ENGINE
+نسخ التعليمات البرمجية
+Python
+AFTER_CLOSE_COOLDOWN = {
+    "1m": 60,
+    "5m": 180
+}
+Rules:
+نسخ التعليمات البرمجية
+
+• No re-entry in same candle
+• No re-entry on same wick
+• Full signal reevaluation required
+🧱 LAYER 3 — SAFETY CORE
+State Machine (MANDATORY)
+نسخ التعليمات البرمجية
+
+IDLE → ENTERED → OPEN → CLOSING
+     → WAITING_CONFIRMATION
+     → CONFIRMED_CLOSED → CLOSED
+Timeout Protection
+نسخ التعليمات البرمجية
+Python
+if state == WAITING_CONFIRMATION and elapsed > 2s:
+    handle_critical_failure("SEVERE")
+🔄 EVENT DELIVERY GUARANTEE
+نسخ التعليمات البرمجية
+Python
+if emit_event_failed:
+    handle_critical_failure("CATASTROPHIC")
+Event Ordering
+نسخ التعليمات البرمجية
+Python
+if event.sequence <= last_sequence:
+    handle_critical_failure("SEVERE")
+⚡ CIRCUIT BREAKER (SLIDING WINDOW)
+نسخ التعليمات البرمجية
+Python
+MAX_DESYNC = 3
+WINDOW = 60 minutes
+
+if exec.trade_open != ui.trade_open:
+    sleep(100ms)
+    recheck()
+    if still_desynced:
+        register_desync()
+
+if desync_count >= MAX_DESYNC:
+    handle_critical_failure("SEVERE")
+🛑 GRACEFUL DEGRADATION POLICY
+نسخ التعليمات البرمجية
+Python
+def handle_critical_failure(level):
+    if level == "CATASTROPHIC":
+        SHUTDOWN()
+    elif level == "SEVERE":
+        ENTER_SAFE_MODE()  # close all, block new trades
+    elif level == "MODERATE":
+        CONTINUE_WITH_ALERTS()
+🛑 SHUTDOWN PROCEDURE (DEFINED)
+نسخ التعليمات البرمجية
+Python
+def SHUTDOWN():
+    cancel_all_orders()
+    dump_full_state_to_disk()
+    notify_admins("SYSTEM_HALTED")
+    close_connections()
+    os._exit(137)
+📊 METRICS (MANDATORY)
+نسخ التعليمات البرمجية
+Python
+EXECUTION_QUALITY = {
+    "tp_hit_rate": ">= 99.95%",
+    "tp_latency_p99": "< 50ms",
+    "false_ema_exits": "< 5%",
+    "state_desync": 0,
+    "ghost_trades": 0,
+    "order_fill_rate": "> 99.5%"
+}
+🩺 HEALTH CHECK
+نسخ التعليمات البرمجية
+Python
+{
+  "system_status": OPERATIONAL / DEGRADED / HALTED,
+  "execution_state": exec.trade_open,
+  "ui_state": ui.trade_open,
+  "desync_events": count,
+  "last_trade_closed": timestamp
+}
+🚦 BACKPRESSURE CONTROL
+نسخ التعليمات البرمجية
+Python
+MAX_CONCURRENT_TRADES = {
+    "1m": 2,
+    "5m": 1
+}
+
+if active_trades >= limit:
+    BLOCK_NEW_ENTRIES("BACKPRESSURE_LIMIT")
+🧪 REQUIRED TESTS (BLOCK RELEASE IF ANY FAIL)
+نسخ التعليمات البرمجية
+
+✅ TP spike then reverse
+✅ Broker ACK delay
+✅ Lost event
+✅ UI lag
+✅ Restart during closing
+✅ Trailing SL failure
+✅ Flash crash simulation
+🚀 DEPLOYMENT PLAN
+نسخ التعليمات البرمجية
+
+PHASE 0 — Backup + Rollback
+PHASE 1 — Shadow Mode (72h)
+PHASE 2 — Limited Trading
+PHASE 3 — Full Deployment
+🏁 FINAL IMPLEMENTATION COMMAND
+نسخ التعليمات البرمجية
+
+IMPLEMENT EXACTLY AS SPECIFIED.
+
+• No reordering
+• No logic shortcuts
+• TP is absolute
+• EMA Exit = failure only
+• Safety Core mandatory
+• Any violation → handled by policy
+
+THIS IS A FINANCIAL-GRADE SYSTEM.
+NOT AN EXPERIMENT.
+✅ FINAL EXPECTED RESULT
+نسخ التعليمات البرمجية
+
+✔ Deterministic Execution
+✔ Zero Ghost Trades
+✔ Zero TP Misses
+✔ Zero State Desync
+✔ Full Auditability
+✔ Production-Ready
