@@ -6,10 +6,10 @@
     "total_profit": 0.0
   },
   "FAST_SCALP": {
-    "trades": 6,
-    "wins": 1,
+    "trades": 7,
+    "wins": 2,
     "losses": 5,
-    "total_profit": -0.06655660563335987
+    "total_profit": 0.08853367906809885
   },
   "BOUNCE": {
     "trades": 0,

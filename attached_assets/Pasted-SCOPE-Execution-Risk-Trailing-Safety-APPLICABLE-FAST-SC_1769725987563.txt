@@ -1,0 +1,131 @@
+SCOPE: Execution / Risk / Trailing / Safety
+APPLICABLE: FAST SCALP (1M / 5M)
+PHILOSOPHY:
+TP = أمر عسكري | Trailing = حماية | EMA = حوكمة | UI = عرض فقط
+⚡ EXECUTION PRIORITY (ABSOLUTE & NON-NEGOTIABLE)
+نسخ التعليمات البرمجية
+
+1. TAKE PROFIT  → Tick-level, override ALL (no delay, no filters)
+2. STOP LOSS    → Tick-level
+3. TRAILING SL  → Risk protection only
+4. EMA EXIT     → Governance only (already fixed)
+5. CLOSE → RECHECK
+❗ إذا لمس السعر TP → إغلاق فوري حتى لو:
+Time Lock فعال
+Trailing قيد التحديث
+EMA يشير لأي شيء
+🔁 RETRY MECHANISM (TRAILING SL ONLY)
+🎯 الهدف
+معالجة فشل تعديل SL بسبب API / latency بدون خلق تأخير خطير.
+🧠 القاعدة الذكية
+نسخ التعليمات البرمجية
+
+- Retry محدود
+- Skip retry عند volatility عالية
+- لا Retry إذا السعر قريب من SL
+نسخ التعليمات البرمجية
+Python
+MAX_RETRIES = 3
+
+def safe_trailing_update(new_sl):
+    if high_volatility() or distance_to_sl < MIN_SAFE_DISTANCE:
+        log("TRAILING_RETRY_SKIPPED_HIGH_RISK")
+        return False
+
+    for attempt in range(MAX_RETRIES):
+        if update_sl(new_sl):
+            log("TRAILING_SL_MOVED")
+            return True
+        sleep(50ms)
+
+    log("TRAILING_SL_FAILED")
+    return False
+🛡️ CIRCUIT BREAKER (ANTI-MELTDOWN)
+📌 تعريف الجلسة (Session)
+نسخ التعليمات البرمجية
+
+SESSION = Rolling Window (60 minutes)
+⚙️ الإعدادات
+نسخ التعليمات البرمجية
+Python
+CIRCUIT_BREAKER = {
+    "max_trades_per_hour": 20,
+    "max_loss_per_session": -2.0%,     # خلال 60 دقيقة
+    "cooldown_after_3_losses": 5 minutes,
+    "auto_reset": True                 # reset تلقائي بعد cooldown
+}
+🧠 السلوك
+نسخ التعليمات البرمجية
+
+- 3 خسائر متتالية → Cooldown
+- تجاوز خسارة الجلسة → Trading OFF مؤقتاً
+- Reset تلقائي بعد انتهاء الوقت
+🩺 SYSTEM HEALTH CHECK (LIVE)
+نسخ التعليمات البرمجية
+Python
+SYSTEM_HEALTH = {
+    "last_trade_timestamp": None,
+    "consecutive_failures": 0,
+    "connection_stable": True,
+    "avg_latency_ms": None,
+    "last_health_check": None
+}
+قواعد:
+نسخ التعليمات البرمجية
+
+- Health check كل 5 ثواني
+- أي خلل → تعليق تداول جديد
+🚨 EMERGENCY STOP (HARD STOP)
+نسخ التعليمات البرمجية
+Python
+EMERGENCY_STOPS = [
+    "broker_connection_lost",
+    "system_latency > 200ms",
+    "unusual_spread > 0.05%",
+    "price_feed_desync"
+]
+نسخ التعليمات البرمجية
+Python
+if emergency_detected:
+    disable_new_trades()
+    notify("🚨 EMERGENCY STOP ACTIVATED")
+❗ الصفقات المفتوحة تُدار فقط بـ TP / SL
+❌ لا EMA
+❌ لا Trailing
+⚙️ CONFIG VALIDATION (AT BOOT)
+نسخ التعليمات البرمجية
+Python
+assert TRAILING_1M["lock_profit"] < TRAILING_1M["activate_at_profit"]
+assert TRAILING_5M["lock_profit"] < TRAILING_5M["activate_at_profit"]
+assert COOLDOWN_AFTER_CLOSE["1m"] > 0
+assert MAX_RETRIES <= 3
+أي فشل → النظام لا يبدأ.
+📊 METRICS & MONITORING (REAL)
+قياس Latency حقيقي
+نسخ التعليمات البرمجية
+
+tp_execution_latency = execution_timestamp - tick_timestamp
+مؤشرات إلزامية
+نسخ التعليمات البرمجية
+Python
+CRITICAL_METRICS = {
+    "tp_execution_latency_p99": "< 50ms",
+    "tp_hit_rate": "100%",
+    "trailing_sl_success_rate": "> 99%",
+    "emergency_stop_rate": "< 0.1%",
+    "false_state_open": 0
+}
+إنذار تلقائي:
+نسخ التعليمات البرمجية
+
+if tp_execution_latency_p99 > 50ms:
+    alert("⚠️ TP LATENCY BREACH")
+🧪 FINAL VALIDATION (BLOCKER)
+نسخ التعليمات البرمجية
+
+☑ TP يغلق فوراً عند اللمس
+☑ Retry لا يؤخر SL
+☑ Circuit Breaker يوقف الانهيار
+☑ Emergency Stop يعمل
+☑ State = CLOSED لا تُمس
+☑ UI يعرض فقط

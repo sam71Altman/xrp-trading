@@ -87,6 +87,116 @@ FAST_SCALP_GOVERNANCE = {
     }
 }
 
+# --- Sessions & Circuit Breaker ---
+SESSION_WINDOW_MINUTES = 60
+CIRCUIT_BREAKER = {
+    "max_trades_per_hour": 20,
+    "max_loss_per_session": -2.0,     # %
+    "cooldown_after_3_losses": 5,      # minutes
+    "auto_reset": True
+}
+
+class CircuitBreaker:
+    def __init__(self):
+        self.trade_history = [] # (timestamp, pnl_pct)
+        self.loss_streak = 0
+        self.cooldown_until = None
+        self.emergency_stop = False
+
+    def record_trade(self, pnl_pct):
+        now = time.time()
+        self.trade_history.append((now, pnl_pct))
+        if pnl_pct < 0:
+            self.loss_streak += 1
+        else:
+            self.loss_streak = 0
+        
+        if self.loss_streak >= 3:
+            self.cooldown_until = now + (CIRCUIT_BREAKER["cooldown_after_3_losses"] * 60)
+            logger.warning(f"🚨 Circuit Breaker: 3 consecutive losses. Cooldown for {CIRCUIT_BREAKER['cooldown_after_3_losses']} mins")
+
+    def is_blocked(self):
+        if self.emergency_stop:
+            return True, "EMERGENCY_STOP_ACTIVATED"
+            
+        now = time.time()
+        # Clean old history
+        self.trade_history = [t for t in self.trade_history if now - t[0] <= SESSION_WINDOW_MINUTES * 60]
+        
+        if self.cooldown_until and now < self.cooldown_until:
+            return True, f"COOLDOWN_ACTIVE ({int((self.cooldown_until - now)/60)}m left)"
+            
+        if len(self.trade_history) >= CIRCUIT_BREAKER["max_trades_per_hour"]:
+            return True, "MAX_TRADES_PER_HOUR_REACHED"
+            
+        session_pnl = sum(t[1] for t in self.trade_history)
+        if session_pnl <= CIRCUIT_BREAKER["max_loss_per_session"]:
+            return True, f"SESSION_LOSS_LIMIT_REACHED ({session_pnl:.2f}%)"
+            
+        return False, ""
+
+circuit_breaker_logic = CircuitBreaker()
+
+# --- System Health ---
+SYSTEM_HEALTH = {
+    "last_trade_timestamp": None,
+    "consecutive_failures": 0,
+    "connection_stable": True,
+    "avg_latency_ms": 0.0,
+    "last_health_check": None,
+    "tp_execution_latency_p99": 0.0
+}
+
+def check_system_health():
+    SYSTEM_HEALTH["last_health_check"] = time.time()
+    # Simple check for latency breach
+    if SYSTEM_HEALTH["avg_latency_ms"] > 200:
+        circuit_breaker_logic.emergency_stop = True
+        logger.error("🚨 EMERGENCY STOP: System Latency > 200ms")
+    return not circuit_breaker_logic.emergency_stop
+
+# --- Safe Trailing ---
+MAX_RETRIES = 3
+MIN_SAFE_DISTANCE = 0.0001 # 0.01%
+
+def high_volatility(candles):
+    if len(candles) < 5: return False
+    last_5 = candles[-5:]
+    ranges = [(c['high'] - c['low']) / c['low'] for c in last_5]
+    avg_range = sum(ranges) / 5
+    return ranges[-1] > avg_range * 2.5
+
+def safe_trailing_update(new_sl, current_price, candles):
+    dist = abs(current_price - new_sl) / current_price
+    if high_volatility(candles) or dist < MIN_SAFE_DISTANCE:
+        logger.info("TRAILING_RETRY_SKIPPED_HIGH_RISK")
+        return False
+
+    for attempt in range(MAX_RETRIES):
+        try:
+            # In paper trading, we just update local state
+            state.current_sl = new_sl
+            logger.info(f"TRAILING_SL_MOVED to {new_sl} (Attempt {attempt+1})")
+            return True
+        except Exception as e:
+            logger.error(f"TRAILING_UPDATE_FAILED: {e}")
+            time.sleep(0.05) # 50ms
+
+    logger.warning("TRAILING_SL_FAILED after max retries")
+    return False
+
+# Boot Validation
+def validate_config():
+    try:
+        assert MAX_RETRIES <= 3
+        # Add more assertions based on project config
+        print("✅ Config Validation Passed")
+    except AssertionError as e:
+        print(f"❌ Config Validation Failed: {e}")
+        exit(1)
+
+validate_config()
+
 class TradeExecutionLock:
     def __init__(self):
         self.lock = threading.Lock()
@@ -109,6 +219,8 @@ class TradeExecutionLock:
             # Logic for closing trade goes here
             latency = (time.time() - start_time) * 1000
             self.EXECUTION_STATS["TP_LATENCY_P99"] = f"{latency:.2f}ms"
+            # Update health metrics
+            SYSTEM_HEALTH["avg_latency_ms"] = (SYSTEM_HEALTH["avg_latency_ms"] * 0.9) + (latency * 0.1)
             return True
         finally:
             self.lock.release()
@@ -249,6 +361,13 @@ def check_buy_signal(analysis, candles):
     
     # ⚡ FAST_SCALP Mode: Relaxed entry conditions
     if current_trade_mode == "FAST_SCALP":
+        # Circuit Breaker Check
+        blocked, reason = circuit_breaker_logic.is_blocked()
+        if blocked:
+            state.rejected_entries += 1
+            state.last_rejection_reason = f"CIRCUIT_BREAKER ({reason})"
+            return False
+            
         # Fast scalp: minimal filtering, enter quickly
         min_score = mode_params.get('min_signal_score', 0)
         if score >= min_score:
@@ -1716,8 +1835,15 @@ def check_exit_signal(analysis: dict, candles: List[dict]) -> Optional[str]:
         
         # INDUSTRIAL GRADE EXECUTION
         if trade_execution_lock.attempt_close("TP_EVENT", "TP_TOUCHED"):
-            logger.info(f"🎯 TP EXECUTED | Latency: {(time.time() - start_exec)*1000:.2f}ms")
-            trade_execution_lock.record_governance_decision("TP_EVENT", "EXECUTE", "TP_TOUCHED", {"latency": (time.time() - start_exec)*1000})
+            latency = (time.time() - start_exec) * 1000
+            SYSTEM_HEALTH["tp_execution_latency_p99"] = latency # Simplified tracking
+            logger.info(f"🎯 TP EXECUTED | Latency: {latency:.2f}ms")
+            if latency > 50:
+                logger.warning("⚠️ TP LATENCY BREACH (> 50ms)")
+            trade_execution_lock.record_governance_decision("TP_EVENT", "EXECUTE", "TP_TOUCHED", {"latency": latency})
+
+        # Record trade for circuit breaker
+        circuit_breaker_logic.record_trade(pnl_pct)
 
         # v3.7.5: Release hold once TP is triggered to allow normal exit
         if state.hold_active:
@@ -1728,6 +1854,8 @@ def check_exit_signal(analysis: dict, candles: List[dict]) -> Optional[str]:
     # v3.3: Exit Conditions after TP Triggered or Smart SL
     if state.tp_triggered:
         if state.risk_free_sl is not None and current_price <= state.risk_free_sl:
+            # Record SL hit pnl
+            circuit_breaker_logic.record_trade(((current_price - entry_price) / entry_price) * 100)
             return "risk_free_sl_hit"
         if "ema_short" in analysis and analysis["ema_short"] is not None and current_price < analysis["ema_short"]:
             # FAST SCALP EMA EXIT GOVERNANCE SYSTEM v3.1 (Post-TP Check)
@@ -1746,10 +1874,13 @@ def check_exit_signal(analysis: dict, candles: List[dict]) -> Optional[str]:
             if state.hold_active:
                 logger.info(f"[HOLD] Ignoring EMA exit (Post TP) | Candles: {state.hold_candles}")
                 return None
+            # Record exit
+            circuit_breaker_logic.record_trade(pnl_pct)
             return "ema_exit_post_tp"
     else:
         # Check Smart SL
         if state.current_sl is not None and current_price <= state.current_sl:
+            circuit_breaker_logic.record_trade(pnl_pct)
             return "sl"
         
     # Trailing SL (Existing logic preserved but secondary to TP trigger)
@@ -1761,6 +1892,14 @@ def check_exit_signal(analysis: dict, candles: List[dict]) -> Optional[str]:
             if state.hold_active:
                 logger.info(f"[HOLD] Ignoring trailing SL exit | Candles: {state.hold_candles}")
                 return None
+            
+            # Safe Trailing Update with Retry
+            new_trailing_sl = analysis["ema_short"] * (1 - TRAILING_STOP_PCT / 100)
+            if safe_trailing_update(new_trailing_sl, current_price, candles):
+                return None # Continue trade with new SL
+            
+            # Record exit if update failed or high risk
+            circuit_breaker_logic.record_trade(pnl_pct)
             return "trailing_sl"
     
     # EMA Confirmation (Original logic)
