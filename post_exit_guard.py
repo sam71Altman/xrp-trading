@@ -34,7 +34,8 @@ class PostExitGuard:
     def expired(self):
         if not self.active or not self.exit_time:
             return False
-        return (time.time() - self.exit_time) > self.MAX_BLOCK_DURATION
+        # v3.7.2: Reduce PEG block duration for 1m timeframe (from 1h to 10m)
+        return (time.time() - self.exit_time) > 600
 
 class EntryGateMonitor:
     _instance = None
@@ -78,7 +79,8 @@ def market_recovered(guard, current_price, candles, ema20, ema50):
     lowest = get_lowest_price_since_exit(guard, candles)
     if lowest:
         recovery_pct = (current_price - lowest) / lowest * 100
-        if recovery_pct >= 0.15: # Standard for scalping
+        # v3.7.2: Lower recovery threshold for 1m scalping (0.15% -> 0.08%)
+        if recovery_pct >= 0.08: 
             return True, "strong_recovery"
 
     return False, None
@@ -96,11 +98,11 @@ def get_lowest_price_since_exit(guard, candles):
 
 def higher_low_confirmed(guard, candles):
     relevant_since_exit = [c for c in candles if c[0]/1000 > guard.exit_time]
-    if len(relevant_since_exit) < 6: return False
+    if len(relevant_since_exit) < 3: return False
     
     lowest_since_exit = min(c[3] for c in relevant_since_exit)
-    current_lowest_window = min(c[3] for c in relevant_since_exit[-3:])
+    current_lowest_window = min(c[3] for c in relevant_since_exit[-2:])
     
-    if current_lowest_window > lowest_since_exit * 1.0005: # 0.05% higher
+    if current_lowest_window > lowest_since_exit * 1.0002: # 0.02% higher
         return True
     return False

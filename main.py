@@ -1007,7 +1007,8 @@ def check_buy_signal(analysis: dict, candles: List[dict]) -> bool:
     if state.lpem_active:
         # Simplified LPEM check directly using state variables
         price_diff = abs(current_close - state.lpem_exit_price) / state.lpem_exit_price * 100
-        if price_diff < 0.25: # Standard LPEM threshold
+        # v3.7.2: Lower LPEM protection band for faster re-entry on 1m (0.25% -> 0.12%)
+        if price_diff < 0.12: 
             monitor.record_decision(lpem_blocked=True, peg_blocked=False, entered=False)
             if analysis_count % 12 == 0:
                 logger.info("[ENTRY GATE] BLOCKED by LPEM")
@@ -1037,12 +1038,12 @@ def check_buy_signal(analysis: dict, candles: List[dict]) -> bool:
     is_extended = check_extended_price(current_close, analysis, candles)
 
     # 1. SCORE + RSI HARD BLOCK
-    if score <= 2 and (rsi > 68 or rsi < 32):
+    if score <= 1 and (rsi > 75 or rsi < 25):
         logger.info(f"[AGG] Blocked: Weak Entry (Score={score}, RSI={rsi:.1f})")
         return False
         
-    # 2. EXTENDED + WEAK SIGNAL = BLOCK
-    if is_extended and score <= 3:
+    # 2. EXTENDED + WEAK SIGNAL = BLOCK (v3.7.2: Relaxed from 3 to 2)
+    if is_extended and score <= 2:
         logger.info(f"[AGG] Blocked: Weak Extended (Score={score}, Extended=True)")
         return False
     
