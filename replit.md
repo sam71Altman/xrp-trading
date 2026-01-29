@@ -1,8 +1,14 @@
-# XRP/USDT Telegram Signals Bot V3.2
+# XRP/USDT Telegram Signals Bot V3.7.7
 
 ## Overview
 
-A Python Telegram trading signals bot for XRP/USDT that runs paper trading simulations with a multi-layer Kill Switch protection system. It fetches price data from Binance API (read-only), analyzes using EMA crossover and breakout strategies, and sends buy/exit signals to Telegram.
+A Python Telegram trading signals bot for XRP/USDT that runs paper trading simulations with a multi-layer Kill Switch protection system and a Smart Adaptive Trading System. It fetches price data from Binance API (read-only), analyzes using EMA crossover and breakout strategies, and sends buy/exit signals to Telegram.
+
+### Smart Adaptive Trading System (NEW)
+Three distinct trading modes that adapt to market conditions:
+- **DEFAULT (الافتراضي)**: Balanced approach with all filters active
+- **FAST_SCALP (السريع)**: Aggressive scalping with relaxed entry filters
+- **BOUNCE (الارتداد)**: Conservative, enters only on RSI oversold bounces
 
 ## User Preferences
 
