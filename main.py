@@ -2188,7 +2188,10 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                 state.entry_candles_snapshot = candles[-10:]
 
     except Exception as e:
-        logger.error(f"Error in signal loop: {e}")
+        if "WebSocketApp" in str(e):
+            logger.error(f"[NETWORK] WebSocket interface error: {e}. Isolation active.")
+        else:
+            logger.error(f"Error in signal loop: {e}")
 
 
 def validate_version_unification():
