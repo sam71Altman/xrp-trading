@@ -2389,7 +2389,7 @@ def format_status_message() -> str:
     mode_risk = TradeMode.RISK_LEVELS.get(current_mode, "غير محدد")
     mode_duration = mode_state.get_mode_duration()
     
-    # AI System Info (v4.4.PRO-FINAL)
+    # AI System Info ({SYSTEM_VERSION})
     ai_status = ai_system.get_status()
     guard_status = ai_impact_guard.get_status()
     ai_emoji = "✅" if ai_status['enabled'] else "❌"
@@ -2397,7 +2397,7 @@ def format_status_message() -> str:
     
     return (
         f"📊 *حالة البوت*\n"
-        f"🆔 `{AI_VERSION}` | 📅 2026\n"
+        f"🆔 `{SYSTEM_VERSION}` | 📅 2026\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"🤖 الحالة: {status}\n"
         f"🛡️ Kill Switch: {ks_status}\n"
@@ -2559,7 +2559,7 @@ async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     msg = (
         f"🩺 **Bot Health Diagnostic**\n"
-        f"🆔 `{AI_VERSION}` | 📅 2026\n"
+        f"🆔 `{SYSTEM_VERSION}` | 📅 2026\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"Trading Mode: `{state.mode}`\n"
         f"🎯 Smart Mode: {mode_display}\n"
@@ -2822,7 +2822,7 @@ async def cmd_validate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         ("سقف التأثير", guard_status['can_adjust'] or guard_status['daily_used'] <= guard_status['daily_max'], f"{guard_status['daily_used']}/{guard_status['daily_max']}"),
         ("حماية الصفقات المفتوحة", HARD_RULES.get('OPEN_TRADES_SAFE', True), "OPEN_TRADES_SAFE=True"),
         ("قاعدة الشمعة القادمة", HARD_RULES.get('NEXT_CANDLE_ONLY', True), "NEXT_CANDLE_ONLY=True"),
-        ("توحيد الإصدار", BOT_VERSION == AI_VERSION == SYSTEM_VERSION, f"Bot: {BOT_VERSION} | AI: {AI_VERSION}"),
+        ("توحيد الإصدار", displayed_version == SYSTEM_VERSION, f"Ver: {SYSTEM_VERSION}"),
         ("واجهة تيليجرام", True, "Commands active"),
         ("نظام الطوارئ", HARD_RULES.get('ONE_CLICK_DISABLE', True), "ONE_CLICK_DISABLE=True")
     ]
@@ -2833,7 +2833,7 @@ async def cmd_validate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     
     message = f"""
 {'✅' if all_passed else '⚠️'} *التحقق من النظام {SYSTEM_VERSION}*
-🆔 `{AI_VERSION}` | 📅 2026
+🆔 `{SYSTEM_VERSION}` | 📅 2026
 ═══════════════════════════
 
 🧠 *الوضع الحالي:* {display_name}
