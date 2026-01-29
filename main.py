@@ -1238,12 +1238,12 @@ def execute_paper_exit(entry_price: float, exit_price: float, reason: str,
                 f"[HOTFIX] Exit blocked | reason={reason}, "
                 f"move={price_move_pct:.4f}%, duration={trade_duration_sec}s"
             )
-            return 0.0, 0.0, paper_state.balance
-    
+            return None  # Return None to signify blocked exit
+
     # Logging Validation (Hard Check - 3.6.2)
     if not (qty > 0 and (abs(pnl_usdt) > 0 or exit_price == entry_price)):
         logger.error(f"Validation failed: Qty={qty}, PnL={pnl_usdt}. Skipping balance update.")
-        return 0.0, 0.0, paper_state.balance
+        return None  # Return None to signify blocked exit
 
     # Correct Balance Update Order (MANDATORY FIX 3)
     # Balance update MUST occur after trade close
@@ -2083,11 +2083,13 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
             
             if intel_action == ACTION_3_FLAGS:
                 exit_reason = "TREND_REVERSAL_PREVENTED" # {BOT_VERSION}
-                pnl_pct, pnl_usdt, balance = execute_paper_exit(state.entry_price, current_price, exit_reason, 10, 0)
-                reset_position_state()
-                update_cooldown_after_exit(exit_reason)
-                msg = f"🛡️ **Intel Early Exit**\nPrice: {current_price}\nPnL: {pnl_usdt:.2f} ({pnl_pct:.2f}%)"
-                await bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
+                exit_result = execute_paper_exit(state.entry_price, current_price, exit_reason, 10, 0)
+                if exit_result:
+                    pnl_pct, pnl_usdt, balance = exit_result
+                    reset_position_state()
+                    update_cooldown_after_exit(exit_reason)
+                    msg = f"🛡️ **Intel Early Exit**\nPrice: {current_price}\nPnL: {pnl_usdt:.2f} ({pnl_pct:.2f}%)"
+                    await bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
                 return
             elif intel_action == ACTION_2_FLAGS:
                 tight_sl = state.entry_price * 1.0005
@@ -2122,24 +2124,28 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                 exit_price = analysis["close"]
                 duration = get_trade_duration_minutes()
                 # Pass consistent score ({BOT_VERSION})
-                pnl_pct, pnl_usdt, balance = execute_paper_exit(state.entry_price, exit_price, exit_reason, state.last_signal_score, duration)
-                log_trade("EXIT", exit_reason.upper(), exit_price, pnl_pct)
-                msg = format_exit_message(state.entry_price, exit_price, pnl_pct, pnl_usdt, exit_reason, duration, balance)
-                await bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
-                if state.mode != "AGGRESSIVE":
-                    update_cooldown_after_exit(exit_reason)
-                reset_position_state()
+                exit_result = execute_paper_exit(state.entry_price, exit_price, exit_reason, state.last_signal_score, duration)
+                if exit_result:
+                    pnl_pct, pnl_usdt, balance = exit_result
+                    log_trade("EXIT", exit_reason.upper(), exit_price, pnl_pct)
+                    msg = format_exit_message(state.entry_price, exit_price, pnl_pct, pnl_usdt, exit_reason, duration, balance)
+                    await bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
+                    if state.mode != "AGGRESSIVE":
+                        update_cooldown_after_exit(exit_reason)
+                    reset_position_state()
             
             # Additional Aggressive Flip check
             elif state.mode == "AGGRESSIVE" and check_sell_signal(analysis, candles):
                 exit_price = analysis["close"]
                 duration = get_trade_duration_minutes()
                 # Pass consistent score ({BOT_VERSION})
-                pnl_pct, pnl_usdt, balance = execute_paper_exit(state.entry_price, exit_price, "aggressive_flip", state.last_signal_score, duration)
-                log_trade("EXIT", "AGGRESSIVE_FLIP", exit_price, pnl_pct)
-                msg = format_exit_message(state.entry_price, exit_price, pnl_pct, pnl_usdt, "aggressive_flip", duration, balance)
-                await bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
-                reset_position_state()
+                exit_result = execute_paper_exit(state.entry_price, exit_price, "aggressive_flip", state.last_signal_score, duration)
+                if exit_result:
+                    pnl_pct, pnl_usdt, balance = exit_result
+                    log_trade("EXIT", "AGGRESSIVE_FLIP", exit_price, pnl_pct)
+                    msg = format_exit_message(state.entry_price, exit_price, pnl_pct, pnl_usdt, "aggressive_flip", duration, balance)
+                    await bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
+                    reset_position_state()
 
         # Re-check entry (Allow immediate re-entry for aggressive mode)
         if not state.position_open:
