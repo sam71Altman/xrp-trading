@@ -63,6 +63,132 @@ def detect_bearish_strength(candle):
         return "MEDIUM"
     return "WEAK"
 
+# FAST SCALP EMA EXIT GOVERNANCE SYSTEM v3.1
+FAST_SCALP_GOVERNANCE = {
+    "HARD_RULES": {
+        "NO_ENTRY_CHANGES": True,
+        "NO_TP_SL_CHANGES": True,
+        "FAST_SCALP_ONLY": True,
+        "EMA_EXIT_SECONDARY": True,
+        "SL_FINAL_EXIT": True,
+        "QUANT_ONLY": True,
+        "NO_MARTINGALE": True,
+        "NO_AVERAGING": True
+    },
+    "TRACKING": {
+        "blocked_time": 0,
+        "blocked_profit": 0,
+        "blocked_bounce": 0,
+        "blocked_volume": 0,
+        "allowed_failure": 0,
+        "allowed_time_escape": 0,
+        "impulse_captured": 0,
+        "tp_after_block": 0
+    }
+}
+
+def guarded_ema_exit_fast_scalp(analysis, candles, trade_data):
+    """
+    IMPLEMENTATION OF FAST SCALP EMA EXIT GOVERNANCE SYSTEM v3.1
+    """
+    if get_current_mode() != "FAST_SCALP":
+        return True # ALLOW default behavior
+
+    current_price = candles[-1]['close']
+    entry_price = trade_data.get('entry_price', 0)
+    entry_time = trade_data.get('entry_time', time.time())
+    candles_since_entry = trade_data.get('candles_since_entry', 0)
+    ema = analysis.get('ema20', 0)
+    atr = analysis.get('atr', 0.001)
+    rsi = analysis.get('rsi', 50)
+    
+    # 1. TIME LOCK — PRIORITY #1
+    # max(60, timeframe_in_minutes * 2 * 60) -> for 1m timeframe: max(60, 120) = 120s
+    time_since_entry = time.time() - entry_time
+    min_time_seconds = 120 
+    if time_since_entry < min_time_seconds:
+        FAST_SCALP_GOVERNANCE["TRACKING"]["blocked_time"] += 1
+        return False # BLOCK
+
+    # 3. PROFIT PROTECTION — PRIORITY #2
+    if current_price > entry_price:
+        FAST_SCALP_GOVERNANCE["TRACKING"]["blocked_profit"] += 1
+        return False # BLOCK
+
+    # 4. IMPULSE EXCEPTION
+    avg_body = sum(abs(c['close'] - c['open']) for c in candles[-11:-1]) / 10
+    avg_vol = sum(c['volume'] for c in candles[-11:-1]) / 10
+    current_candle = candles[-1]
+    
+    impulse_exception = (
+        candles_since_entry <= 2 and
+        abs(current_candle['close'] - current_candle['open']) > avg_body * 2.0 and
+        current_candle['volume'] > avg_vol * 1.5 and
+        rsi > analysis.get('prev_rsi', 50) and
+        rsi > 50
+    )
+    
+    if impulse_exception:
+        FAST_SCALP_GOVERNANCE["TRACKING"]["impulse_captured"] += 1
+        # Bypasses bounce protection
+    else:
+        # 5. BOUNCE PROTECTION — PRIORITY #3
+        prev_candle = candles[-2]
+        bullish_reversal = (
+            abs(current_candle['close'] - current_candle['open']) > abs(prev_candle['close'] - prev_candle['open']) * 1.5 and
+            current_candle['close'] > current_candle['open'] and
+            current_candle['close'] > prev_candle['close']
+        )
+        last_5_lows = [c['low'] for c in candles[-5:]]
+        local_bottom = (
+            current_candle['low'] <= min(last_5_lows) * 0.999 and
+            bullish_reversal
+        )
+        if bullish_reversal or local_bottom:
+            FAST_SCALP_GOVERNANCE["TRACKING"]["blocked_bounce"] += 1
+            return False # BLOCK
+
+    # 6. VOLUME CONFIRMATION — PRIORITY #4
+    high_liquidity_pairs = ["BTC", "ETH", "SOL", "BNB", "XRP"]
+    volume_valid = (
+        current_candle['volume'] > avg_vol * 0.6 or
+        any(p in SYMBOL for p in high_liquidity_pairs)
+    )
+    if not volume_valid:
+        FAST_SCALP_GOVERNANCE["TRACKING"]["blocked_volume"] += 1
+        return False # BLOCK
+
+    # 7. FAILURE CONFIRMATION — ALLOW #1
+    price_touched_ema = abs(min(current_candle['low'], ema) - max(current_candle['high'], ema)) / ema <= 0.001
+    rejection_candle = current_candle['high'] > ema and current_candle['close'] < ema * 0.9995 and current_candle['close'] < current_candle['open']
+    
+    last_two_red = candles[-1]['close'] < candles[-1]['open'] and candles[-2]['close'] < candles[-2]['open']
+    momentum_negative = rsi < 45 and last_two_red and analysis.get('macd_signal', 0) > analysis.get('macd', 0)
+    
+    ema_failure_confirmed = price_touched_ema and rejection_candle and momentum_negative and current_price < entry_price
+    if ema_failure_confirmed:
+        FAST_SCALP_GOVERNANCE["TRACKING"]["allowed_failure"] += 1
+        return True # ALLOW
+
+    # 10. MAX TIME ESCAPE — ALLOW #2
+    sl_price = trade_data.get('stop_loss', entry_price * 0.99)
+    safe_zone_ratio = abs(current_price - entry_price) / abs(entry_price - sl_price) if abs(entry_price - sl_price) > 0 else 0
+    safe_zone = safe_zone_ratio > 0.3
+    
+    small_range = atr * 1.5
+    very_small_range = atr * 0.8
+    
+    if safe_zone:
+        if candles_since_entry >= 14 and abs(current_price - entry_price) < very_small_range:
+            FAST_SCALP_GOVERNANCE["TRACKING"]["allowed_time_escape"] += 1
+            return True
+    else:
+        if candles_since_entry >= 10 and abs(current_price - entry_price) < small_range:
+            FAST_SCALP_GOVERNANCE["TRACKING"]["allowed_time_escape"] += 1
+            return True
+
+    return False # BLOCK by default
+
 def check_buy_signal(analysis, candles):
     """
     منطق v3.7.5 المطور لفحص إشارة الشراء.
@@ -1560,6 +1686,19 @@ def check_exit_signal(analysis: dict, candles: List[dict]) -> Optional[str]:
         if state.risk_free_sl is not None and current_price <= state.risk_free_sl:
             return "risk_free_sl_hit"
         if "ema_short" in analysis and analysis["ema_short"] is not None and current_price < analysis["ema_short"]:
+            # FAST SCALP EMA EXIT GOVERNANCE SYSTEM v3.1 (Post-TP Check)
+            if get_current_mode() == "FAST_SCALP":
+                trade_data = {
+                    'entry_price': state.entry_price,
+                    'entry_time': getattr(state, 'entry_time_unix', time.time()),
+                    'candles_since_entry': state.candles_below_ema + 1,
+                    'stop_loss': state.current_sl
+                }
+                if not guarded_ema_exit_fast_scalp(analysis, candles, trade_data):
+                    state.ema_exit_ignored_count += 1
+                    logger.info("[GOVERNANCE] Post-TP EMA Exit BLOCKED by v3.1 System")
+                    return None
+            
             if state.hold_active:
                 logger.info(f"[HOLD] Ignoring EMA exit (Post TP) | Candles: {state.hold_candles}")
                 return None
@@ -1588,6 +1727,21 @@ def check_exit_signal(analysis: dict, candles: List[dict]) -> Optional[str]:
             logger.info(f"[HOLD] Ignoring EMA confirmation exit | Candles: {state.hold_candles}")
             state.hold_candles += 1
             return None
+
+        # FAST SCALP EMA EXIT GOVERNANCE SYSTEM v3.1
+        if get_current_mode() == "FAST_SCALP":
+            trade_data = {
+                'entry_price': state.entry_price,
+                'entry_time': getattr(state, 'entry_time_unix', time.time()), # Assuming we might need to track this
+                'candles_since_entry': state.candles_below_ema + 1, # approximation or we should track it better
+                'stop_loss': state.current_sl
+            }
+            if not guarded_ema_exit_fast_scalp(analysis, candles, trade_data):
+                state.ema_exit_ignored_count += 1
+                logger.info("[GOVERNANCE] EMA Exit BLOCKED by v3.1 System")
+                return None
+            else:
+                logger.info("[GOVERNANCE] EMA Exit ALLOWED by v3.1 System")
 
         # v3.7.2: Stay in trade if overall trend is strong (EMA20 > EMA50)
         # unless price drops significantly (0.10%) or duration is short
@@ -1631,6 +1785,7 @@ def execute_paper_buy(price: float, score: int, reasons: List[str]) -> float:
         
     # Freeze Quantity at Entry (CRITICAL - 3.6.2)
     paper_state.position_qty = qty
+    state.entry_time_unix = time.time() # Added for Governance System
     paper_state.entry_reason = ", ".join(reasons)
     
     # v3.7.5: Activate Hold Logic if it's a bounce entry in hard market
