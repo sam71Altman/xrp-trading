@@ -330,7 +330,7 @@ DOWNTREND_ALERT_COOLDOWN = 300  # 5 minutes in seconds
 
 ATR_PERIOD = 14
 ATR_MULTIPLIER = 2.0
-VERSION = BOT_VERSION
+VERSION = "v3.7.6"  # Strict versioning v3.7.6
 LOSS_EVENTS_FILE = "loss_events.csv"
 
 # --- In-memory counters for loss analysis ---
@@ -1215,8 +1215,9 @@ def check_bounce_entry(analysis: dict, candles: List[dict], score: int) -> bool:
         market_mode = "HARD_MARKET"
 
     # [HOLD PROBE] - Mandatory runtime probe log
-    current_rsi = calculate_rsi([c["close"] for c in candles])
-    logger.info(f"[HOLD PROBE] mode={market_mode} score={score} rsi={current_rsi:.2f} bounce={check_bounce_entry(analysis, candles, score)} hold_active={state.hold_active}")
+    current_rsi_probe = calculate_rsi([c["close"] for c in candles])
+    is_bounce_probing = check_bounce_entry(analysis, candles, score)
+    logger.info(f"[HOLD PROBE] mode={market_mode} score={score} rsi={current_rsi_probe:.2f} bounce={is_bounce_probing} hold_active={state.hold_active}")
 
     if market_mode != "HARD_MARKET":
         return False
