@@ -1146,6 +1146,18 @@ def check_exit_signal(analysis: dict, candles: List[dict]) -> Optional[str]:
     
     # EMA Confirmation (Original logic)
     if current_price < analysis["ema_short"]:
+        # v3.7.2: Stay in trade if overall trend is strong (EMA20 > EMA50)
+        # unless price drops significantly (0.10%) or duration is short
+        ema20 = analysis["ema_short"]
+        ema50 = analysis["ema_long"]
+        
+        if ema20 > ema50:
+            drop_pct = (ema20 - current_price) / ema20 * 100
+            # If drop is small and we are in a strong uptrend, give it space
+            if drop_pct < 0.10:
+                state.candles_below_ema = 0
+                return None
+
         state.candles_below_ema += 1
     else:
         state.candles_below_ema = 0
