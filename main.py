@@ -1002,6 +1002,10 @@ def check_buy_signal(analysis: dict, candles: List[dict]) -> bool:
     
     # Post-Exit Market Quality Gate (PEG v1.3)
     score, reasons = calculate_signal_score(analysis, candles)
+    prices = [c["close"] for c in candles]
+    rsi = calculate_rsi(prices)
+    is_extended = check_extended_price(current_close, analysis, candles)
+    
     guard = PostExitGuard.get()
     
     if guard.active:
