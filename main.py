@@ -1213,7 +1213,11 @@ def check_bounce_entry(analysis: dict, candles: List[dict], score: int) -> bool:
         market_mode = "EASY_MARKET"
     else:
         market_mode = "HARD_MARKET"
-        
+
+    # [HOLD PROBE] - Mandatory runtime probe log
+    current_rsi = calculate_rsi([c["close"] for c in candles])
+    logger.info(f"[HOLD PROBE] mode={market_mode} score={score} rsi={current_rsi:.2f} bounce={check_bounce_entry(analysis, candles, score)} hold_active={state.hold_active}")
+
     if market_mode != "HARD_MARKET":
         return False
     
@@ -2693,6 +2697,14 @@ async def main() -> None:
 
 if __name__ == "__main__":
     try:
+        print(f"🚀 Initializing {BOT_VERSION}...")
+        logger.info(f"🚀 {BOT_VERSION} Startup")
+        
+        # Version Integrity Check
+        if BOT_VERSION != "v3.7.6":
+            logger.error(f"FATAL: Version mismatch! Expected v3.7.6, found {BOT_VERSION}")
+            exit(1)
+
         asyncio.run(main())
     except KeyboardInterrupt:
         pass

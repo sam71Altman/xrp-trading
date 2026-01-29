@@ -1,0 +1,83 @@
+IMPORTANT TASK – DO NOT SKIP ANY STEP
+
+Objective:
+Verify that Smart Hold Logic (v3.7.5) is fully integrated, active, and reachable in runtime,
+and enforce strict versioning rules for all future updates.
+
+==============================
+PART 1 – VERIFY HOLD LOGIC IS REALLY WORKING
+==============================
+
+You must PROVE (not assume) that Hold Logic is active in the live decision path.
+
+Required actions:
+
+1. Locate and confirm the following conditions exist AND are connected:
+   - Market Regime classification (EASY_MARKET / HARD_MARKET)
+   - Bounce Entry logic
+   - hold_active state flag
+   - Hold exit conditions function
+   - EMA exit override when hold_active == True
+
+2. Add a mandatory runtime probe log (if not already present):
+
+   [HOLD PROBE]
+   mode={market_mode}
+   score={score}
+   rsi={rsi}
+   bounce={entry_is_bounce}
+   hold_active={state.hold_active}
+
+   This log MUST appear every signal loop in HARD_MARKET.
+
+3. Confirm by log evidence that:
+   - HOLD PROBE appears repeatedly
+   - bounce=False when conditions are not met
+   - hold_active switches to True ONLY when bounce=True
+   - EMA exits are ignored ONLY when hold_active=True
+
+4. If Hold Logic is unreachable or bypassed → FIX IT.
+   Do NOT claim success without log proof.
+
+==============================
+PART 2 – VERSION NUMBER ENFORCEMENT (MANDATORY)
+==============================
+
+Strict rule from now on:
+
+- Any logic change, behavior change, or condition change
+  MUST increment the bot version.
+
+Required implementation:
+
+1. Define a single source of truth for version, e.g.:
+
+   BOT_VERSION = "v3.7.6"
+
+2. Ensure this version is:
+   - Printed at boot
+   - Used in Telegram UI header
+   - Logged in startup logs
+
+3. Add a version integrity check:
+   - Scan for hardcoded old versions
+   - Fail startup if mismatch is detected
+
+4. After completing THIS task:
+   - Increment version from v3.7.5 → v3.7.6
+   - Update ALL references consistently
+
+==============================
+PART 3 – FINAL CONFIRMATION OUTPUT
+==============================
+
+When finished, respond ONLY with:
+
+- Confirmation that Hold Logic is reachable and active
+- Sample HOLD PROBE log line
+- Confirmed new version number
+- Short summary of what was verified (not what was intended)
+
+No assumptions.
+No generic “everything works”.
+Only evidence-based confirmation.
