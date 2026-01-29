@@ -31,6 +31,7 @@ def get_now():
 import requests
 from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+from post_exit_guard import PostExitGuard, market_recovered
 
 # --- Configuration ---
 MODE = "PAPER"
@@ -999,12 +1000,24 @@ def check_buy_signal(analysis: dict, candles: List[dict]) -> bool:
     prev_close = analysis["prev_close"]
     ema20 = analysis["ema_short"]
     
-    # Calculate Score and RSI for filtering
+    # Post-Exit Market Quality Gate (PEG v1.3)
     score, reasons = calculate_signal_score(analysis, candles)
-    prices = [c["close"] for c in candles]
-    rsi = calculate_rsi(prices)
-    is_extended = check_extended_price(current_close, analysis, candles)
+    guard = PostExitGuard.get()
     
+    if guard.active:
+        if guard.expired():
+            guard.clear("max_duration_reached")
+        else:
+            recovered, recovery_reason = market_recovered(guard, current_close, candles, analysis["ema_short"], analysis["ema_long"])
+            if not recovered:
+                guard.record_block()
+                if analysis_count % 12 == 0: # Log every minute
+                    logger.info(f"[PEG] Entry BLOCKED | Market not recovered since exit @ {guard.exit_price}")
+                return False
+            else:
+                guard.clear(f"recovered_{recovery_reason}")
+                guard.record_allow(recovery_reason)
+
     # 1. SCORE + RSI HARD BLOCK
     if score <= 2 and (rsi > 68 or rsi < 32):
         logger.info(f"[AGG] Blocked: Weak Entry (Score={score}, RSI={rsi:.1f})")
@@ -1245,10 +1258,11 @@ def execute_paper_exit(entry_price: float, exit_price: float, reason: str,
         logger.error(f"Validation failed: Qty={qty}, PnL={pnl_usdt}. Skipping balance update.")
         return None  # Return None to signify blocked exit
 
-    # Correct Balance Update Order (MANDATORY FIX 3)
-    # Balance update MUST occur after trade close
     paper_state.balance += pnl_usdt
     paper_state.update_peak()
+    
+    # Post-Exit Market Quality Gate (PEG v1.3)
+    PostExitGuard.get().record_exit(exit_price)
     
     # LPEM Activation Logic (v3.7.2 - Fixed Wiring + v3.7.3 Zero-Move Protection)
     # Only record LPEM if there's actual price movement
