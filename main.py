@@ -1759,7 +1759,7 @@ VERSION = "3.7.1-lite – Exit Intelligence Calibration"
 
 def get_main_keyboard():
     keyboard = [
-        ["تحديث الحالة 🔄", "تشخيص البوت 🧪"],
+        ["تحديث الحالة 🔄", "🛡️ تشخيص Hold Logic"],
         ["الإحصائيات 📊", "الرصيد 💰"],
         ["سجل الصفقات 📜", "تحليل الخسائر 📉"],
         ["1m", "5m"],
@@ -1772,8 +1772,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if text == "تحديث الحالة 🔄":
         await cmd_status(update, context)
-    elif text == "تشخيص البوت 🧪":
-        await cmd_diagnostic(update, context)
+    elif text == "🛡️ تشخيص Hold Logic":
+        await health_command(update, context)
     elif text == "الإحصائيات 📊":
         await cmd_stats(update, context)
     elif text == "الرصيد 💰":
@@ -1990,13 +1990,19 @@ async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Shows diagnostic health overview.
     """
+    ema20 = state.last_close if state.last_close else 0 # Placeholder if not available
+    market_mode = "HARD_MARKET" # Default
+    if hasattr(state, 'last_market_mode'):
+        market_mode = state.last_market_mode
+        
     msg = (
         f"🩺 **Bot Health Diagnostic**\n"
         f"Version: `{BOT_VERSION}`\n"
-        f"Mode: `{state.mode}`\n"
+        f"Market Mode: `{market_mode}`\n"
         f"Entries: {state.valid_entries} / Rejections: {state.rejected_entries}\n"
         f"Hold Count: {state.hold_activations}\n"
-        f"EMA Overrides: {state.ema_overrides}\n"
+        f"EMA Exit Ignored: {state.ema_exit_ignored_count}\n"
+        f"Hold Active: {'✅ Yes' if state.hold_active else '❌ No'}\n"
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
@@ -2550,6 +2556,7 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
         ema50 = analysis.get('ema50', 0)
         ema200 = analysis.get('ema200', 0)
         market_mode = "EASY_MARKET" if (ema20 > ema50 and ema50 > ema200) else "HARD_MARKET"
+        state.last_market_mode = market_mode
         score = analysis.get('score', 0)
         rsi = analysis.get('rsi', 50)
         logger.warning(
