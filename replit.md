@@ -1,27 +1,14 @@
-# XRP/USDT Telegram Signals Bot v4.2.PRO-AI
+# XRP/USDT Telegram Signals Bot v4.4.PRO-FINAL
 
 ## Overview
 
 A Python Telegram trading signals bot for XRP/USDT that runs paper trading simulations with a multi-layer Kill Switch protection system, Smart Adaptive Trading System, and Governed AI Intelligence layer. It fetches price data from Binance API (read-only), analyzes using EMA crossover and breakout strategies, and sends buy/exit signals to Telegram.
 
-### Smart Adaptive Trading System
-Three distinct trading modes that adapt to market conditions:
-- **DEFAULT (الوضع الذكي)**: Balanced approach with all filters active
-- **FAST_SCALP (سكالب سريع)**: Aggressive scalping with relaxed entry filters
-- **BOUNCE (اصطياد الارتدادات)**: Conservative, enters only on RSI oversold bounces
-
-### AI System v4.2.PRO-AI (NEW)
-Governed intelligence layer with three modes:
-- **OFF**: AI disabled, static logic only
-- **LEARN**: Suggestions only, no modifications
-- **FULL**: Smart adjustments within safe limits
-
-#### Key AI Features:
-- **Impact Cap**: Daily adjustment limits (LOW: 15, MEDIUM: 25, HIGH: 40)
-- **One-click disable**: Emergency shutdown available
-- **Open trades protected**: No interference with active positions
-- **Next candle only**: Changes apply from next candle
-- **Full transparency**: All actions visible and logged
+### Banking-Grade Execution & Safety (v4.4.PRO-FINAL)
+- **TP = Military Order**: Immediate execution overriding all logic.
+- **Safety Core**: State-machine driven execution to prevent ghost trades or desync.
+- **Circuit Breaker**: Session-based risk management (max trades, max loss).
+- **Industrial Governance**: EMA exits are failure diagnostics, not reflexes.
 
 ## User Preferences
 

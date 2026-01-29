@@ -772,7 +772,7 @@ DOWNTREND_ALERT_COOLDOWN = 300  # 5 minutes in seconds
 ATR_PERIOD = 14
 ATR_MULTIPLIER = 2.0
     # Logic Change v3.7.7: Added Diagnostic Counters and /health UI.
-VERSION = "v4.2.PRO-AI"
+VERSION = "v4.4.PRO-FINAL"
 LOSS_EVENTS_FILE = "loss_events.csv"
 loss_counters = {
     "STOP_HUNT": 0,
@@ -2386,7 +2386,7 @@ def format_status_message() -> str:
     mode_risk = TradeMode.RISK_LEVELS.get(current_mode, "غير محدد")
     mode_duration = mode_state.get_mode_duration()
     
-    # AI System Info (v4.2.PRO-AI)
+    # AI System Info (v4.4.PRO-FINAL)
     ai_status = ai_system.get_status()
     guard_status = ai_impact_guard.get_status()
     ai_emoji = "✅" if ai_status['enabled'] else "❌"
@@ -2544,7 +2544,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Shows diagnostic health overview with AI system status.
-    🆔 v4.2.PRO-AI
+    🆔 v4.4.PRO-FINAL
     """
     current_mode = get_current_mode()
     mode_display = TradeMode.DISPLAY_NAMES.get(current_mode, current_mode)
@@ -2590,7 +2590,7 @@ async def cmd_ai(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     bar = "█" * filled + "░" * (10 - filled)
     
     message = f"""
-🧠 *لوحة تحكم الذكاء v4.2.PRO-AI*
+🧠 *لوحة تحكم الذكاء v4.4.PRO-FINAL*
 ════════════════════════════
 
 ⚡ *حالة الذكاء:* {'✅ مفعل' if ai_status['enabled'] else '❌ معطل'}
@@ -2802,7 +2802,7 @@ async def cmd_recommend(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 async def cmd_validate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     التحقق من صحة تطبيق النظام
-    🆔 v4.2.PRO-AI - 8 فحوصات إلزامية
+    🆔 v4.4.PRO-FINAL - 8 فحوصات إلزامية
     """
     current_mode = get_current_mode()
     params = get_mode_params()
@@ -2819,7 +2819,7 @@ async def cmd_validate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         ("سقف التأثير", guard_status['can_adjust'] or guard_status['daily_used'] <= guard_status['daily_max'], f"{guard_status['daily_used']}/{guard_status['daily_max']}"),
         ("حماية الصفقات المفتوحة", HARD_RULES.get('OPEN_TRADES_SAFE', True), "OPEN_TRADES_SAFE=True"),
         ("قاعدة الشمعة القادمة", HARD_RULES.get('NEXT_CANDLE_ONLY', True), "NEXT_CANDLE_ONLY=True"),
-        ("توحيد الإصدار", AI_VERSION == "v4.2.PRO-AI", f"Version: {AI_VERSION}"),
+        ("توحيد الإصدار", AI_VERSION == "v4.4.PRO-FINAL", f"Version: {AI_VERSION}"),
         ("واجهة تيليجرام", True, "Commands active"),
         ("نظام الطوارئ", HARD_RULES.get('ONE_CLICK_DISABLE', True), "ONE_CLICK_DISABLE=True")
     ]
@@ -2829,7 +2829,7 @@ async def cmd_validate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     all_passed = passed == total
     
     message = f"""
-{'✅' if all_passed else '⚠️'} *التحقق من النظام v4.2.PRO-AI*
+{'✅' if all_passed else '⚠️'} *التحقق من النظام v4.4.PRO-FINAL*
 🆔 `{AI_VERSION}` | 📅 2026
 ═══════════════════════════
 
@@ -3524,11 +3524,11 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
 def validate_version_unification():
     """
     تحقق حازم من توحيد النسخة
-    v4.2.PRO-AI format supported
+    v4.4.PRO-FINAL format supported
     """
     import re
     from version import BOT_VERSION
-    # Updated pattern to support v4.2.PRO-AI format
+    # Updated pattern to support v4.4.PRO-FINAL format
     pattern = r'^v\d+\.\d+(\.\d+)?(-[a-zA-Z0-9-]+)?\.?[a-zA-Z0-9-]*$'
     
     if not re.match(pattern, BOT_VERSION):
@@ -3612,7 +3612,7 @@ async def main() -> None:
     application.add_handler(CommandHandler("recommend", cmd_recommend))
     application.add_handler(CommandHandler("validate", cmd_validate))
     
-    # AI commands (v4.2.PRO-AI)
+    # AI commands (v4.4.PRO-FINAL)
     application.add_handler(CommandHandler("ai", cmd_ai))
     application.add_handler(CommandHandler("ai_emergency", cmd_ai_emergency))
     
@@ -3670,8 +3670,8 @@ if __name__ == "__main__":
         logger.info(f"🚀 {BOT_VERSION} Startup")
         
         # Version Integrity Check
-        if BOT_VERSION != "v4.2.PRO-AI":
-            logger.error(f"FATAL: Version mismatch! Expected v4.2.PRO-AI, found {BOT_VERSION}")
+        if BOT_VERSION != "v4.4.PRO-FINAL":
+            logger.error(f"FATAL: Version mismatch! Expected v4.4.PRO-FINAL, found {BOT_VERSION}")
             exit(1)
 
         asyncio.run(main())
