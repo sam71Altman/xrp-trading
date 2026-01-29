@@ -85,8 +85,14 @@ def check_buy_signal(analysis, candles):
             state.hold_active = True
             state.hold_candles = 0
             state.hold_start_price = current_price
+            state.hold_activated_count += 1
             logger.info("[HOLD ACTIVATED] Bounce trade in bear market v3.7.5")
+            state.valid_entries += 1
             return True
+        
+        state.rejected_entries += 1
+        state.rejected_due_to_market += 1
+        state.last_rejection_reason = "HARD_MARKET (No Bounce)"
         return False
     
     # الدخول العادي في السوق السهل
@@ -330,10 +336,9 @@ DOWNTREND_ALERT_COOLDOWN = 300  # 5 minutes in seconds
 
 ATR_PERIOD = 14
 ATR_MULTIPLIER = 2.0
-VERSION = "v3.7.6"  # Strict versioning v3.7.6
+    # Logic Change v3.7.7: Added Diagnostic Counters and /health UI.
+VERSION = "v3.7.7"
 LOSS_EVENTS_FILE = "loss_events.csv"
-
-# --- In-memory counters for loss analysis ---
 loss_counters = {
     "STOP_HUNT": 0,
     "NOISE": 0,
@@ -633,6 +638,31 @@ class BotState:
         self.lpem_consecutive_count: int = 0
         self.lpem_strict_mode: bool = False
         self.last_exit_time: float = 0.0
+
+        # Diagnostic Counters (v3.7.7)
+        self.hold_active: bool = False
+        self.valid_entries: int = 0
+        self.rejected_entries: int = 0
+        self.rejected_due_to_market: int = 0
+        self.rejected_due_to_rsi: int = 0
+        self.rejected_due_to_no_bounce: int = 0
+        self.hold_activations: int = 0
+        self.ema_overrides: int = 0
+        self.ema_exit_ignored_count: int = 0
+        self.last_rejection_reason: str = "None"
+        self.counters_last_reset: datetime = get_now()
+
+    def reset_diagnostics(self):
+        self.valid_entries = 0
+        self.rejected_entries = 0
+        self.rejected_due_to_market = 0
+        self.rejected_due_to_rsi = 0
+        self.rejected_due_to_no_bounce = 0
+        self.hold_activated_count = 0
+        self.ema_exit_ignored_count = 0
+        self.last_rejection_reason = "None"
+        self.counters_last_reset = get_now()
+        logger.info("📊 Diagnostic counters reset")
 
         # v3.7.5 Hold Logic State
         self.hold_active = False
@@ -1345,11 +1375,17 @@ def log_hold_status(current_price: float, market_mode: str):
 
     # 1. SCORE + RSI HARD BLOCK
     if score <= 1 and (rsi > 75 or rsi < 25):
+        state.rejected_entries += 1
+        state.rejected_due_to_rsi += 1
+        state.last_rejection_reason = f"Weak RSI/Score (Score={score}, RSI={rsi:.1f})"
         logger.info(f"[AGG] Blocked: Weak Entry (Score={score}, RSI={rsi:.1f})")
         return False
         
     # 2. EXTENDED + WEAK SIGNAL = BLOCK (v3.7.2: Relaxed from 3 to 2)
     if is_extended and score <= 2:
+        state.rejected_entries += 1
+        state.rejected_due_to_no_bounce += 1 # Catching weak signals that aren't bounces
+        state.last_rejection_reason = f"Weak Extended (Score={score})"
         logger.info(f"[AGG] Blocked: Weak Extended (Score={score}, Extended=True)")
         return False
     
@@ -1465,6 +1501,7 @@ def check_exit_signal(analysis: dict, candles: List[dict]) -> Optional[str]:
     if current_price < analysis["ema_short"]:
         # v3.7.5: Stay in trade if hold_active is True, ignore EMA exit
         if state.hold_active:
+            state.ema_exit_ignored_count += 1
             logger.info(f"[HOLD] Ignoring EMA confirmation exit | Candles: {state.hold_candles}")
             state.hold_candles += 1
             return None
@@ -1948,6 +1985,26 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         parse_mode="Markdown"
     )
 
+
+async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Shows diagnostic health overview.
+    """
+    msg = (
+        f"🩺 **Bot Health Diagnostic**\n"
+        f"Version: `{BOT_VERSION}`\n"
+        f"Mode: `{state.mode}`\n"
+        f"Entries: {state.valid_entries} / Rejections: {state.rejected_entries}\n"
+        f"Hold Count: {state.hold_activations}\n"
+        f"EMA Overrides: {state.ema_overrides}\n"
+    )
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Shows current status.
+    """
+    return await cmd_status(update, context)
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
@@ -2662,7 +2719,8 @@ async def main() -> None:
     # Remove obsolete CallbackQueryHandler as we switched to MessageHandler for ReplyKeyboard
     # application.add_handler(CallbackQueryHandler(handle_callback))
     application.add_handler(CommandHandler("start", cmd_start))
-    application.add_handler(CommandHandler("status", cmd_status))
+    # Removed duplicated status command registration
+    application.add_handler(CommandHandler("health", health_command))
     application.add_handler(CommandHandler("balance", cmd_balance))
     application.add_handler(CommandHandler("trades", cmd_trades))
     application.add_handler(CommandHandler("on", cmd_on))
@@ -2726,8 +2784,8 @@ if __name__ == "__main__":
         logger.info(f"🚀 {BOT_VERSION} Startup")
         
         # Version Integrity Check
-        if BOT_VERSION != "v3.7.6":
-            logger.error(f"FATAL: Version mismatch! Expected v3.7.6, found {BOT_VERSION}")
+        if BOT_VERSION != "v3.7.7":
+            logger.error(f"FATAL: Version mismatch! Expected v3.7.7, found {BOT_VERSION}")
             exit(1)
 
         asyncio.run(main())
