@@ -88,6 +88,9 @@ FAST_SCALP_GOVERNANCE = {
 }
 
 # --- Sessions & Circuit Breaker ---
+from version import SYSTEM_VERSION
+BOT_VERSION = SYSTEM_VERSION
+AI_VERSION = SYSTEM_VERSION
 SESSION_WINDOW_MINUTES = 60
 CIRCUIT_BREAKER = {
     "max_trades_per_hour": 20,
@@ -2544,7 +2547,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Shows diagnostic health overview with AI system status.
-    🆔 v4.4.PRO-FINAL
+    🆔 {SYSTEM_VERSION}
     """
     current_mode = get_current_mode()
     mode_display = TradeMode.DISPLAY_NAMES.get(current_mode, current_mode)
@@ -2590,7 +2593,7 @@ async def cmd_ai(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     bar = "█" * filled + "░" * (10 - filled)
     
     message = f"""
-🧠 *لوحة تحكم الذكاء v4.4.PRO-FINAL*
+🧠 *لوحة تحكم الذكاء {SYSTEM_VERSION}*
 ════════════════════════════
 
 ⚡ *حالة الذكاء:* {'✅ مفعل' if ai_status['enabled'] else '❌ معطل'}
@@ -2802,7 +2805,7 @@ async def cmd_recommend(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 async def cmd_validate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     التحقق من صحة تطبيق النظام
-    🆔 v4.4.PRO-FINAL - 8 فحوصات إلزامية
+    🆔 {SYSTEM_VERSION} - 8 فحوصات إلزامية
     """
     current_mode = get_current_mode()
     params = get_mode_params()
@@ -2819,7 +2822,7 @@ async def cmd_validate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         ("سقف التأثير", guard_status['can_adjust'] or guard_status['daily_used'] <= guard_status['daily_max'], f"{guard_status['daily_used']}/{guard_status['daily_max']}"),
         ("حماية الصفقات المفتوحة", HARD_RULES.get('OPEN_TRADES_SAFE', True), "OPEN_TRADES_SAFE=True"),
         ("قاعدة الشمعة القادمة", HARD_RULES.get('NEXT_CANDLE_ONLY', True), "NEXT_CANDLE_ONLY=True"),
-        ("توحيد الإصدار", AI_VERSION == "v4.4.PRO-FINAL", f"Version: {AI_VERSION}"),
+        ("توحيد الإصدار", BOT_VERSION == AI_VERSION == SYSTEM_VERSION, f"Bot: {BOT_VERSION} | AI: {AI_VERSION}"),
         ("واجهة تيليجرام", True, "Commands active"),
         ("نظام الطوارئ", HARD_RULES.get('ONE_CLICK_DISABLE', True), "ONE_CLICK_DISABLE=True")
     ]
@@ -2829,7 +2832,7 @@ async def cmd_validate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     all_passed = passed == total
     
     message = f"""
-{'✅' if all_passed else '⚠️'} *التحقق من النظام v4.4.PRO-FINAL*
+{'✅' if all_passed else '⚠️'} *التحقق من النظام {SYSTEM_VERSION}*
 🆔 `{AI_VERSION}` | 📅 2026
 ═══════════════════════════
 
@@ -3524,7 +3527,7 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
 def validate_version_unification():
     """
     تحقق حازم من توحيد النسخة
-    v4.4.PRO-FINAL format supported
+    {SYSTEM_VERSION} format supported
     """
     import re
     from version import BOT_VERSION
@@ -3670,8 +3673,8 @@ if __name__ == "__main__":
         logger.info(f"🚀 {BOT_VERSION} Startup")
         
         # Version Integrity Check
-        if BOT_VERSION != "v4.4.PRO-FINAL":
-            logger.error(f"FATAL: Version mismatch! Expected v4.4.PRO-FINAL, found {BOT_VERSION}")
+        if BOT_VERSION != SYSTEM_VERSION:
+            logger.error(f"FATAL: Version mismatch! Expected {SYSTEM_VERSION}, found {BOT_VERSION}")
             exit(1)
 
         asyncio.run(main())
