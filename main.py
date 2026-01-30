@@ -1372,7 +1372,7 @@ MIN_EXIT_PRICE_MOVE_PCT = 0.01   # أقل حركة سعر تعتبر خروجً�
 MIN_EXIT_TIME_SECONDS = 10       # أقل مدة صفقة قبل السماح بالخروج التقني
 HARD_EXIT_REASONS = ["STOP_LOSS", "MANUAL_CLOSE", "FORCE_CLOSE", "MAINTENANCE"]
 
-class BotState:
+class LegacyBotState:
     def __init__(self):
         self.mode: str = "AGGRESSIVE"  # Force Aggressive Mode
         self.position_open: bool = False
@@ -1480,7 +1480,7 @@ class BotState:
         └── Daily Loss: {self.daily_cumulative_loss:.2f}%
         """)
 
-state = BotState()
+state = LegacyBotState()
 
 
 def clear_trade_history():
