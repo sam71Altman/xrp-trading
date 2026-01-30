@@ -63,16 +63,41 @@ def detect_bearish_strength(candle):
         return "MEDIUM"
     return "WEAK"
 
-# TP CONTINUATION / PROTECTED RUNNER CONFIG (v4.5.PRO-FINAL)
-ENABLE_TP_CONTINUATION = True        # تم التفعيل صراحة
-PARTIAL_CLOSE_PERCENT = 0.6          # 60% إغلاق عند TP
-MAX_RUNNER_TIME = 60                 # بالدقائق
-RUNNER_TRAIL_STEPS = {
-    2.0: 1.0,   # profit >= 2% → trail at entry + 1%
-    3.0: 1.5,   # profit >= 3% → trail at entry + 1.5%
-    5.0: 2.0    # profit >= 5% → trail at entry + 2%
-}
+# ===== إعدادات التشغيل الأساسية =====
+ENABLE_TP_CONTINUATION = True      # تفعيل النظام
+PARTIAL_CLOSE_PERCENT = 0.60       # نسبة الإغلاق الجزئي عند TP
+MAX_RUNNER_TIME = 60               # أقصى مدة للـ Runner (دقائق)
 
+# ===== إعدادات Profit Lock =====
+LOCK_PERCENTAGE = 0.70             # نسبة القفل من أعلى ربح
+MIN_PROFIT_TO_ACTIVATE = 0.50      # أدنى ربح لتفعيل النظام
+MIN_ABSOLUTE_LOCK = 0.40           # الحد الأدنى المطلق للقفل
+LOCK_CONFIRMATION_MARGIN = 0.02    # هامش أمان ضد الـ Spikes
+
+class RunnerTrade:
+    """
+    ✅ التحسين: حالة مستقلة لكل صفقة Runner
+    """
+    def __init__(self):
+        self.max_profit_achieved = 0
+        self.profit_lock_activated = False
+
+    def is_profit_lock_triggered(self, current_profit_pct):
+        """
+        منطق Profit Lock الذكي
+        """
+        if current_profit_pct <= MIN_PROFIT_TO_ACTIVATE:
+            return False
+        self.max_profit_achieved = max(self.max_profit_achieved, current_profit_pct)
+        dynamic_lock = self.max_profit_achieved * LOCK_PERCENTAGE
+        locked_profit = max(dynamic_lock, MIN_ABSOLUTE_LOCK)
+        exit_threshold = locked_profit - LOCK_CONFIRMATION_MARGIN
+        if not self.profit_lock_activated:
+            logger.info(f"[PROFIT_LOCK] activated: max={self.max_profit_achieved:.2f}%, lock={locked_profit:.2f}%")
+            self.profit_lock_activated = True
+        return current_profit_pct < exit_threshold
+
+# TP CONTINUATION / PROTECTED RUNNER CONFIG (v4.5.PRO-FINAL)
 RUNNER_METRICS = {
     "runner_triggered": 0,
     "avg_runner_profit": 0.0,
@@ -80,6 +105,12 @@ RUNNER_METRICS = {
     "runner_timeouts": 0,
     "momentum_fade_exits": 0,
     "runner_total_profits": []
+}
+
+RUNNER_TRAIL_STEPS = {
+    2.0: 1.0,   # profit >= 2% → trail at entry + 1%
+    3.0: 1.5,   # profit >= 3% → trail at entry + 1.5%
+    5.0: 2.0    # profit >= 5% → trail at entry + 2%
 }
 
 def check_tp_candle_confirmation(candles: list, tp_price: float) -> bool:
@@ -153,6 +184,45 @@ def calculate_runner_sl(entry_price: float, current_price: float, candles: list,
     
     new_sl = max(entry_price, local_low, ema_fast * 0.999)
     return new_sl
+
+def check_runner_exit_conditions(market_data, runner_state, runner_trade):
+    """
+    تقييم شروط خروج Runner حسب الأولوية الثابتة
+    """
+    if not runner_state.get('active'):
+        return None
+    
+    current_time_val = time.time()
+    runner_duration_minutes = (current_time_val - runner_state.get('start_time', 0)) / 60
+    
+    # 🔴 الأولوية 1: RUNNER TIMEOUT
+    if runner_duration_minutes >= MAX_RUNNER_TIME:
+        return "RUNNER_TIMEOUT"
+    
+    # 🔴 الأولوية 2: CONTINUE_IF FAILED
+    analysis = market_data.get('analysis', {})
+    candles = market_data.get('candles', [])
+    if not check_runner_continuation_conditions(analysis, candles):
+        return "CONTINUE_CONDITIONS_FAILED"
+    
+    # 🔴 الأولوية 3: MOMENTUM FADE
+    if check_runner_momentum_fade(analysis, candles):
+        return "MOMENTUM_FADE"
+    
+    # 🔴 الأولوية 4: PROFIT LOCK
+    current_price = market_data.get('current_price', 0)
+    entry_price = runner_state.get('entry_price', 0)
+    current_profit_pct = ((current_price - entry_price) / entry_price) * 100 if entry_price > 0 else 0
+    
+    if runner_trade.is_profit_lock_triggered(current_profit_pct):
+        return "PROFIT_LOCK_EXIT"
+    
+    # 🔴 الأولوية 5: TRAILING SL
+    new_trail_sl = calculate_runner_trailing_sl(entry_price, current_price)
+    if current_price <= new_trail_sl:
+        return "TRAILING_SL_HIT"
+    
+    return None
 
 def calculate_runner_trailing_sl(entry_price: float, current_price: float) -> float:
     """
