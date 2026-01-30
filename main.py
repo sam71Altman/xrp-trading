@@ -64,9 +64,9 @@ def detect_bearish_strength(candle):
     return "WEAK"
 
 # TP CONTINUATION / PROTECTED RUNNER CONFIG (v4.5.PRO-FINAL)
-ENABLE_TP_CONTINUATION = False
-PARTIAL_CLOSE_PERCENT = 0.6  # 60%
-MAX_RUNNER_TIME = 60         # minutes
+ENABLE_TP_CONTINUATION = True        # تم التفعيل صراحة
+PARTIAL_CLOSE_PERCENT = 0.6          # 60% إغلاق عند TP
+MAX_RUNNER_TIME = 60                 # بالدقائق
 RUNNER_TRAIL_STEPS = {
     2.0: 1.0,   # profit >= 2% → trail at entry + 1%
     3.0: 1.5,   # profit >= 3% → trail at entry + 1.5%
@@ -78,6 +78,7 @@ RUNNER_METRICS = {
     "avg_runner_profit": 0.0,
     "runner_sl_hits": 0,
     "runner_timeouts": 0,
+    "momentum_fade_exits": 0,
     "runner_total_profits": []
 }
 
