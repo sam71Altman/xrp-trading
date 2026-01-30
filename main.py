@@ -3768,7 +3768,7 @@ async def cmd_diagnostic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg += "🧾 *Paper Trading*\n"
     msg += f"• الرصيد: {paper_state.balance:.2f} USDT\n"
     msg += f"• صفقة مفتوحة: {'نعم' if paper_state.position_qty > 0 else 'لا'}\n"
-    if paper_state.position_qty > 0:
+    if paper_state.position_qty > 0 and state.entry_price is not None:
         msg += f"• سعر الدخول: {state.entry_price:.4f}\n"
     msg += f"• عدد الصفقات: {len(closed_trades)}\n\n"
     

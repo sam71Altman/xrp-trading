@@ -1,3 +1,7 @@
 timestamp,action,entry_price,exit_price,pnl_percent,pnl_usdt,balance_after,score,entry_reason,exit_reason,duration_minutes,kill_switch_triggered,kill_switch_reason,balance_peak
 2026-01-30 08:26:11,BUY,1.7610,,,,1000.00,2,✅ اتجاه صاعد (+2),,0,False,,1000.00
 2026-01-30 08:30:01,EXIT,1.7610,1.7679,0.39,0.39,1000.39,2,✅ اتجاه صاعد (+2),aggressive_flip,3,False,,1000.39
+2026-01-30 08:41:02,BUY,1.7652,,,,1000.39,3,✅ EMA20 > EMA50 (+3),,0,False,,1000.39
+2026-01-30 08:41:07,BUY,1.7650,,,,1000.39,3,✅ EMA20 > EMA50 (+3),,0,False,,1000.39
+2026-01-30 08:41:36,BUY,1.7648,,,,1000.39,3,✅ EMA20 > EMA50 (+3),,0,False,,1000.39
+2026-01-30 08:41:41,BUY,1.7648,,,,1000.39,3,✅ EMA20 > EMA50 (+3),,0,False,,1000.39
