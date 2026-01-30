@@ -4219,12 +4219,24 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                         logger.info(f"🚫 [LPEM] Blocked Entry: Price within band ({diff_pct:.4f}% <= {current_band}%)")
                         return
                 
-                # --- AI FILTER CHECK (v4.5.PRO-AI) ---
-                ai_result = check_ai_filter(SYMBOL, analysis, candles, True)
-                if not is_trade_allowed(ai_result):
-                    logger.info(f"🚫 [AI FILTER] Blocked: {ai_result.decision.value} | score={ai_result.score} | weight={ai_result.weight}")
+                # --- AI ENGINE v4.5.PRO-AI ---
+                market_data = create_market_data_from_analysis(analysis, candles)
+                if not market_data:
                     return
                 
+                ai_engine = get_ai_engine()
+                ai_result = ai_engine.check_and_execute_trade(
+                    symbol=SYMBOL,
+                    direction="LONG",
+                    amount=round(state.balance * RISK_PER_TRADE, 2),
+                    original_conditions_met=True
+                )
+                
+                if not ai_result.executed:
+                    logger.info(f"🚫 [AI ENGINE] Trade blocked: {ai_result.decision.value} | score={ai_result.score}")
+                    return
+                
+                entry_price = analysis["close"]
                 tp, sl = calculate_targets(entry_price, candles)
                 
                 score, reasons = calculate_signal_score(analysis, candles)
@@ -4289,9 +4301,7 @@ async def main() -> None:
     PriceEngine.start()
     
     # Initialize AI Filter Engine (v4.5.PRO-AI)
-    def dummy_execute(symbol: str, direction: str, amount: float) -> bool:
-        return True
-    init_ai_engine(dummy_execute)
+    init_ai_engine(execute_paper_buy)
     logger.info("[AI ENGINE] Initialized successfully")
     
     tg_token = os.environ.get("TG_TOKEN")
