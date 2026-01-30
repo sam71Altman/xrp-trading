@@ -52,6 +52,26 @@ Preferred communication style: Simple, everyday language.
 - Auto-resume after 30 minutes
 - Manual resume via `/استئناف` command
 
+### AI Filtering System v4.5.PRO-AI
+**Core Files**: `ai_state.py`, `ai_filter.py`, `trading_engine.py`, `telegram_interface.py`, `monitor.py`, `ai_integration.py`
+
+**Weight Values (Fixed)**: 0.0 (OFF), 0.3 (LOW), 0.6 (MEDIUM), 1.0 (HIGH)
+
+**Modes**:
+- OFF: All trades pass through
+- LEARN: Analyze and score, but always allow
+- FULL: Real filtering (block if score < weight)
+
+**Design Principles**:
+- Single Entry Point: All trades through `check_and_execute_trade()`
+- Dependency Injection: No monkey patching
+- No Global State: Each symbol has independent AIState
+- Safety First: Return None on any error
+- Cooldown applies in all modes (30s default)
+- Daily intervention limit (50), fallback to allow when reached
+
+**Telegram Commands**: `/ai` for control panel
+
 ### Data Source
 - Binance REST API for OHLCV candlestick data (no WebSocket)
 - Polling interval: every 10 seconds
