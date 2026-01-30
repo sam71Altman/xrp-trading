@@ -1,0 +1,204 @@
+ — MULTI-STRATEGY FAST SCALP TRADING PLATFORM
+Version: v4.5.PRO-FINAL (STRATEGY-ISOLATED · PRODUCTION-GRADE)
+🎯 SYSTEM PHILOSOPHY (ABSOLUTE – NON-NEGOTIABLE)
+TP = EXECUTION EVENT (ليس شرطاً – إغلاق فوري)
+SL = FINAL SAFETY EXIT
+EMA Exit = CONFIRMED FAILURE JUDGMENT فقط
+ENTRY LOGIC = UNTOUCHED
+EXECUTION ENGINE = SINGLE SOURCE OF TRUTH
+UI = VIEW ONLY
+FAILURE IS ISOLATED PER STRATEGY
+SAFETY > AVAILABILITY
+⚡ HARD RULES (MUST NEVER BE VIOLATED)
+نسخ التعليمات البرمجية
+Python
+HARD_RULES = {
+    "NO_ENTRY_LOGIC_CHANGES": True,
+    "NO_TP_SL_LOGIC_CHANGES": True,
+    "TP_OVERRIDES_ALL": True,
+    "EMA_EXIT_FAILURE_ONLY": True,
+    "UI_NOT_SOURCE_OF_TRUTH": True,
+    "STRATEGY_ISOLATION_REQUIRED": True,
+    "NO_GLOBAL_COOLDOWN": True,
+    "NO_AI_OVERRIDE_EXECUTION": True
+}
+🧱 ARCHITECTURE (STRICT & ISOLATED)
+نسخ التعليمات البرمجية
+
+SHARED EXECUTION ENGINE (ONE)
+│
+├── STRATEGY: SCALP_FAST
+│   ├─ State Machine
+│   ├─ Cooldown
+│   ├─ Metrics
+│
+├── STRATEGY: SCALP_PULLBACK
+│   ├─ State Machine
+│   ├─ Cooldown
+│   ├─ Metrics
+│
+└── STRATEGY: BREAKOUT
+    ├─ State Machine
+    ├─ Cooldown
+    ├─ Metrics
+❗ أي فشل داخل استراتيجية لا يؤثر على غيرها
+❗ الإيقاف الشامل فقط في الحالات الكارثية
+⚡ EXECUTION PRIORITY (IMMUTABLE ORDER)
+نسخ التعليمات البرمجية
+Python
+EXECUTION_PRIORITY = [
+    "TAKE_PROFIT",        # Tick-level, HARD STOP
+    "STOP_LOSS",
+    "EMERGENCY_CLOSE",
+    "EMA_FAILURE_EXIT",
+    "MAX_TIME_ESCAPE"
+]
+🟥 LAYER 1 — EXECUTION (GLOBAL · TICK LEVEL)
+TAKE PROFIT — FORCED EXECUTION
+نسخ التعليمات البرمجية
+Python
+def dynamic_tp_margin():
+    spread = ask - bid
+    return max(spread * 1.5, ATR * 0.1, MIN_TP_MARGIN)
+
+def process_tick(tick, strategy_id, trade_id):
+    if best_bid >= (take_profit - dynamic_tp_margin()):
+        FORCE_CLOSE_TRADE(strategy_id, trade_id, reason="TP_EXECUTED")
+        return  # NOTHING ELSE RUNS
+TP يتجاوز كل:
+Time Lock
+EMA
+Trailing
+Cooldown
+AI
+FORCE CLOSE WITH ESCALATION
+نسخ التعليمات البرمجية
+Python
+CLOSE_STRATEGIES = [
+    "MARKET",
+    "CANCEL_ALL_THEN_MARKET",
+    "REDUCE_ONLY",
+    "EMERGENCY_CLOSE"
+]
+
+def FORCE_CLOSE_TRADE(strategy_id, trade_id, reason):
+    for method in CLOSE_STRATEGIES:
+        for _ in range(3):
+            if execute_close(method, trade_id):
+                emit_event(strategy_id, "TRADE_CLOSED", reason)
+                return
+    handle_critical_failure("CATASTROPHIC")
+🟨 LAYER 2 — GOVERNANCE (PER STRATEGY ONLY)
+TIME LOCK
+نسخ التعليمات البرمجية
+Python
+MIN_TIME_BEFORE_EMA_EXIT = max(60, timeframe_minutes * 2 * 60)
+ABSOLUTE BLOCKS (ANY = BLOCK)
+Time Lock active
+Trade in profit
+Bullish reversal / local bottom
+Low volume (except high-liquidity assets)
+FAILURE CONFIRMATION (ALL REQUIRED)
+نسخ التعليمات البرمجية
+Python
+ema_failure = (
+    price_touched_ema and
+    rejection_candle and
+    RSI < 45 and
+    last_two_candles_red and
+    price < entry_price
+)
+MAX TIME ESCAPE (ATR-BASED)
+نسخ التعليمات البرمجية
+Python
+small_range = ATR * 1.5
+safe_zone = abs(price - entry) / abs(entry - SL) > 0.3
+
+candles_required = 14 if safe_zone else 10
+
+if candles >= candles_required and abs(price - entry) < small_range:
+    ALLOW_EXIT("MAX_TIME_ESCAPE")
+🔁 SMART TRAILING SL (EXECUTION SAFE)
+1M FRAME
+Activate @ +0.20%
+Lock @ +0.10%
+Step = 0.05%
+5M FRAME
+Activate @ +0.35%
+Lock @ +0.18%
+Step = 0.10%
+Rules:
+Trailing NEVER cancels TP
+Retry SL update ×3
+Failure → log only (no block)
+🔄 CLOSE → RECHECK (PER STRATEGY)
+نسخ التعليمات البرمجية
+Python
+AFTER_CLOSE_COOLDOWN = {
+    "SCALP_FAST": {"1m": 60, "5m": 180},
+    "SCALP_PULLBACK": {"5m": 300},
+    "BREAKOUT": {"15m": 600}
+}
+Rules:
+No re-entry in same candle
+No re-entry on same wick
+Full signal re-evaluation required
+🧱 LAYER 3 — SAFETY CORE (PER STRATEGY)
+STATE MACHINE
+نسخ التعليمات البرمجية
+
+IDLE → ENTERED → OPEN → CLOSING
+     → WAITING_CONFIRMATION
+     → CONFIRMED_CLOSED → CLOSED
+EVENT GUARANTEE
+نسخ التعليمات البرمجية
+Python
+if emit_event_failed:
+    handle_critical_failure("CATASTROPHIC")
+CIRCUIT BREAKER (PER STRATEGY)
+نسخ التعليمات البرمجية
+Python
+MAX_DESYNC = 3
+WINDOW = 60min
+
+if desync_detected:
+    sleep(100ms)
+    recheck()
+    if still_desynced:
+        register_desync(strategy_id)
+SEVERE: توقف الاستراتيجية فقط
+CATASTROPHIC: إيقاف النظام كاملاً
+🟩 LAYER 4 — MONITORING
+METRICS (PER STRATEGY)
+نسخ التعليمات البرمجية
+Python
+METRICS = {
+    "tp_hit_rate": ">= 99.95%",
+    "false_ema_exits": "< 5%",
+    "state_desync": 0,
+    "ghost_trades": 0,
+    "avg_latency_p99": "< 100ms"
+}
+HEALTH CHECK
+نسخ التعليمات البرمجية
+Python
+{
+  "system_status": OPERATIONAL / DEGRADED / HALTED,
+  "strategy_status": {
+      "SCALP_FAST": ACTIVE / COOLDOWN / HALTED,
+      "SCALP_PULLBACK": ACTIVE / COOLDOWN / HALTED,
+      "BREAKOUT": ACTIVE / COOLDOWN / HALTED
+  }
+}
+🏁 FINAL IMPLEMENTATION COMMAND
+نسخ التعليمات البرمجية
+
+IMPLEMENT EXACTLY AS SPECIFIED.
+
+• No global cooldown
+• No strategy interference
+• No entry logic changes
+• TP is absolute
+• EMA Exit = failure only
+• Safety violations handled by policy
+.

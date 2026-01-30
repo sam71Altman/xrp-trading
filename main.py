@@ -63,13 +63,24 @@ def detect_bearish_strength(candle):
         return "MEDIUM"
     return "WEAK"
 
-# FAST SCALP EMA EXIT GOVERNANCE SYSTEM v3.1
+# 🟨 LAYER 2 — GOVERNANCE (EMA EXIT v4.5.PRO-FINAL)
+# EMA Exit = CONFIRMED FAILURE JUDGMENT فقط
+
+# TIME LOCK CONFIG
+MIN_TIME_BEFORE_EMA_EXIT = 120  # max(60, timeframe_minutes * 2 * 60) for 1m
+
+# ABSOLUTE BLOCKS (ANY = BLOCK)
+# - Time Lock active
+# - Trade in profit
+# - Bullish reversal / local bottom
+# - Low volume (except high-liquidity assets)
+
 FAST_SCALP_GOVERNANCE = {
     "HARD_RULES": {
         "NO_ENTRY_CHANGES": True,
         "NO_TP_SL_CHANGES": True,
-        "FAST_SCALP_ONLY": True,
-        "EMA_EXIT_SECONDARY": True,
+        "EMA_EXIT_FAILURE_ONLY": True,
+        "TP_OVERRIDES_ALL": True,
         "SL_FINAL_EXIT": True,
         "QUANT_ONLY": True,
         "NO_MARTINGALE": True,
@@ -86,6 +97,81 @@ FAST_SCALP_GOVERNANCE = {
         "tp_after_block": 0
     }
 }
+
+def check_ema_failure_confirmation(analysis: dict, candles: list, 
+                                    entry_price: float, current_price: float) -> bool:
+    """
+    🟨 FAILURE CONFIRMATION (ALL REQUIRED)
+    ema_failure = (
+        price_touched_ema and
+        rejection_candle and
+        RSI < 45 and
+        last_two_candles_red and
+        price < entry_price
+    )
+    """
+    if not candles or len(candles) < 2:
+        return False
+    
+    ema = analysis.get('ema20', 0)
+    rsi = analysis.get('rsi', 50)
+    current_candle = candles[-1]
+    prev_candle = candles[-2]
+    
+    # 1. Price touched EMA
+    price_touched_ema = abs(min(current_candle['low'], ema) - max(current_candle['high'], ema)) / ema <= 0.001 if ema > 0 else False
+    
+    # 2. Rejection candle
+    rejection_candle = (
+        current_candle['high'] > ema and 
+        current_candle['close'] < ema * 0.9995 and 
+        current_candle['close'] < current_candle['open']
+    ) if ema > 0 else False
+    
+    # 3. RSI < 45
+    rsi_bearish = rsi < 45
+    
+    # 4. Last two candles red
+    last_two_red = (
+        current_candle['close'] < current_candle['open'] and 
+        prev_candle['close'] < prev_candle['open']
+    )
+    
+    # 5. Price < entry
+    price_below_entry = current_price < entry_price
+    
+    # ALL conditions required
+    ema_failure = (
+        price_touched_ema and
+        rejection_candle and
+        rsi_bearish and
+        last_two_red and
+        price_below_entry
+    )
+    
+    return ema_failure
+
+def check_max_time_escape(candles_since_entry: int, current_price: float, 
+                          entry_price: float, sl_price: float, atr: float) -> bool:
+    """
+    🟨 MAX TIME ESCAPE (ATR-BASED)
+    small_range = ATR * 1.5
+    safe_zone = abs(price - entry) / abs(entry - SL) > 0.3
+    candles_required = 14 if safe_zone else 10
+    """
+    if abs(entry_price - sl_price) == 0:
+        return False
+    
+    small_range = atr * 1.5
+    safe_zone_ratio = abs(current_price - entry_price) / abs(entry_price - sl_price)
+    safe_zone = safe_zone_ratio > 0.3
+    
+    candles_required = 14 if safe_zone else 10
+    
+    if candles_since_entry >= candles_required and abs(current_price - entry_price) < small_range:
+        return True
+    
+    return False
 
 # --- Sessions & Circuit Breaker ---
 from version import SYSTEM_VERSION
@@ -158,9 +244,23 @@ def check_system_health():
         logger.error("🚨 EMERGENCY STOP: System Latency > 200ms")
     return not circuit_breaker_logic.emergency_stop
 
-# --- Safe Trailing ---
+# --- Smart Trailing SL v4.5.PRO-FINAL (EXECUTION SAFE) ---
 MAX_RETRIES = 3
 MIN_SAFE_DISTANCE = 0.0001 # 0.01%
+
+# 🔁 SMART TRAILING CONFIG (PER TIMEFRAME)
+TRAILING_CONFIG = {
+    "1m": {
+        "activate_pct": 0.20,   # Activate @ +0.20%
+        "lock_pct": 0.10,       # Lock @ +0.10%
+        "step_pct": 0.05        # Step = 0.05%
+    },
+    "5m": {
+        "activate_pct": 0.35,   # Activate @ +0.35%
+        "lock_pct": 0.18,       # Lock @ +0.18%
+        "step_pct": 0.10        # Step = 0.10%
+    }
+}
 
 def high_volatility(candles):
     if len(candles) < 5: return False
@@ -169,7 +269,14 @@ def high_volatility(candles):
     avg_range = sum(ranges) / 5
     return ranges[-1] > avg_range * 2.5
 
-def safe_trailing_update(new_sl, current_price, candles):
+def safe_trailing_update(new_sl, current_price, candles, timeframe="1m"):
+    """
+    Smart Trailing SL with retry mechanism
+    Rules:
+    - Trailing NEVER cancels TP
+    - Retry SL update ×3
+    - Failure → log only (no block)
+    """
     dist = abs(current_price - new_sl) / current_price
     if high_volatility(candles) or dist < MIN_SAFE_DISTANCE:
         logger.info("TRAILING_RETRY_SKIPPED_HIGH_RISK")
@@ -185,8 +292,21 @@ def safe_trailing_update(new_sl, current_price, candles):
             logger.error(f"TRAILING_UPDATE_FAILED: {e}")
             time.sleep(0.05) # 50ms
 
-    logger.warning("TRAILING_SL_FAILED after max retries")
+    # Failure → log only (no block)
+    logger.warning("TRAILING_SL_FAILED after max retries (no block)")
     return False
+
+def check_trailing_activation(entry_price: float, current_price: float, timeframe: str = "1m") -> bool:
+    """Check if trailing should be activated based on profit percentage"""
+    config = TRAILING_CONFIG.get(timeframe, TRAILING_CONFIG["1m"])
+    profit_pct = ((current_price - entry_price) / entry_price) * 100
+    return profit_pct >= config["activate_pct"]
+
+def calculate_trailing_sl(entry_price: float, current_price: float, timeframe: str = "1m") -> float:
+    """Calculate new trailing SL based on config"""
+    config = TRAILING_CONFIG.get(timeframe, TRAILING_CONFIG["1m"])
+    lock_pct = config["lock_pct"] / 100
+    return current_price * (1 - lock_pct)
 
 # Boot Validation
 def validate_config():
@@ -200,21 +320,57 @@ def validate_config():
 
 validate_config()
 
-# VERSION: v4.4.PRO-FINAL (BANKING-GRADE)
+# VERSION: v4.5.PRO-FINAL (STRATEGY-ISOLATED · PRODUCTION-GRADE)
+# 🎯 SYSTEM PHILOSOPHY (ABSOLUTE – NON-NEGOTIABLE)
+# TP = EXECUTION EVENT (ليس شرطاً – إغلاق فوري)
+# SL = FINAL SAFETY EXIT
+# EMA Exit = CONFIRMED FAILURE JUDGMENT فقط
+# ENTRY LOGIC = UNTOUCHED
+# EXECUTION ENGINE = SINGLE SOURCE OF TRUTH
+# UI = VIEW ONLY
+# FAILURE IS ISOLATED PER STRATEGY
+# SAFETY > AVAILABILITY
+
 HARD_RULES = {
     "NO_ENTRY_LOGIC_CHANGES": True,
-    "NO_TP_SL_STRATEGY_CHANGES": True,
-    "FAST_SCALP_ONLY": True,
-    "TP_OVERRIDES_ALL_LOGIC": True,
-    "SL_FINAL_EXIT": True,
-    "NO_AI_INTERFERENCE_WITH_EXECUTION": True,
-    "NEXT_CANDLE_RULE_FOR_GOVERNANCE": True,
-    "SINGLE_SOURCE_OF_TRUTH": "EXECUTION_ENGINE"
+    "NO_TP_SL_LOGIC_CHANGES": True,
+    "TP_OVERRIDES_ALL": True,
+    "EMA_EXIT_FAILURE_ONLY": True,
+    "UI_NOT_SOURCE_OF_TRUTH": True,
+    "STRATEGY_ISOLATION_REQUIRED": True,
+    "NO_GLOBAL_COOLDOWN": True,
+    "NO_AI_OVERRIDE_EXECUTION": True
 }
 
-# --- Architecture & State Machine ---
+# ⚡ EXECUTION PRIORITY (IMMUTABLE ORDER)
+EXECUTION_PRIORITY = [
+    "TAKE_PROFIT",        # Tick-level, HARD STOP
+    "STOP_LOSS",
+    "EMERGENCY_CLOSE",
+    "EMA_FAILURE_EXIT",
+    "MAX_TIME_ESCAPE"
+]
+
+# 🔄 AFTER_CLOSE_COOLDOWN (PER STRATEGY)
+AFTER_CLOSE_COOLDOWN = {
+    "SCALP_FAST": {"1m": 60, "5m": 180},
+    "SCALP_PULLBACK": {"5m": 300},
+    "BREAKOUT": {"15m": 600}
+}
+
+# 🟩 METRICS (PER STRATEGY)
+STRATEGY_METRICS = {
+    "tp_hit_rate": ">= 99.95%",
+    "false_ema_exits": "< 5%",
+    "state_desync": 0,
+    "ghost_trades": 0,
+    "avg_latency_p99": "< 100ms"
+}
+
+# --- Architecture & State Machine v4.5.PRO-FINAL ---
 from enum import Enum
-class BotState(Enum):
+
+class TradeState(Enum):
     IDLE = 1
     ENTERED = 2
     OPEN = 3
@@ -223,29 +379,125 @@ class BotState(Enum):
     CONFIRMED_CLOSED = 6
     CLOSED = 7
 
-class SafetyCore:
-    def __init__(self):
-        self.state = BotState.IDLE
+# Legacy alias for backward compatibility
+BotState = TradeState
+
+# 🧱 STRATEGY TYPES (ISOLATED)
+class StrategyType(Enum):
+    SCALP_FAST = "SCALP_FAST"
+    SCALP_PULLBACK = "SCALP_PULLBACK"
+    BREAKOUT = "BREAKOUT"
+
+# 🧱 STRATEGY STATE (PER STRATEGY - ISOLATED)
+class StrategyState:
+    def __init__(self, strategy_id: str):
+        self.strategy_id = strategy_id
+        self.state = TradeState.IDLE
         self.last_sequence = 0
         self.desync_count = 0
         self.last_state_change = time.time()
-        self.active_trades = {"1m": 0, "5m": 0}
-
-    def set_state(self, new_state: BotState):
-        logger.info(f"[SAFETY] State Transition: {self.state.name} -> {new_state.name}")
+        self.cooldown_until = 0
+        self.active_trade_id = None
+        self.metrics = {
+            "tp_hits": 0,
+            "sl_hits": 0,
+            "ema_exits": 0,
+            "max_time_escapes": 0,
+            "total_trades": 0,
+            "desync_events": 0
+        }
+        self.status = "ACTIVE"  # ACTIVE / COOLDOWN / HALTED
+    
+    def set_state(self, new_state: TradeState):
+        logger.info(f"[{self.strategy_id}] State: {self.state.name} -> {new_state.name}")
         self.state = new_state
         self.last_state_change = time.time()
+    
+    def is_in_cooldown(self) -> bool:
+        return time.time() < self.cooldown_until
+    
+    def start_cooldown(self, timeframe: str):
+        cooldown_secs = AFTER_CLOSE_COOLDOWN.get(self.strategy_id, {}).get(timeframe, 60)
+        self.cooldown_until = time.time() + cooldown_secs
+        self.status = "COOLDOWN"
+        logger.info(f"[{self.strategy_id}] Cooldown started: {cooldown_secs}s")
+    
+    def check_cooldown_expired(self):
+        if self.status == "COOLDOWN" and time.time() >= self.cooldown_until:
+            self.status = "ACTIVE"
+            logger.info(f"[{self.strategy_id}] Cooldown expired, now ACTIVE")
 
-    def emit_event(self, event_type, data):
+# 🟥 CIRCUIT BREAKER (PER STRATEGY)
+MAX_DESYNC = 3
+DESYNC_WINDOW = 60 * 60  # 60 minutes
+
+class SafetyCore:
+    def __init__(self):
+        self.strategies = {
+            "SCALP_FAST": StrategyState("SCALP_FAST"),
+            "SCALP_PULLBACK": StrategyState("SCALP_PULLBACK"),
+            "BREAKOUT": StrategyState("BREAKOUT")
+        }
+        self.last_sequence = 0
+        self.system_status = "OPERATIONAL"  # OPERATIONAL / DEGRADED / HALTED
+        self.desync_window_start = time.time()
+        # Legacy compatibility
+        self.state = TradeState.IDLE
+        self.active_trades = {"1m": 0, "5m": 0}
+        self.last_state_change = time.time()
+        self.desync_count = 0
+
+    def get_strategy(self, strategy_id: str) -> StrategyState:
+        return self.strategies.get(strategy_id, self.strategies["SCALP_FAST"])
+    
+    def set_state(self, new_state: TradeState, strategy_id: str = "SCALP_FAST"):
+        strategy = self.get_strategy(strategy_id)
+        strategy.set_state(new_state)
+        # Legacy compatibility
+        self.state = new_state
+        self.last_state_change = time.time()
+        logger.info(f"[SAFETY] State Transition: {self.state.name} -> {new_state.name}")
+
+    def emit_event(self, strategy_id: str, event_type: str, data: dict) -> bool:
         self.last_sequence += 1
-        # Event delivery simulation
-        logger.info(f"[EVENT][#{self.last_sequence}] {event_type}: {data}")
+        logger.info(f"[EVENT][{strategy_id}][#{self.last_sequence}] {event_type}: {data}")
         return True
 
-    def handle_critical_failure(self, level):
+    def register_desync(self, strategy_id: str):
+        strategy = self.get_strategy(strategy_id)
+        strategy.desync_count += 1
+        strategy.metrics["desync_events"] += 1
+        
+        # Reset window if needed
+        if time.time() - self.desync_window_start > DESYNC_WINDOW:
+            self.desync_window_start = time.time()
+            for s in self.strategies.values():
+                s.desync_count = 0
+        
+        if strategy.desync_count >= MAX_DESYNC:
+            self.halt_strategy(strategy_id, "MAX_DESYNC_REACHED")
+    
+    def halt_strategy(self, strategy_id: str, reason: str):
+        strategy = self.get_strategy(strategy_id)
+        strategy.status = "HALTED"
+        logger.error(f"🛑 [{strategy_id}] HALTED: {reason}")
+        self.update_system_status()
+    
+    def update_system_status(self):
+        halted_count = sum(1 for s in self.strategies.values() if s.status == "HALTED")
+        if halted_count == len(self.strategies):
+            self.system_status = "HALTED"
+        elif halted_count > 0:
+            self.system_status = "DEGRADED"
+        else:
+            self.system_status = "OPERATIONAL"
+
+    def handle_critical_failure(self, level: str, strategy_id: str = None):
         logger.critical(f"🛑 CRITICAL FAILURE: {level}")
         if level == "CATASTROPHIC":
             self.shutdown()
+        elif level == "SEVERE" and strategy_id:
+            self.halt_strategy(strategy_id, "SEVERE_FAILURE")
         elif level == "SEVERE":
             self.enter_safe_mode()
 
@@ -255,32 +507,99 @@ class SafetyCore:
 
     def shutdown(self):
         logger.critical("🔥 SYSTEM SHUTDOWN INITIATED")
-        # cancel_all_orders()
-        # dump_state_to_disk()
         os._exit(137)
+    
+    def get_health_status(self) -> dict:
+        return {
+            "system_status": self.system_status,
+            "strategy_status": {
+                sid: s.status for sid, s in self.strategies.items()
+            }
+        }
 
 safety_core = SafetyCore()
 
-# --- Execution Engine v4.4 ---
+# --- Execution Engine v4.5.PRO-FINAL ---
 MIN_TP_MARGIN = 0.00005
 
-def get_dynamic_tp_margin(analysis):
-    atr = analysis.get('atr', 0.001)
-    # Simplified simulation of spread/liquidity
-    return max(0.0001, MIN_TP_MARGIN, atr * 0.1)
+# 🟥 CLOSE STRATEGIES (ESCALATION ORDER)
+CLOSE_STRATEGIES = [
+    "MARKET",
+    "CANCEL_ALL_THEN_MARKET", 
+    "REDUCE_ONLY",
+    "EMERGENCY_CLOSE"
+]
 
-def force_close_trade(reason):
-    safety_core.set_state(BotState.CLOSING)
-    strategies = ["MARKET", "CANCEL_ALL_THEN_MARKET", "REDUCE_ONLY"]
-    for strategy in strategies:
-        for attempt in range(3):
-            # Simulation of execution
-            if True: # Success
-                safety_core.emit_event("TRADE_CLOSED", {"reason": reason, "strategy": strategy})
-                safety_core.set_state(BotState.CLOSED)
-                return True
-    safety_core.handle_critical_failure("CATASTROPHIC")
+def get_dynamic_tp_margin(analysis, best_bid=None, ask=None):
+    """
+    Dynamic TP margin based on spread and ATR
+    """
+    atr = analysis.get('atr', 0.001)
+    spread = abs(ask - best_bid) if (ask and best_bid) else 0.0001
+    return max(spread * 1.5, atr * 0.1, MIN_TP_MARGIN)
+
+def process_tick(tick_price: float, strategy_id: str, trade_id: str, 
+                 take_profit: float, analysis: dict) -> bool:
+    """
+    🟥 LAYER 1 — EXECUTION (TICK LEVEL)
+    TP يتجاوز كل: Time Lock, EMA, Trailing, Cooldown, AI
+    """
+    tp_margin = get_dynamic_tp_margin(analysis)
+    
+    # TP CHECK - HIGHEST PRIORITY
+    if tick_price >= (take_profit - tp_margin):
+        force_close_trade(strategy_id, trade_id, reason="TP_EXECUTED")
+        return True  # NOTHING ELSE RUNS
+    
     return False
+
+def force_close_trade(strategy_id: str, trade_id: str = None, reason: str = "UNKNOWN"):
+    """
+    FORCE CLOSE WITH ESCALATION
+    """
+    safety_core.set_state(TradeState.CLOSING, strategy_id)
+    strategy = safety_core.get_strategy(strategy_id)
+    
+    for method in CLOSE_STRATEGIES:
+        for attempt in range(3):
+            try:
+                # Execute close (simulation in paper trading)
+                if execute_close_method(method, trade_id):
+                    safety_core.emit_event(strategy_id, "TRADE_CLOSED", {
+                        "reason": reason, 
+                        "method": method,
+                        "trade_id": trade_id
+                    })
+                    safety_core.set_state(TradeState.CLOSED, strategy_id)
+                    
+                    # Update metrics
+                    if reason == "TP_EXECUTED":
+                        strategy.metrics["tp_hits"] += 1
+                    elif reason == "SL_HIT":
+                        strategy.metrics["sl_hits"] += 1
+                    elif reason == "EMA_FAILURE_EXIT":
+                        strategy.metrics["ema_exits"] += 1
+                    elif reason == "MAX_TIME_ESCAPE":
+                        strategy.metrics["max_time_escapes"] += 1
+                    
+                    strategy.metrics["total_trades"] += 1
+                    return True
+            except Exception as e:
+                logger.error(f"[{strategy_id}] Close attempt {attempt+1} failed: {e}")
+                time.sleep(0.05)  # 50ms retry delay
+    
+    # All strategies failed
+    safety_core.handle_critical_failure("CATASTROPHIC", strategy_id)
+    return False
+
+def execute_close_method(method: str, trade_id: str) -> bool:
+    """Execute specific close method (paper trading simulation)"""
+    logger.info(f"[EXEC] Closing trade {trade_id} via {method}")
+    return True  # Paper trading always succeeds
+
+# Legacy compatibility wrapper
+def force_close_trade_legacy(reason):
+    return force_close_trade("SCALP_FAST", None, reason)
 
 # --- Backpressure & Limits ---
 MAX_CONCURRENT_TRADES = {"1m": 2, "5m": 1}
@@ -774,8 +1093,8 @@ DOWNTREND_ALERT_COOLDOWN = 300  # 5 minutes in seconds
 
 ATR_PERIOD = 14
 ATR_MULTIPLIER = 2.0
-    # Logic Change v3.7.7: Added Diagnostic Counters and /health UI.
-VERSION = "v4.4.PRO-FINAL"
+    # Logic Change v4.5: Multi-Strategy Isolated Architecture
+VERSION = "v4.5.PRO-FINAL"
 LOSS_EVENTS_FILE = "loss_events.csv"
 loss_counters = {
     "STOP_HUNT": 0,

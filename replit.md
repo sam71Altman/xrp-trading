@@ -1,14 +1,36 @@
-# XRP/USDT Telegram Signals Bot v4.4.PRO-FINAL
+# XRP/USDT Telegram Signals Bot v4.5.PRO-FINAL
 
 ## Overview
 
 A Python Telegram trading signals bot for XRP/USDT that runs paper trading simulations with a multi-layer Kill Switch protection system, Smart Adaptive Trading System, and Governed AI Intelligence layer. It fetches price data from Binance API (read-only), analyzes using EMA crossover and breakout strategies, and sends buy/exit signals to Telegram.
 
-### Banking-Grade Execution & Safety (v4.4.PRO-FINAL)
-- **TP = Military Order**: Immediate execution overriding all logic.
-- **Safety Core**: State-machine driven execution to prevent ghost trades or desync.
-- **Circuit Breaker**: Session-based risk management (max trades, max loss).
-- **Industrial Governance**: EMA exits are failure diagnostics, not reflexes.
+### Strategy-Isolated Production-Grade Architecture (v4.5.PRO-FINAL)
+
+**SYSTEM PHILOSOPHY (ABSOLUTE – NON-NEGOTIABLE)**
+- TP = EXECUTION EVENT (إغلاق فوري)
+- SL = FINAL SAFETY EXIT
+- EMA Exit = CONFIRMED FAILURE JUDGMENT فقط
+- ENTRY LOGIC = UNTOUCHED
+- EXECUTION ENGINE = SINGLE SOURCE OF TRUTH
+- UI = VIEW ONLY
+- FAILURE IS ISOLATED PER STRATEGY
+- SAFETY > AVAILABILITY
+
+**Multi-Strategy Architecture**
+- SCALP_FAST: 1m/5m frames with isolated state
+- SCALP_PULLBACK: 5m frame with isolated state
+- BREAKOUT: 15m frame with isolated state
+
+**Execution Priority (IMMUTABLE ORDER)**
+1. TAKE_PROFIT (Tick-level, HARD STOP)
+2. STOP_LOSS
+3. EMERGENCY_CLOSE
+4. EMA_FAILURE_EXIT
+5. MAX_TIME_ESCAPE
+
+**Smart Trailing SL**
+- 1M: Activate @ +0.20%, Lock @ +0.10%, Step = 0.05%
+- 5M: Activate @ +0.35%, Lock @ +0.18%, Step = 0.10%
 
 ## User Preferences
 
