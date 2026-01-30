@@ -63,6 +63,18 @@ def detect_bearish_strength(candle):
         return "MEDIUM"
     return "WEAK"
 
+# TP CONTINUATION / PROTECTED RUNNER CONFIG (v4.5.PRO-FINAL)
+ENABLE_TP_CONTINUATION = False
+PARTIAL_CLOSE_PERCENT = 0.6  # 60%
+MAX_RUNNER_TIME = 60         # minutes
+
+RUNNER_METRICS = {
+    "runner_triggered": 0,
+    "avg_runner_profit": 0.0,
+    "runner_sl_hits": 0,
+    "runner_timeouts": 0
+}
+
 # 🟨 LAYER 2 — GOVERNANCE (EMA EXIT v4.5.PRO-FINAL)
 # EMA Exit = CONFIRMED FAILURE JUDGMENT فقط
 
@@ -1427,6 +1439,12 @@ class LegacyBotState:
         self.ema_exit_ignored_count: int = 0
         self.last_rejection_reason: str = "None"
         self.counters_last_reset: datetime = get_now()
+        
+        # Runner State (v4.5.PRO-FINAL)
+        self.runner_active: bool = False
+        self.runner_start_time: Optional[datetime] = None
+        self.runner_partial_closed: bool = False
+        self.runner_metrics = RUNNER_METRICS.copy()
 
     def reset_diagnostics(self):
         self.valid_entries = 0

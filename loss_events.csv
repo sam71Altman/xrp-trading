@@ -1,0 +1,3 @@
+timestamp,loss_type,pnl_pct,entry_price,exit_price
+2026-01-30 05:56:12,STOP_HUNT,-0.10,1.7493,1.7476
+2026-01-30 06:01:47,STOP_HUNT,-0.02,1.7492,1.7488
