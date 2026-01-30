@@ -1,0 +1,127 @@
+APPLY THE FOLLOWING PATCH EXACTLY.
+NO LOGIC CHANGES OUTSIDE STATE & SAFETY LAYERS.
+NO ENTRY / TP / SL MODIFICATIONS.
+
+========================================
+PATCH TYPE: CRITICAL BUGFIX + SAFETY HARDENING
+TARGET VERSION: v4.4.PRO-FINAL
+SCOPE: ALL STRATEGIES (STRATEGY-ISOLATED)
+========================================
+
+1️⃣ FIX ROOT CAUSE — BotState Enum (CRITICAL)
+
+Add missing ENTERED state.
+This is MANDATORY and BLOCKS ALL ENTRIES if missing.
+
+```python
+from enum import Enum
+
+class BotState(Enum):
+    IDLE = 0
+    ENTERED = 1        # REQUIRED — signal accepted, order pending
+    OPEN = 2
+    CLOSING = 3
+    CLOSED = 4
+❗ Do NOT replace ENTERED with OPEN
+❗ Do NOT bypass this state
+❗ All strategies MUST import this exact enum
+2️⃣ ENFORCE VALID STATE TRANSITIONS (NO SHORTCUTS)
+نسخ التعليمات البرمجية
+Python
+VALID_TRANSITIONS = {
+    BotState.IDLE: [BotState.ENTERED],
+    BotState.ENTERED: [BotState.OPEN, BotState.IDLE],
+    BotState.OPEN: [BotState.CLOSING],
+    BotState.CLOSING: [BotState.CLOSED],
+    BotState.CLOSED: [BotState.IDLE],
+}
+نسخ التعليمات البرمجية
+Python
+def transition_state(current, next_state):
+    if next_state not in VALID_TRANSITIONS[current]:
+        raise CriticalStateError(
+            f"Illegal transition {current} → {next_state}"
+        )
+    return next_state
+3️⃣ ENTRY FLOW — CORRECT & EXPLICIT
+نسخ التعليمات البرمجية
+Python
+# When signal is accepted (score, filters passed)
+state = transition_state(state, BotState.ENTERED)
+
+# After broker ACK / order confirmation
+state = transition_state(state, BotState.OPEN)
+❗ ENTERED = accepted signal
+❗ OPEN = confirmed live trade
+❗ Never merge these two
+4️⃣ STRATEGY-SCOPED STATE ISOLATION (CONFIRM)
+Each strategy MUST have its own state container.
+نسخ التعليمات البرمجية
+Python
+STRATEGY_STATE = {
+    "SCALP_FAST": BotState.IDLE,
+    "SCALP_PULLBACK": BotState.IDLE,
+    "BREAKOUT": BotState.IDLE,
+}
+❗ No global state for entries
+❗ Failures are scoped per strategy
+❗ Only CATASTROPHIC failures affect all
+5️⃣ FAIL-FAST GUARD (PREVENT SILENT FREEZE)
+نسخ التعليمات البرمجية
+Python
+REQUIRED_STATES = ["IDLE", "ENTERED", "OPEN", "CLOSING", "CLOSED"]
+
+for s in REQUIRED_STATES:
+    assert hasattr(BotState, s), f"Missing BotState.{s}"
+If assertion fails → SYSTEM HALT WITH LOG.
+6️⃣ ENTRY ENGINE SAFETY METRIC (NEW)
+نسخ التعليمات البرمجية
+Python
+ENTRY_ENGINE_METRICS = {
+    "signals_generated": 0,
+    "signals_discarded": 0,
+    "state_errors": 0,
+}
+On AttributeError / StateError:
+increment state_errors
+DO NOT silently discard signals
+7️⃣ LOGGING UPGRADE (MANDATORY)
+Every state change must log:
+نسخ التعليمات البرمجية
+
+[STATE] <STRATEGY> <OLD_STATE> → <NEW_STATE> | reason=<context>
+Example:
+نسخ التعليمات البرمجية
+
+[STATE] SCALP_FAST IDLE → ENTERED | score=7.3
+8️⃣ NO-TOUCH GUARANTEE (STRICT)
+The following are EXPLICITLY FORBIDDEN to change:
+❌ Entry conditions
+❌ TP logic
+❌ SL logic
+❌ EMA Exit rules
+❌ Scoring thresholds
+❌ Market filters
+Only: ✅ State Machine
+✅ Safety Guards
+✅ Logging
+✅ Diagnostics
+9️⃣ POST-FIX VALIDATION (REQUIRED)
+After restart, within 60 seconds logs MUST show:
+نسخ التعليمات البرمجية
+
+[FAST_SCALP] Entry allowed
+[STATE] IDLE → ENTERED
+(no AttributeError)
+And:
+نسخ التعليمات البرمجية
+
+ENTRY_ENGINE_FUNCTIONAL = TRUE
+signals_generated > 0
+If not → ROLLBACK.
+FINAL DIRECTIVE:
+• This patch is NOT optional
+• This patch does NOT change strategy behavior
+• This patch restores ENTRY ENGINE functionality
+• This patch completes the intended architecture
+IMPLEMENT EXACTLY AS SPECIFIED. NO INTERPRETATION. NO OPTIMIZATION. NO REFACTORING.

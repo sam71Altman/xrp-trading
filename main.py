@@ -371,13 +371,38 @@ STRATEGY_METRICS = {
 from enum import Enum
 
 class TradeState(Enum):
-    IDLE = 1
-    ENTERED = 2
-    OPEN = 3
-    CLOSING = 4
-    WAITING_CONFIRMATION = 5
-    CONFIRMED_CLOSED = 6
-    CLOSED = 7
+    IDLE = 0
+    ENTERED = 1        # REQUIRED — signal accepted, order pending
+    OPEN = 2
+    CLOSING = 3
+    CLOSED = 4
+
+# Validate BotState exactly as per patch
+REQUIRED_STATES = ["IDLE", "ENTERED", "OPEN", "CLOSING", "CLOSED"]
+for s in REQUIRED_STATES:
+    assert hasattr(TradeState, s), f"Missing BotState.{s}"
+
+VALID_TRANSITIONS = {
+    TradeState.IDLE: [TradeState.ENTERED],
+    TradeState.ENTERED: [TradeState.OPEN, TradeState.IDLE],
+    TradeState.OPEN: [TradeState.CLOSING],
+    TradeState.CLOSING: [TradeState.CLOSED],
+    TradeState.CLOSED: [TradeState.IDLE],
+}
+
+def transition_state(current, next_state):
+    if next_state not in VALID_TRANSITIONS[current]:
+        msg = f"Illegal transition {current} → {next_state}"
+        logger.error(f"❌ {msg}")
+        ENTRY_ENGINE_METRICS["state_errors"] += 1
+        raise ValueError(msg)
+    return next_state
+
+ENTRY_ENGINE_METRICS = {
+    "signals_generated": 0,
+    "signals_discarded": 0,
+    "state_errors": 0,
+}
 
 # Legacy alias for backward compatibility
 BotState = TradeState
@@ -408,10 +433,14 @@ class StrategyState:
         }
         self.status = "ACTIVE"  # ACTIVE / COOLDOWN / HALTED
     
-    def set_state(self, new_state: TradeState):
-        logger.info(f"[{self.strategy_id}] State: {self.state.name} -> {new_state.name}")
-        self.state = new_state
-        self.last_state_change = time.time()
+    def set_state(self, new_state: TradeState, reason="N/A"):
+        old_state = self.state
+        try:
+            self.state = transition_state(old_state, new_state)
+            logger.info(f"[STATE] {self.strategy_id} {old_state.name} → {new_state.name} | reason={reason}")
+            self.last_state_change = time.time()
+        except ValueError as e:
+            logger.error(f"[STATE_ERROR] {self.strategy_id} {e}")
     
     def is_in_cooldown(self) -> bool:
         return time.time() < self.cooldown_until
@@ -450,13 +479,12 @@ class SafetyCore:
     def get_strategy(self, strategy_id: str) -> StrategyState:
         return self.strategies.get(strategy_id, self.strategies["SCALP_FAST"])
     
-    def set_state(self, new_state: TradeState, strategy_id: str = "SCALP_FAST"):
+    def set_state(self, new_state: TradeState, strategy_id: str = "SCALP_FAST", reason="N/A"):
         strategy = self.get_strategy(strategy_id)
-        strategy.set_state(new_state)
+        strategy.set_state(new_state, reason)
         # Legacy compatibility
-        self.state = new_state
+        self.state = strategy.state
         self.last_state_change = time.time()
-        logger.info(f"[SAFETY] State Transition: {self.state.name} -> {new_state.name}")
 
     def emit_event(self, strategy_id: str, event_type: str, data: dict) -> bool:
         self.last_sequence += 1
