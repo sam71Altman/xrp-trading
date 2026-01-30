@@ -1140,6 +1140,11 @@ from trade_modes import (
     ai_system, ai_impact_guard, AISystem, AIImpactGuard, AI_MODES, AI_IMPACT_LEVELS, 
     AI_VERSION, HARD_RULES, FINAL_GUARANTEES
 )
+from ai_integration import (
+    init_ai_engine, get_ai_engine, check_ai_filter, record_trade_executed,
+    set_ai_mode, set_ai_weight, set_ai_limit, get_ai_status, is_trade_allowed
+)
+from trading_engine import TradeDecision
 
 # --- Configuration ---
 MODE = "PAPER"
@@ -1762,6 +1767,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await query.edit_message_text(f"📊 تم تغيير سقف التأثير إلى: {level_label}")
         else:
             await query.edit_message_text("❌ مستوى غير صالح")
+    
+    elif query.data.startswith("NEW_AI_MODE_"):
+        new_mode = query.data.replace("NEW_AI_MODE_", "")
+        result = set_ai_mode(new_mode)
+        await query.edit_message_text(f"🧠 {result}")
+    
+    elif query.data.startswith("NEW_AI_WEIGHT_"):
+        weight_name = query.data.replace("NEW_AI_WEIGHT_", "")
+        result = set_ai_weight(weight_name)
+        await query.edit_message_text(f"⚖️ {result}")
     
     elif query.data == "MAIN_MENU":
         await query.edit_message_text("🏠 القائمة الرئيسية\n\nاستخدم الأوامر للتنقل.")
@@ -3283,52 +3298,54 @@ async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_ai(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """لوحة تحكم الذكاء الاصطناعي"""
-    ai_status = ai_system.get_status()
+    """لوحة تحكم الذكاء الاصطناعي - v4.5.PRO-AI"""
+    new_ai = get_ai_status()
     guard_status = ai_impact_guard.get_status()
     
-    # Progress bar for usage
-    usage_pct = guard_status['usage_pct']
+    mode_emoji = {"OFF": "⚫", "LEARN": "🔵", "FULL": "🟢"}
+    weight_labels = {"0.0": "OFF", "0.3": "LOW", "0.6": "MEDIUM", "1.0": "HIGH"}
+    
+    current_mode = new_ai.get('mode', 'OFF')
+    current_weight = str(new_ai.get('weight', 0.6))
+    interventions = new_ai.get('daily_interventions', 0)
+    daily_limit = new_ai.get('daily_limit', 50)
+    limit_reached = new_ai.get('limit_reached', False)
+    cooldown = new_ai.get('cooldown_seconds', 30)
+    
+    usage_pct = (interventions / daily_limit * 100) if daily_limit > 0 else 0
     filled = int(usage_pct / 10)
     bar = "█" * filled + "░" * (10 - filled)
     
     message = f"""
-🧠 *لوحة تحكم الذكاء {SYSTEM_VERSION}*
+🧠 *لوحة تحكم الذكاء v4.5.PRO-AI*
 ════════════════════════════
 
-⚡ *حالة الذكاء:* {'✅ مفعل' if ai_status['enabled'] else '❌ معطل'}
-🎯 *الوضع:* {ai_status['mode_label']}
+{mode_emoji.get(current_mode, '⚪')} *الوضع:* {current_mode}
+⚖️ *الوزن:* {weight_labels.get(current_weight, current_weight)} ({current_weight})
+⏱️ *الكولدوان:* {cooldown} ثانية
 
-📊 *سقف التأثير:*
-├ المستوى: {guard_status['level_label']}
-├ الاستخدام: [{bar}] {usage_pct}%
-├ المتبقي: {guard_status['daily_max'] - guard_status['daily_used']} تعديل
-└ إعادة العد: {guard_status['time_to_reset']}
+📊 *سقف التدخلات:*
+├ الاستخدام: [{bar}] {usage_pct:.0f}%
+├ التدخلات: {interventions}/{daily_limit}
+└ الحد وصل: {'🔴 نعم' if limit_reached else '🟢 لا'}
 
-🛡️ *الضمانات:*
-├ حماية الصفقات: ✅
-├ الشمعة القادمة فقط: ✅
-├ إيقاف فوري: ✅
-└ شفافية كاملة: ✅
+🛡️ *السلوك:*
+├ OFF → كل الصفقات تمر
+├ LEARN → تحليل + سماح
+└ FULL → فلترة حقيقية
 """
     
-    # AI Control buttons
     keyboard = [
         [
-            InlineKeyboardButton(
-                "🔓 تعطيل" if ai_status['enabled'] else "🔒 تفعيل",
-                callback_data="AI_TOGGLE"
-            )
+            InlineKeyboardButton("⚫ OFF", callback_data="NEW_AI_MODE_OFF"),
+            InlineKeyboardButton("🔵 LEARN", callback_data="NEW_AI_MODE_LEARN"),
+            InlineKeyboardButton("🟢 FULL", callback_data="NEW_AI_MODE_FULL")
         ],
         [
-            InlineKeyboardButton("❌ OFF", callback_data="AI_MODE_OFF"),
-            InlineKeyboardButton("📚 LEARN", callback_data="AI_MODE_LEARN"),
-            InlineKeyboardButton("✅ FULL", callback_data="AI_MODE_FULL")
-        ],
-        [
-            InlineKeyboardButton("🟢 منخفض", callback_data="AI_LEVEL_LOW"),
-            InlineKeyboardButton("🟡 متوسط", callback_data="AI_LEVEL_MEDIUM"),
-            InlineKeyboardButton("🔴 عالي", callback_data="AI_LEVEL_HIGH")
+            InlineKeyboardButton("⚪ 0.0", callback_data="NEW_AI_WEIGHT_OFF"),
+            InlineKeyboardButton("🟡 0.3", callback_data="NEW_AI_WEIGHT_LOW"),
+            InlineKeyboardButton("🟠 0.6", callback_data="NEW_AI_WEIGHT_MEDIUM"),
+            InlineKeyboardButton("🔴 1.0", callback_data="NEW_AI_WEIGHT_HIGH")
         ],
         [InlineKeyboardButton("🏠 رجوع", callback_data="MAIN_MENU")]
     ]
@@ -4192,7 +4209,6 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                 
                 # LPEM Filter (v3.7.2)
                 if state.lpem_active and state.lpem_direction == "LONG":
-                    # حساب منطقة المنع
                     current_band = PRICE_REENTRY_BAND * 0.6 if state.lpem_strict_mode else PRICE_REENTRY_BAND
                     diff_pct = abs((entry_price - state.lpem_exit_price) / state.lpem_exit_price) * 100
                     
@@ -4200,16 +4216,24 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                         logger.info(f"🚫 [LPEM] Blocked Entry: Price within band ({diff_pct:.4f}% <= {current_band}%)")
                         return
                 
-                # --- MANDATORY FIX: Define targets before any potential failure/return ---
+                # --- AI FILTER CHECK (v4.5.PRO-AI) ---
+                ai_result = check_ai_filter(SYMBOL, analysis, candles, True)
+                if not is_trade_allowed(ai_result):
+                    logger.info(f"🚫 [AI FILTER] Blocked: {ai_result.decision.value} | score={ai_result.score} | weight={ai_result.weight}")
+                    return
+                
                 tp, sl = calculate_targets(entry_price, candles)
                 
-                # Fixed Score Calculation: Single source of truth ({BOT_VERSION})
                 score, reasons = calculate_signal_score(analysis, candles)
                 state.last_signal_score = score
                 state.last_signal_reasons = reasons
                 state.last_signal_reason = ", ".join(reasons)
+                
+                if ai_result.score:
+                    reasons.append(f"AI:{ai_result.score:.2f}")
 
                 qty = execute_paper_buy(entry_price, score, reasons, tp, sl)
+                record_trade_executed(SYMBOL)
                 log_trade("BUY", state.last_signal_reason, entry_price, None)
                 
                 msg = format_buy_message(entry_price, tp, sl, state.timeframe, score, qty)
@@ -4260,6 +4284,12 @@ async def main() -> None:
     check_local_version_definitions()
     # Start Price Engine
     PriceEngine.start()
+    
+    # Initialize AI Filter Engine (v4.5.PRO-AI)
+    def dummy_execute(symbol: str, direction: str, amount: float) -> bool:
+        return True
+    init_ai_engine(dummy_execute)
+    logger.info("[AI ENGINE] Initialized successfully")
     
     tg_token = os.environ.get("TG_TOKEN")
     chat_id = os.environ.get("TG_CHAT_ID")
