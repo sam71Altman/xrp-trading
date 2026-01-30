@@ -2898,6 +2898,12 @@ def execute_paper_exit(entry_price: float, exit_price: float, reason: str,
     paper_state.entry_reason = ""
     exit_intel.stop_monitoring() # Stop Intel (v3.7)
     
+    # --- MANDATORY STATE RESET (v4.5.PRO-FIX) ---
+    safety_core.active_trades[state.timeframe] = 0
+    state.hold_active = False
+    state.last_entry_block_reason = None
+    logger.info(f"[STATE_RESET] Backpressure and Hold logic cleared after {reason} exit.")
+    
     # 🔓 DECOUPLED UI UPDATE (Non-blocking)
     exit_msg = format_exit_message(entry_price, exit_price, pnl_pct, pnl_usdt, reason, duration_min, paper_state.balance)
     update_ui_async(exit_msg, "exit_signal")
@@ -4119,6 +4125,12 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
         market_mode = "EASY_MARKET" if (ema20 > ema50 and ema50 > ema200) else "HARD_MARKET"
         score = analysis.get('score', 0)
         rsi = analysis.get('rsi', 50)
+
+        # --- PRIORITY ORDER ENFORCEMENT (v4.5.PRO-FIX) ---
+        if check_backpressure(state.timeframe):
+            logger.warning(f"[ENTRY_BLOCKED] reason=BACKPRESSURE remaining=WAIT")
+            return
+
         logger.warning(
             f"[HOLD PROBE] mode={market_mode}, "
             f"score={score}, rsi={rsi:.1f}, "
