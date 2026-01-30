@@ -370,24 +370,14 @@ STRATEGY_METRICS = {
 # --- Architecture & State Machine v4.5.PRO-FINAL ---
 from enum import Enum
 
-class TradeState(Enum):
-    IDLE = 0
-    ENTERED = 1        # REQUIRED — signal accepted, order pending
-    OPEN = 2
-    CLOSING = 3
-    CLOSED = 4
-
-# Validate BotState exactly as per patch
-REQUIRED_STATES = ["IDLE", "ENTERED", "OPEN", "CLOSING", "CLOSED"]
-for s in REQUIRED_STATES:
-    assert hasattr(TradeState, s), f"Missing BotState.{s}"
+from core.state import BotState
 
 VALID_TRANSITIONS = {
-    TradeState.IDLE: [TradeState.ENTERED],
-    TradeState.ENTERED: [TradeState.OPEN, TradeState.IDLE],
-    TradeState.OPEN: [TradeState.CLOSING],
-    TradeState.CLOSING: [TradeState.CLOSED],
-    TradeState.CLOSED: [TradeState.IDLE],
+    BotState.IDLE: [BotState.ENTERED],
+    BotState.ENTERED: [BotState.OPEN, BotState.IDLE],
+    BotState.OPEN: [BotState.CLOSING],
+    BotState.CLOSING: [BotState.CLOSED],
+    BotState.CLOSED: [BotState.IDLE],
 }
 
 def transition_state(current, next_state):
@@ -405,7 +395,7 @@ ENTRY_ENGINE_METRICS = {
 }
 
 # Legacy alias for backward compatibility
-BotState = TradeState
+TradeState = BotState
 
 # 🧱 STRATEGY TYPES (ISOLATED)
 class StrategyType(Enum):
@@ -433,7 +423,7 @@ class StrategyState:
         }
         self.status = "ACTIVE"  # ACTIVE / COOLDOWN / HALTED
     
-    def set_state(self, new_state: TradeState, reason="N/A"):
+    def set_state(self, new_state: BotState, reason="N/A"):
         old_state = self.state
         try:
             self.state = transition_state(old_state, new_state)
@@ -479,7 +469,7 @@ class SafetyCore:
     def get_strategy(self, strategy_id: str) -> StrategyState:
         return self.strategies.get(strategy_id, self.strategies["SCALP_FAST"])
     
-    def set_state(self, new_state: TradeState, strategy_id: str = "SCALP_FAST", reason="N/A"):
+    def set_state(self, new_state: BotState, strategy_id: str = "SCALP_FAST", reason="N/A"):
         strategy = self.get_strategy(strategy_id)
         strategy.set_state(new_state, reason)
         # Legacy compatibility
