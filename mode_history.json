@@ -108,5 +108,15 @@
     "timestamp": "2026-01-30T06:00:09.625101",
     "from": "DEFAULT",
     "to": "FAST_SCALP"
+  },
+  {
+    "timestamp": "2026-01-30T06:08:04.235967",
+    "from": "DEFAULT",
+    "to": "FAST_SCALP"
+  },
+  {
+    "timestamp": "2026-01-30T06:12:18.644271",
+    "from": "DEFAULT",
+    "to": "FAST_SCALP"
   }
 ]
