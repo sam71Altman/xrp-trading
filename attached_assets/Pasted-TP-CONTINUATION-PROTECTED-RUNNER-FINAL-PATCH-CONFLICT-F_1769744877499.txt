@@ -1,0 +1,153 @@
+TP CONTINUATION / PROTECTED RUNNER
+FINAL PATCH — CONFLICT-FREE, PRODUCTION SAFE
+🎯 الهدف
+تمكين FAST_SCALP_AGGRESSIVE من الاستفادة من الامتدادات القوية بعد TP
+مع إلغاء أي تعارض مع أنظمة الخروج الأخرى (EMA / Governance).
+🧭 النطاق (STRICT)
+✅ FAST_SCALP_AGGRESSIVE فقط
+❌ لا تأثير على SCALP_PULLBACK
+❌ لا تأثير على BREAKOUT
+❌ لا تعديل Entry / TP / Position Size
+🔘 Flags (واضحة وغير ملتبسة)
+نسخ التعليمات البرمجية
+Python
+ENABLE_TP_CONTINUATION = True        # يتم التفعيل صراحة
+PARTIAL_CLOSE_PERCENT = 0.6          # 60% إغلاق عند TP
+MAX_RUNNER_TIME = 60                 # بالدقائق
+إذا ENABLE_TP_CONTINUATION = False
+➜ يعود السلوك القديم 100% بدون أي تغيير
+🧱 المبدأ الأساسي
+نسخ التعليمات البرمجية
+
+TP = Decision Point
+ليس إغلاقاً أعمى
+إما:
+إغلاق طبيعي (Legacy)
+أو التحول إلى Protected Runner
+🔁 تسلسل التنفيذ (ملزم)
+1️⃣ لمس TP (Tick-Level)
+❌ لا يتم الإغلاق فوراً
+2️⃣ تأكيد اختراق حقيقي (Mandatory)
+نسخ التعليمات البرمجية
+Python
+tp_confirmed = candle.close > TP
+يمنع fake breakouts
+بدون إغلاق شمعة ➜ لا Runner
+3️⃣ إغلاق جزئي (موصى به)
+نسخ التعليمات البرمجية
+Python
+PARTIAL_CLOSE_PERCENT = 0.6
+إذا = 1.0 ➜ سلوك TP القديم
+المتبقي يتحول إلى Runner
+4️⃣ رفع وقف الخسارة (إجباري – Risk Free)
+نسخ التعليمات البرمجية
+Python
+local_low = lowest(low, 5)
+ema_fast_support = EMA(20)
+
+new_sl = max(
+    entry_price,
+    local_low,
+    ema_fast_support
+)
+بعد هذه الخطوة: الصفقة Risk-Free فعلياً
+🧲 5️⃣ شروط الاستمرار (ALL REQUIRED)
+نسخ التعليمات البرمجية
+Python
+CONTINUE_IF = (
+    RSI > 55 and
+    volume >= avg_volume and
+    MACD_histogram > 0 and
+    price > VWAP and
+    not rejection_candle
+)
+❌ فشل أي شرط ➜ إغلاق Runner فوراً
+📈 6️⃣ Trailing Logic (متدرج – غير عدواني)
+نسخ التعليمات البرمجية
+Python
+if profit_pct >= 2:
+    trail_sl = entry_price * 1.01
+elif profit_pct >= 3:
+    trail_sl = entry_price * 1.015
+elif profit_pct >= 5:
+    trail_sl = entry_price * 1.02
+ATR-based override مسموح
+❌ لا Trailing سريع (يحمي السكالب)
+⏱️ 7️⃣ حد زمني إلزامي
+نسخ التعليمات البرمجية
+Python
+MAX_RUNNER_TIME = 60  # minutes
+يمنع تحول السكالب إلى Swing
+انتهاء الوقت ➜ Market Close
+🚪 8️⃣ خروج ضعف الزخم (Mandatory Escape)
+نسخ التعليمات البرمجية
+Python
+if volume < avg_volume * 0.7 and RSI < 60:
+    close_runner(reason="MOMENTUM_FADE")
+🧯 9️⃣ RUNNER GUARD — إصلاح التعارض (CRITICAL)
+القاعدة:
+نسخ التعليمات البرمجية
+
+RUNNER_ACTIVE = True
+⇒ Runner owns the trade
+⇒ ALL other exit systems are DISABLED
+التنفيذ الإجباري:
+نسخ التعليمات البرمجية
+Python
+def manage_trade_exits(trade):
+    if trade.runner_active:
+        log("[RUNNER_GUARD] All external exits skipped (runner active)")
+
+        check_runner_sl()
+        check_runner_trailing_sl()
+        check_runner_momentum_fade()
+        check_runner_timeout()
+
+        return  # ⛔ يمنع أي نظام آخر
+
+    # Legacy behavior (only if NOT runner)
+    check_ema_exit_v3_1()
+    check_global_governance()
+يتم تعطيل:
+EMA Exit v3.1
+Global Governance (كامل)
+AI Exit
+Time Locks
+أي Safety Exit غير Runner
+📊 10️⃣ Metrics إلزامية
+نسخ التعليمات البرمجية
+Python
+RUNNER_METRICS = {
+    "runner_triggered": count,
+    "avg_runner_profit": pct,
+    "runner_sl_hits": count,
+    "runner_timeouts": count,
+    "momentum_fade_exits": count
+}
+🧾 11️⃣ Logging شفاف (إجباري)
+نسخ التعليمات البرمجية
+Text
+[TP_CONTINUATION] activated
+[PARTIAL_CLOSE] 60%
+[SL_RAISED] to 1.7482
+[RUNNER_GUARD] EMA/GOVERNANCE skipped
+[RUNNER_EXIT] reason=TRAIL_HIT profit=+1.9%
+🚫 محظورات صارمة
+❌ لا تعديل Entry Logic
+❌ لا تغيير TP الأصلي
+❌ لا تأثير على Execution Priority
+❌ لا تعديل أنظمة أخرى
+🔄 Fallback مضمون
+نسخ التعليمات البرمجية
+Python
+ENABLE_TP_CONTINUATION = False
+➜ النظام يعود كما كان تماماً بدون أي أثر جانبي
+✅ شرط القبول النهائي (Acceptance Criteria)
+يعتبر التحديث ناجح فقط إذا:
+يظهر [RUNNER_GUARD] في الكونسول
+لا يظهر أي EMA Exit أثناء Runner
+الصفقة لا تُغلق إلا:
+SL محمي
+Trailing
+Momentum Fade
+Timeout
