@@ -809,7 +809,7 @@ def check_buy_signal(analysis, candles):
         if score >= min_score:
             state.valid_entries += 1
             logger.info(f"[FAST_SCALP] Entry allowed: score={score}, price={current_price}")
-            safety_core.set_state(BotState.ENTERED)
+            safety_core.set_state(BotState.ENTERED, strategy_id="SCALP_FAST", reason="FAST_SCALP_SIGNAL")
             safety_core.active_trades[state.timeframe] += 1
             return True
         state.rejected_entries += 1
