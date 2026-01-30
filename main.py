@@ -2902,7 +2902,9 @@ def execute_paper_exit(entry_price: float, exit_price: float, reason: str,
     safety_core.active_trades[state.timeframe] = 0
     state.hold_active = False
     state.last_entry_block_reason = None
-    logger.info(f"[STATE_RESET] Backpressure and Hold logic cleared after {reason} exit.")
+    state.pause_until = None  # Force clear cooldown/pause
+    state.consecutive_losses = 0 # Reset loss counter to prevent immediate pause
+    logger.info(f"[STATE_RESET] Backpressure, Hold, Cooldown, and Losses cleared after {reason} exit.")
     
     # 🔓 DECOUPLED UI UPDATE (Non-blocking)
     exit_msg = format_exit_message(entry_price, exit_price, pnl_pct, pnl_usdt, reason, duration_min, paper_state.balance)
@@ -4195,14 +4197,13 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                         logger.info(f"🚫 [LPEM] Blocked Entry: Price within band ({diff_pct:.4f}% <= {current_band}%)")
                         return
                 
-                tp, sl = calculate_targets(entry_price, candles)
-                
                 # Fixed Score Calculation: Single source of truth ({BOT_VERSION})
                 score, reasons = calculate_signal_score(analysis, candles)
                 state.last_signal_score = score
                 state.last_signal_reasons = reasons
                 state.last_signal_reason = ", ".join(reasons)
 
+                tp, sl = calculate_targets(entry_price, candles)
                 qty = execute_paper_buy(entry_price, score, reasons)
                 log_trade("BUY", state.last_signal_reason, entry_price, None)
                 
