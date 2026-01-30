@@ -2382,6 +2382,75 @@ def calculate_targets(entry_price: float, candles: List[dict]) -> tuple:
     sl = entry_price * (1 - STOP_LOSS_PCT / 100)
     return tp, sl
 
+def manage_trade_exits(analysis: dict, candles: List[dict]) -> Optional[str]:
+    """
+    🧯 RUNNER GUARD — إصلاح التعارض (CRITICAL)
+    القاعدة:
+    RUNNER_ACTIVE = True
+    ⇒ Runner owns the trade
+    ⇒ ALL other exit systems are DISABLED
+    """
+    if state.runner_active:
+        logger.info("[RUNNER_GUARD] All external exits skipped (runner active)")
+        
+        current_price = analysis["close"]
+        entry_price = state.entry_price
+        pnl_pct = ((current_price - entry_price) / entry_price) * 100
+        
+        # ⏱️ 1. Timeout (MAX 60 minutes)
+        runner_elapsed = (get_now() - state.runner_start_time).total_seconds() / 60 if state.runner_start_time else 0
+        if runner_elapsed >= MAX_RUNNER_TIME:
+            logger.info(f"[RUNNER_EXIT] reason=TIMEOUT profit={pnl_pct:.4f}%")
+            update_runner_metrics(pnl_pct, "RUNNER_TIMEOUT")
+            RUNNER_METRICS["runner_timeouts"] += 1
+            state.runner_active = False
+            force_close_trade("RUNNER_TIMEOUT")
+            circuit_breaker_logic.record_trade(pnl_pct)
+            state.position_open = False
+            return "runner_timeout"
+            
+        # 🛡️ 2. SL Hit
+        if state.runner_sl is not None and current_price <= state.runner_sl:
+            logger.info(f"[RUNNER_EXIT] reason=SL_HIT profit={pnl_pct:.4f}%")
+            update_runner_metrics(pnl_pct, "RUNNER_SL_HIT")
+            RUNNER_METRICS["runner_sl_hits"] += 1
+            state.runner_active = False
+            force_close_trade("RUNNER_SL_HIT")
+            circuit_breaker_logic.record_trade(pnl_pct)
+            state.position_open = False
+            return "runner_sl_hit"
+            
+        # 📈 3. Trailing Update
+        new_trail_sl = calculate_runner_trailing_sl(entry_price, current_price)
+        if new_trail_sl > (state.runner_sl or entry_price):
+            state.runner_sl = new_trail_sl
+            logger.info(f"[TP_CONTINUATION] Trail SL raised to {new_trail_sl:.4f}")
+
+        # 🚪 4. Momentum Fade
+        if check_runner_momentum_fade(analysis, candles):
+            logger.info(f"[RUNNER_EXIT] reason=MOMENTUM_FADE profit={pnl_pct:.4f}%")
+            update_runner_metrics(pnl_pct, "MOMENTUM_FADE")
+            state.runner_active = False
+            force_close_trade("MOMENTUM_FADE")
+            circuit_breaker_logic.record_trade(pnl_pct)
+            state.position_open = False
+            return "runner_momentum_fade"
+
+        # 🧲 5. Conditions Failure
+        if not check_runner_continuation_conditions(analysis, candles):
+            logger.info(f"[RUNNER_EXIT] reason=CONDITIONS_FAILED profit={pnl_pct:.4f}%")
+            update_runner_metrics(pnl_pct, "CONDITIONS_FAILED")
+            state.runner_active = False
+            force_close_trade("RUNNER_CONDITIONS_FAILED")
+            circuit_breaker_logic.record_trade(pnl_pct)
+            state.position_open = False
+            return "runner_conditions_failed"
+
+        return None
+
+    # Legacy behavior (only if NOT runner)
+    return check_exit_signal(analysis, candles)
+
 def check_exit_signal(analysis: dict, candles: List[dict]) -> Optional[str]:
     if not state.position_open or state.entry_price is None:
         return None
@@ -2391,62 +2460,7 @@ def check_exit_signal(analysis: dict, candles: List[dict]) -> Optional[str]:
     pnl_pct = ((current_price - entry_price) / entry_price) * 100
     tp_price = entry_price * (1 + TAKE_PROFIT_PCT / 100)
     
-    # ═══════════════════════════════════════════════════════════════════════
-    # 🏃 PROTECTED RUNNER MANAGEMENT (v4.5.PRO-FINAL)
-    # ═══════════════════════════════════════════════════════════════════════
-    if state.runner_active:
-        runner_elapsed = (get_now() - state.runner_start_time).total_seconds() / 60 if state.runner_start_time else 0
-        
-        # ⏱️ حد زمني للـ Runner (MAX 60 minutes)
-        if runner_elapsed >= MAX_RUNNER_TIME:
-            logger.info(f"[TP_CONTINUATION] Runner TIMEOUT after {runner_elapsed:.1f} mins")
-            update_runner_metrics(pnl_pct, "RUNNER_TIMEOUT")
-            RUNNER_METRICS["runner_timeouts"] += 1
-            state.runner_active = False
-            force_close_trade("RUNNER_TIMEOUT")
-            circuit_breaker_logic.record_trade(pnl_pct)
-            state.position_open = False
-            return "runner_timeout"
-        
-        # 🧯 Runner SL Hit (أمان مطلق - Market Close فوري)
-        if state.runner_sl is not None and current_price <= state.runner_sl:
-            logger.info(f"[TP_CONTINUATION] Runner SL HIT at {state.runner_sl:.4f}")
-            update_runner_metrics(pnl_pct, "RUNNER_SL_HIT")
-            RUNNER_METRICS["runner_sl_hits"] += 1
-            state.runner_active = False
-            force_close_trade("RUNNER_SL_HIT")
-            circuit_breaker_logic.record_trade(pnl_pct)
-            state.position_open = False
-            return "runner_sl_hit"
-        
-        # 🚪 خروج ضعف الزخم (Mandatory Escape)
-        if check_runner_momentum_fade(analysis, candles):
-            logger.info(f"[TP_CONTINUATION] MOMENTUM_FADE detected - closing runner")
-            update_runner_metrics(pnl_pct, "MOMENTUM_FADE")
-            state.runner_active = False
-            force_close_trade("MOMENTUM_FADE")
-            circuit_breaker_logic.record_trade(pnl_pct)
-            state.position_open = False
-            return "runner_momentum_fade"
-        
-        # 🧲 فحص شروط الاستمرار
-        if not check_runner_continuation_conditions(analysis, candles):
-            logger.info(f"[TP_CONTINUATION] Continuation conditions FAILED - closing runner")
-            update_runner_metrics(pnl_pct, "CONDITIONS_FAILED")
-            state.runner_active = False
-            force_close_trade("RUNNER_CONDITIONS_FAILED")
-            circuit_breaker_logic.record_trade(pnl_pct)
-            state.position_open = False
-            return "runner_conditions_failed"
-        
-        # 📈 Trailing Logic (متدرج + آمن)
-        new_trail_sl = calculate_runner_trailing_sl(entry_price, current_price)
-        if new_trail_sl > (state.runner_sl or entry_price):
-            state.runner_sl = new_trail_sl
-            logger.info(f"[TP_CONTINUATION] Trail SL raised to {new_trail_sl:.4f}")
-        
-        # Runner still active, continue monitoring
-        return None
+    # 🏃 Runner management is now handled in manage_trade_exits wrapper
     
     # ═══════════════════════════════════════════════════════════════════════
     # v3.3: TP Trigger Logic (with TP CONTINUATION support)
@@ -2476,7 +2490,6 @@ def check_exit_signal(analysis: dict, candles: List[dict]) -> Optional[str]:
                     partial_pnl = pnl_pct * PARTIAL_CLOSE_PERCENT
                     logger.info(f"[PARTIAL_CLOSE] {PARTIAL_CLOSE_PERCENT*100:.0f}% closed | Partial PnL: {partial_pnl:.4f}%")
                     state.runner_partial_closed = True
-                    # Note: In live trading, execute partial close here
                 
                 # 🛡️ 4️⃣ رفع وقف الخسارة (إجباري)
                 new_runner_sl = calculate_runner_sl(entry_price, current_price, candles, analysis)
@@ -2503,8 +2516,6 @@ def check_exit_signal(analysis: dict, candles: List[dict]) -> Optional[str]:
             latency = (time.time() - start_exec) * 1000
             SYSTEM_HEALTH["tp_execution_latency_p99"] = latency
             logger.info(f"🎯 TP EXECUTED | Latency: {latency:.2f}ms")
-            if latency > 50:
-                logger.warning("⚠️ TP LATENCY BREACH (> 50ms)")
             
             circuit_breaker_logic.record_trade(pnl_pct)
             state.position_open = False
@@ -4013,7 +4024,7 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                 return
         
         if state.position_open and state.entry_price is not None:
-            exit_reason = check_exit_signal(analysis, candles)
+            exit_reason = manage_trade_exits(analysis, candles)
             if exit_reason:
                 exit_price = analysis["close"]
                 duration = get_trade_duration_minutes()
