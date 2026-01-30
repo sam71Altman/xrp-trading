@@ -2902,9 +2902,9 @@ def execute_paper_exit(entry_price: float, exit_price: float, reason: str,
     safety_core.active_trades[state.timeframe] = 0
     state.hold_active = False
     state.last_entry_block_reason = None
-    state.pause_until = None  # Force clear cooldown/pause
+    state.pause_until = 0  # Force clear cooldown/pause (Safe integer reset)
     state.consecutive_losses = 0 # Reset loss counter to prevent immediate pause
-    logger.info(f"[STATE_RESET] Backpressure, Hold, Cooldown, and Losses cleared after {reason} exit.")
+    logger.info(f"[STATE_RESET] Backpressure, Hold, Cooldown (Safe Reset), and Losses cleared after {reason} exit.")
     
     # 🔓 DECOUPLED UI UPDATE (Non-blocking)
     exit_msg = format_exit_message(entry_price, exit_price, pnl_pct, pnl_usdt, reason, duration_min, paper_state.balance)
