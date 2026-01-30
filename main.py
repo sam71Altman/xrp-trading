@@ -2737,6 +2737,10 @@ def execute_paper_buy(price: float, score: int, reasons: List[str]) -> float:
         paper_state.balance, score, paper_state.entry_reason,
         "", 0
     )
+    # 🔓 DECOUPLED UI UPDATE (Non-blocking)
+    buy_msg = format_buy_message(price, tp, sl, state.timeframe, score, qty)
+    update_ui_async(buy_msg, "buy_signal")
+
     return qty
 
 
@@ -2894,8 +2898,50 @@ def execute_paper_exit(entry_price: float, exit_price: float, reason: str,
     paper_state.entry_reason = ""
     exit_intel.stop_monitoring() # Stop Intel (v3.7)
     
+    # 🔓 DECOUPLED UI UPDATE (Non-blocking)
+    exit_msg = format_exit_message(entry_price, exit_price, pnl_pct, pnl_usdt, reason, duration_min, paper_state.balance)
+    update_ui_async(exit_msg, "exit_signal")
+    
     return pnl_pct, pnl_usdt, paper_state.balance
 
+
+def update_ui_async(text: str, msg_type: str = "status"):
+    """
+    تحديث الواجهة بشكل غير حاجز (Non-blocking status update)
+    """
+    try:
+        from telegram import Bot
+        from telegram.ext import Application
+        import os
+        
+        token = os.getenv("TG_TOKEN")
+        chat_id = os.getenv("TG_CHAT_ID")
+        
+        if not token or not chat_id:
+            return
+
+        async def _deferred_update():
+            try:
+                bot = Bot(token=token)
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text=text,
+                    parse_mode="Markdown"
+                )
+                logger.info(f"[UI_ASYNC] {msg_type} update sent")
+            except Exception as e:
+                logger.warning(f"[UI_WARNING] {msg_type} update delayed but trading unaffected: {e}")
+
+        # جدولة المهمة في حلقة الأحداث النشطة
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            loop.create_task(_deferred_update())
+            logger.info(f"[UI_ASYNC] {msg_type} update scheduled (non-blocking)")
+        else:
+            # Fallback if no loop is running
+            asyncio.run(_deferred_update())
+    except Exception as e:
+        logger.warning(f"[UI_ASYNC] Failed to schedule UI update: {e}")
 
 def reset_position_state():
     """
