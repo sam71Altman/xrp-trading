@@ -67,13 +67,118 @@ def detect_bearish_strength(candle):
 ENABLE_TP_CONTINUATION = False
 PARTIAL_CLOSE_PERCENT = 0.6  # 60%
 MAX_RUNNER_TIME = 60         # minutes
+RUNNER_TRAIL_STEPS = {
+    2.0: 1.0,   # profit >= 2% → trail at entry + 1%
+    3.0: 1.5,   # profit >= 3% → trail at entry + 1.5%
+    5.0: 2.0    # profit >= 5% → trail at entry + 2%
+}
 
 RUNNER_METRICS = {
     "runner_triggered": 0,
     "avg_runner_profit": 0.0,
     "runner_sl_hits": 0,
-    "runner_timeouts": 0
+    "runner_timeouts": 0,
+    "runner_total_profits": []
 }
+
+def check_tp_candle_confirmation(candles: list, tp_price: float) -> bool:
+    """
+    🔁 شرط التفعيل: شمعة كاملة مغلقة فوق TP
+    tp_confirmed = candle.close > TP
+    """
+    if not candles or len(candles) < 1:
+        return False
+    last_candle = candles[-1]
+    return last_candle['close'] > tp_price
+
+def check_runner_continuation_conditions(analysis: dict, candles: list) -> bool:
+    """
+    🧲 شروط الاستمرار (ALL REQUIRED)
+    CONTINUE_IF = (
+        RSI > 55 and
+        volume >= avg_volume and
+        MACD_histogram > 0 and
+        price > VWAP and
+        not rejection_candle
+    )
+    """
+    if not candles or len(candles) < 21:
+        return False
+    
+    rsi = analysis.get('rsi', 50)
+    current_volume = candles[-1].get('volume', 0)
+    avg_volume = sum(c.get('volume', 0) for c in candles[-21:-1]) / 20 if len(candles) >= 21 else current_volume
+    macd_hist = analysis.get('macd_histogram', 0)
+    vwap = analysis.get('vwap', 0)
+    current_price = analysis.get('close', 0)
+    
+    current_candle = candles[-1]
+    body = abs(current_candle['close'] - current_candle['open'])
+    upper_wick = current_candle['high'] - max(current_candle['close'], current_candle['open'])
+    rejection_candle = (upper_wick > body * 2) and (current_candle['close'] < current_candle['open'])
+    
+    continue_conditions = (
+        rsi > 55 and
+        current_volume >= avg_volume and
+        macd_hist > 0 and
+        (current_price > vwap if vwap > 0 else True) and
+        not rejection_candle
+    )
+    
+    return continue_conditions
+
+def check_runner_momentum_fade(analysis: dict, candles: list) -> bool:
+    """
+    🚪 خروج ضعف الزخم (Mandatory Escape)
+    if volume < avg_volume * 0.7 and RSI < 60:
+        close_runner(reason="MOMENTUM_FADE")
+    """
+    if not candles or len(candles) < 21:
+        return False
+    
+    rsi = analysis.get('rsi', 50)
+    current_volume = candles[-1].get('volume', 0)
+    avg_volume = sum(c.get('volume', 0) for c in candles[-21:-1]) / 20 if len(candles) >= 21 else current_volume
+    
+    return current_volume < avg_volume * 0.7 and rsi < 60
+
+def calculate_runner_sl(entry_price: float, current_price: float, candles: list, analysis: dict) -> float:
+    """
+    🛡️ رفع وقف الخسارة (إجباري)
+    new_sl = max(entry_price, local_low, ema_fast_support)
+    """
+    local_low = min(c['low'] for c in candles[-5:]) if len(candles) >= 5 else entry_price
+    ema_fast = analysis.get('ema20', entry_price)
+    
+    new_sl = max(entry_price, local_low, ema_fast * 0.999)
+    return new_sl
+
+def calculate_runner_trailing_sl(entry_price: float, current_price: float) -> float:
+    """
+    📈 Trailing Logic (متدرج + آمن)
+    """
+    profit_pct = ((current_price - entry_price) / entry_price) * 100
+    trail_sl = entry_price  # Default: breakeven
+    
+    for threshold, trail_offset in sorted(RUNNER_TRAIL_STEPS.items(), reverse=True):
+        if profit_pct >= threshold:
+            trail_sl = entry_price * (1 + trail_offset / 100)
+            break
+    
+    return trail_sl
+
+def update_runner_metrics(profit_pct: float, exit_reason: str):
+    """
+    📊 تحديث Metrics الـ Runner
+    """
+    global RUNNER_METRICS
+    RUNNER_METRICS["runner_total_profits"].append(profit_pct)
+    RUNNER_METRICS["avg_runner_profit"] = sum(RUNNER_METRICS["runner_total_profits"]) / len(RUNNER_METRICS["runner_total_profits"])
+    
+    if exit_reason == "RUNNER_SL_HIT":
+        RUNNER_METRICS["runner_sl_hits"] += 1
+    elif exit_reason == "RUNNER_TIMEOUT":
+        RUNNER_METRICS["runner_timeouts"] += 1
 
 # 🟨 LAYER 2 — GOVERNANCE (EMA EXIT v4.5.PRO-FINAL)
 # EMA Exit = CONFIRMED FAILURE JUDGMENT فقط
@@ -2283,21 +2388,115 @@ def check_exit_signal(analysis: dict, candles: List[dict]) -> Optional[str]:
     current_price = analysis["close"]
     entry_price = state.entry_price
     pnl_pct = ((current_price - entry_price) / entry_price) * 100
+    tp_price = entry_price * (1 + TAKE_PROFIT_PCT / 100)
     
-    # v3.3: TP Trigger Logic
+    # ═══════════════════════════════════════════════════════════════════════
+    # 🏃 PROTECTED RUNNER MANAGEMENT (v4.5.PRO-FINAL)
+    # ═══════════════════════════════════════════════════════════════════════
+    if state.runner_active:
+        runner_elapsed = (get_now() - state.runner_start_time).total_seconds() / 60 if state.runner_start_time else 0
+        
+        # ⏱️ حد زمني للـ Runner (MAX 60 minutes)
+        if runner_elapsed >= MAX_RUNNER_TIME:
+            logger.info(f"[TP_CONTINUATION] Runner TIMEOUT after {runner_elapsed:.1f} mins")
+            update_runner_metrics(pnl_pct, "RUNNER_TIMEOUT")
+            RUNNER_METRICS["runner_timeouts"] += 1
+            state.runner_active = False
+            force_close_trade("RUNNER_TIMEOUT")
+            circuit_breaker_logic.record_trade(pnl_pct)
+            state.position_open = False
+            return "runner_timeout"
+        
+        # 🧯 Runner SL Hit (أمان مطلق - Market Close فوري)
+        if state.runner_sl is not None and current_price <= state.runner_sl:
+            logger.info(f"[TP_CONTINUATION] Runner SL HIT at {state.runner_sl:.4f}")
+            update_runner_metrics(pnl_pct, "RUNNER_SL_HIT")
+            RUNNER_METRICS["runner_sl_hits"] += 1
+            state.runner_active = False
+            force_close_trade("RUNNER_SL_HIT")
+            circuit_breaker_logic.record_trade(pnl_pct)
+            state.position_open = False
+            return "runner_sl_hit"
+        
+        # 🚪 خروج ضعف الزخم (Mandatory Escape)
+        if check_runner_momentum_fade(analysis, candles):
+            logger.info(f"[TP_CONTINUATION] MOMENTUM_FADE detected - closing runner")
+            update_runner_metrics(pnl_pct, "MOMENTUM_FADE")
+            state.runner_active = False
+            force_close_trade("MOMENTUM_FADE")
+            circuit_breaker_logic.record_trade(pnl_pct)
+            state.position_open = False
+            return "runner_momentum_fade"
+        
+        # 🧲 فحص شروط الاستمرار
+        if not check_runner_continuation_conditions(analysis, candles):
+            logger.info(f"[TP_CONTINUATION] Continuation conditions FAILED - closing runner")
+            update_runner_metrics(pnl_pct, "CONDITIONS_FAILED")
+            state.runner_active = False
+            force_close_trade("RUNNER_CONDITIONS_FAILED")
+            circuit_breaker_logic.record_trade(pnl_pct)
+            state.position_open = False
+            return "runner_conditions_failed"
+        
+        # 📈 Trailing Logic (متدرج + آمن)
+        new_trail_sl = calculate_runner_trailing_sl(entry_price, current_price)
+        if new_trail_sl > (state.runner_sl or entry_price):
+            state.runner_sl = new_trail_sl
+            logger.info(f"[TP_CONTINUATION] Trail SL raised to {new_trail_sl:.4f}")
+        
+        # Runner still active, continue monitoring
+        return None
+    
+    # ═══════════════════════════════════════════════════════════════════════
+    # v3.3: TP Trigger Logic (with TP CONTINUATION support)
+    # ═══════════════════════════════════════════════════════════════════════
     if not state.tp_triggered and TAKE_PROFIT_PCT is not None and pnl_pct >= TAKE_PROFIT_PCT:
         start_exec = time.time()
         
         # v4.4: Dynamic TP Margin Check
         tp_margin = get_dynamic_tp_margin(analysis)
         if current_price < (state.entry_price * (1 + TAKE_PROFIT_PCT/100) - tp_margin):
-             # Not quite there yet with margin
              return None
 
         state.tp_triggered = True
         state.risk_free_sl = entry_price * 1.001
         
-        # v4.4: FORCE CLOSE (TP OVERRIDES ALL)
+        # ═══════════════════════════════════════════════════════════════════
+        # 🏃 TP CONTINUATION / PROTECTED RUNNER (v4.5.PRO-FINAL)
+        # FAST_SCALP_AGGRESSIVE فقط + ENABLE_TP_CONTINUATION = True
+        # ═══════════════════════════════════════════════════════════════════
+        if ENABLE_TP_CONTINUATION and get_current_mode() == "FAST_SCALP":
+            # 2️⃣ شرط التفعيل: شمعة كاملة مغلقة فوق TP
+            if check_tp_candle_confirmation(candles, tp_price):
+                logger.info(f"[TP_CONTINUATION] activated | TP confirmed with candle close > {tp_price:.4f}")
+                
+                # ✂️ 3️⃣ إغلاق جزئي
+                if PARTIAL_CLOSE_PERCENT < 1.0:
+                    partial_pnl = pnl_pct * PARTIAL_CLOSE_PERCENT
+                    logger.info(f"[PARTIAL_CLOSE] {PARTIAL_CLOSE_PERCENT*100:.0f}% closed | Partial PnL: {partial_pnl:.4f}%")
+                    state.runner_partial_closed = True
+                    # Note: In live trading, execute partial close here
+                
+                # 🛡️ 4️⃣ رفع وقف الخسارة (إجباري)
+                new_runner_sl = calculate_runner_sl(entry_price, current_price, candles, analysis)
+                state.runner_sl = new_runner_sl
+                logger.info(f"[SL_RAISED] to {new_runner_sl:.4f} (Risk-Free)")
+                
+                # 5️⃣ تفعيل Runner
+                state.runner_active = True
+                state.runner_start_time = get_now()
+                RUNNER_METRICS["runner_triggered"] += 1
+                
+                logger.info(f"[TP_CONTINUATION] Runner STARTED | Entry: {entry_price:.4f} | SL: {new_runner_sl:.4f}")
+                
+                # لا نغلق - نستمر في المراقبة
+                return None
+            else:
+                # شمعة لم تغلق فوق TP بعد - انتظار
+                logger.info(f"[TP_CONTINUATION] Waiting for candle close confirmation above TP")
+                return None
+        
+        # v4.4: FORCE CLOSE (TP OVERRIDES ALL) - السلوك الافتراضي
         logger.info(f"⚡ TP EVENT: Force closing trade. PnL: {pnl_pct:.4f}%")
         if force_close_trade("TP_EXECUTED"):
             latency = (time.time() - start_exec) * 1000
@@ -2306,15 +2505,11 @@ def check_exit_signal(analysis: dict, candles: List[dict]) -> Optional[str]:
             if latency > 50:
                 logger.warning("⚠️ TP LATENCY BREACH (> 50ms)")
             
-            # Record for circuit breaker
             circuit_breaker_logic.record_trade(pnl_pct)
-            
-            # Reset state for next trade
             state.position_open = False
             safety_core.active_trades[state.timeframe] -= 1
             return "tp_trigger"
 
-        # v3.7.5: Release hold once TP is triggered to allow normal exit
         if state.hold_active:
             logger.info("[HOLD] TP Triggered - Releasing hold for normal exit")
             state.hold_active = False
@@ -2323,7 +2518,6 @@ def check_exit_signal(analysis: dict, candles: List[dict]) -> Optional[str]:
     # v3.3: Exit Conditions after TP Triggered or Smart SL
     if state.tp_triggered:
         if state.risk_free_sl is not None and current_price <= state.risk_free_sl:
-            # Record SL hit pnl
             circuit_breaker_logic.record_trade(((current_price - entry_price) / entry_price) * 100)
             return "risk_free_sl_hit"
         if "ema_short" in analysis and analysis["ema_short"] is not None and current_price < analysis["ema_short"]:
