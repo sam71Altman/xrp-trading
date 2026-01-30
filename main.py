@@ -1445,6 +1445,7 @@ class LegacyBotState:
         self.runner_start_time: Optional[datetime] = None
         self.runner_partial_closed: bool = False
         self.runner_metrics = RUNNER_METRICS.copy()
+        self.runner_sl: Optional[float] = None
 
     def reset_diagnostics(self):
         self.valid_entries = 0
@@ -2621,6 +2622,9 @@ def execute_paper_exit(entry_price: float, exit_price: float, reason: str,
 
 
 def reset_position_state():
+    """
+    إعادة تعيين حالة الصفقة بعد الخروج
+    """
     state.position_open = False
     state.entry_price = None
     state.entry_time = None
@@ -2631,6 +2635,14 @@ def reset_position_state():
     state.risk_free_sl = None
     state.current_sl = None
     state.entry_candles_snapshot = []
+    
+    # Reset Runner State (v4.5.PRO-FINAL)
+    state.runner_active = False
+    state.runner_start_time = None
+    state.runner_partial_closed = False
+    state.runner_sl = None
+    
+    logger.info("🔄 Position state reset")
 
 
 def get_trade_duration_minutes() -> int:
