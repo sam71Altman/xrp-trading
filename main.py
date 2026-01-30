@@ -1593,6 +1593,7 @@ class LegacyBotState:
         self.risk_free_sl: Optional[float] = None
         self.current_sl: Optional[float] = None
         self.entry_candles_snapshot: List[dict] = []
+        self.entry_time_unix: float = 0.0
         
         # LPEM State (v3.7.2)
         self.lpem_active: bool = False
@@ -1605,6 +1606,7 @@ class LegacyBotState:
 
         # Diagnostic Counters (v3.7.7)
         self.hold_active: bool = False
+        self.hold_activated_count: int = 0
         self.valid_entries: int = 0
         self.rejected_entries: int = 0
         self.rejected_due_to_market: int = 0
@@ -2695,7 +2697,7 @@ def check_exit_signal(analysis: dict, candles: List[dict]) -> Optional[str]:
     return None
 
 
-def execute_paper_buy(price: float, score: int, reasons: List[str]) -> float:
+def execute_paper_buy(price: float, score: int, reasons: List[str], tp: float, sl: float) -> float:
     # Use fixed trade size: 100 USDT from 1000 USDT starting balance (based on replit.md)
     trade_size_usdt = 100.0
     
@@ -3777,7 +3779,8 @@ async def cmd_diagnostic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg += f"• الرصيد: {paper_state.balance:.2f} USDT\n"
     msg += f"• صفقة مفتوحة: {'نعم' if paper_state.position_qty > 0 else 'لا'}\n"
     if paper_state.position_qty > 0 and state.entry_price is not None:
-        msg += f"• سعر الدخول: {state.entry_price:.4f}\n"
+        entry_price_str = f"{state.entry_price:.4f}" if state.entry_price is not None else "None"
+        msg += f"• سعر الدخول: {entry_price_str}\n"
     msg += f"• عدد الصفقات: {len(closed_trades)}\n\n"
     
     # Downtrend Alerts
@@ -4197,14 +4200,16 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                         logger.info(f"🚫 [LPEM] Blocked Entry: Price within band ({diff_pct:.4f}% <= {current_band}%)")
                         return
                 
+                # --- MANDATORY FIX: Define targets before any potential failure/return ---
+                tp, sl = calculate_targets(entry_price, candles)
+                
                 # Fixed Score Calculation: Single source of truth ({BOT_VERSION})
                 score, reasons = calculate_signal_score(analysis, candles)
                 state.last_signal_score = score
                 state.last_signal_reasons = reasons
                 state.last_signal_reason = ", ".join(reasons)
 
-                tp, sl = calculate_targets(entry_price, candles)
-                qty = execute_paper_buy(entry_price, score, reasons)
+                qty = execute_paper_buy(entry_price, score, reasons, tp, sl)
                 log_trade("BUY", state.last_signal_reason, entry_price, None)
                 
                 msg = format_buy_message(entry_price, tp, sl, state.timeframe, score, qty)
