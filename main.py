@@ -613,6 +613,9 @@ class StrategyState:
     
     def set_state(self, new_state: BotState, reason="N/A"):
         old_state = self.state
+        if old_state == new_state:
+            logger.debug(f"[STATE] {self.strategy_id} already in {new_state.name} | reason={reason}")
+            return
         try:
             # Handle direct transition or attribute check
             self.state = transition_state(old_state, new_state)
