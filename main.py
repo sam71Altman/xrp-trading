@@ -426,6 +426,7 @@ class StrategyState:
     def set_state(self, new_state: BotState, reason="N/A"):
         old_state = self.state
         try:
+            # Handle direct transition or attribute check
             self.state = transition_state(old_state, new_state)
             logger.info(f"[STATE] {self.strategy_id} {old_state.name} → {new_state.name} | reason={reason}")
             self.last_state_change = time.time()
