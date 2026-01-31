@@ -3011,11 +3011,10 @@ def check_lpem_invalidation(current_price: float, analysis: dict):
 def finalize_trade(result, entry_price, exit_price, reason, score, duration_min):
     """
     نظام التوثيق الموحد لإغلاق الصفقات (Trade Lifecycle Sync)
+    SINGLE SOURCE OF TRUTH: state.position_open
+    Order: close_position -> record_trade -> update_balance -> reset_state -> refresh_ui
     """
-    # 1. تصفير حالة الصفقة فوراً (MANDATORY)
-    reset_position_state()
-    
-    # 2. تحديث الرصيد وتسجيل في التاريخ الدائم (Paper Trades)
+    # 1. تحديث الرصيد وتسجيل في التاريخ الدائم (Paper Trades)
     pnl_usdt = (exit_price - entry_price) * paper_state.position_qty if paper_state.position_qty > 0 else 0
     pnl_pct = ((exit_price - entry_price) / entry_price) * 100 if entry_price > 0 else 0
     
@@ -3028,13 +3027,16 @@ def finalize_trade(result, entry_price, exit_price, reason, score, duration_min)
         reason, duration_min
     )
     
-    # 3. تسجيل في سجل التليجرام
+    # 2. تسجيل في سجل التليجرام
     log_trade("EXIT", reason, exit_price, pnl_pct)
     
-    # 4. تصفير عدادات الحماية
+    # 3. تصفير عدادات الحماية
     safety_core.active_trades = {"1m": 0, "5m": 0}
     
-    # 5. إرسال التحديث للواجهة
+    # 4. تصفير حالة الصفقة (AFTER all trade finalization)
+    reset_position_state()
+    
+    # 5. إرسال التحديث للواجهة (AFTER state reset for sync)
     exit_msg = format_exit_message(entry_price, exit_price, pnl_pct, pnl_usdt, reason, duration_min, paper_state.balance)
     update_ui_async(exit_msg, "exit_signal")
     
@@ -4342,7 +4344,6 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                 exit_result = execute_paper_exit(state.entry_price, current_price, exit_reason, 10, 0)
                 if exit_result:
                     pnl_pct, pnl_usdt, balance = exit_result
-                    reset_position_state()
                     update_cooldown_after_exit(exit_reason)
                     msg = f"🛡️ **Intel Early Exit**\nPrice: {current_price}\nPnL: {pnl_usdt:.2f} ({pnl_pct:.2f}%)"
                     await bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
@@ -4403,12 +4404,10 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                 exit_result = execute_paper_exit(state.entry_price, exit_price, exit_reason, state.last_signal_score, duration)
                 if exit_result:
                     pnl_pct, pnl_usdt, balance = exit_result
-                    log_trade("EXIT", exit_reason.upper(), exit_price, pnl_pct)
-                    msg = format_exit_message(state.entry_price, exit_price, pnl_pct, pnl_usdt, exit_reason, duration, balance)
-                    await bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
                     if state.mode != "AGGRESSIVE":
                         update_cooldown_after_exit(exit_reason)
-                    reset_position_state()
+                    msg = format_exit_message(state.entry_price, exit_price, pnl_pct, pnl_usdt, exit_reason, duration, balance)
+                    await bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
             
             # Additional Aggressive Flip check
             elif state.mode == "AGGRESSIVE" and check_sell_signal(analysis, candles):
@@ -4418,10 +4417,8 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                 exit_result = execute_paper_exit(state.entry_price, exit_price, "aggressive_flip", state.last_signal_score, duration)
                 if exit_result:
                     pnl_pct, pnl_usdt, balance = exit_result
-                    log_trade("EXIT", "AGGRESSIVE_FLIP", exit_price, pnl_pct)
                     msg = format_exit_message(state.entry_price, exit_price, pnl_pct, pnl_usdt, "aggressive_flip", duration, balance)
                     await bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
-                    reset_position_state()
 
         # ═══════════════════════════════════════════════════════════════════
         # ⚡ QUICK SCALP DOWN MODE (MANUAL SWITCH) - v4.5.PRO-FINAL

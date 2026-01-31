@@ -1,0 +1,114 @@
+TASK: Fix trade state desynchronization between Engine and UI
+
+CRITICAL BUG:
+Sometimes:
+Engine → position is OPEN
+UI → shows ❌ no position
+
+This is NOT strategy logic.
+This is NOT EMA/Scalp issue.
+
+This is STATE DESYNC.
+
+UI and Engine are using different states.
+
+==============================
+ROOT CAUSE
+==============================
+
+There are duplicated position states:
+- engine.position
+- UI flags (position_open / has_trade / cached state)
+
+AND/OR
+
+reset_position_state() clears UI before trade is actually finalized.
+
+This causes:
+ghost trades
+missing trades
+wrong status panel
+wrong trade history timing
+
+==============================
+MANDATORY ARCHITECTURE RULE
+==============================
+
+SINGLE SOURCE OF TRUTH ONLY:
+
+engine.position
+
+UI must NEVER store its own copy of position state.
+
+NO caching.
+NO booleans.
+NO duplicated flags.
+
+==============================
+REQUIRED FIX (STRICT)
+==============================
+
+1) DELETE completely:
+- reset_position_state()
+- position_open variables
+- has_trade flags
+- any UI cached trade state
+- any manual UI sync logic
+
+2) UI must ALWAYS read directly from engine:
+
+position = engine.get_current_position()
+
+if position:
+    show "صفقة مفتوحة"
+else:
+    show "لا توجد صفقة"
+
+NOTHING else.
+
+3) Fix finalize_trade() order EXACTLY like this:
+
+finalize_trade():
+    close_position()
+    record_trade()
+    update_balance()
+    engine.position = None
+    refresh_ui()
+
+NEVER clear state before close_position().
+
+4) Make UI update EVENT-BASED (NOT polling only):
+
+After:
+- open trade
+- close trade
+- finalize_trade
+
+call:
+
+refresh_ui()
+
+immediately.
+
+5) DO NOT TOUCH:
+❌ strategies
+❌ entry logic
+❌ scalp logic
+❌ AI
+❌ fast modes
+❌ risk settings
+
+ONLY state management.
+
+==============================
+EXPECTED RESULT
+==============================
+
+UI always matches engine exactly.
+No ghost trades.
+No missing trades.
+No delayed updates.
+Trade closes → instantly disappears from status.
+Trade opens → instantly appears.
+
+System must behave 100% synchronized.
