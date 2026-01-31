@@ -320,6 +320,19 @@ quick_scalp_down_state = {
     "active_trade": None
 }
 
+current_fast_mode = "FAST_NORMAL"
+
+def set_fast_mode(mode):
+    global current_fast_mode
+    old_mode = current_fast_mode
+    current_fast_mode = mode
+    mode_name = "NORMAL" if mode == "FAST_NORMAL" else "DOWN"
+    logger.info(f"[MODE] Fast Scalp → {mode_name}")
+    return old_mode
+
+def get_fast_mode():
+    return current_fast_mode
+
 def quick_scalp_down_has_reversal_signal(candles, analysis):
     if not candles or len(candles) < 3:
         return False
@@ -3582,11 +3595,18 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 def get_mode_keyboard():
     """إنشاء كيبورد اختيار الأوضاع"""
     current_mode = get_current_mode()
+    fast_mode = get_fast_mode()
     buttons = []
     for mode_key in TradeMode.ALL_MODES:
         display_name = TradeMode.DISPLAY_NAMES.get(mode_key, mode_key)
         prefix = "✅ " if mode_key == current_mode else "➡️ "
         buttons.append([InlineKeyboardButton(prefix + display_name, callback_data=f"MODE_{mode_key}")])
+    fast_normal_prefix = "✅ " if fast_mode == "FAST_NORMAL" else "➡️ "
+    fast_down_prefix = "✅ " if fast_mode == "FAST_DOWN" else "➡️ "
+    buttons.append([
+        InlineKeyboardButton(fast_normal_prefix + "⚡ سكالب سريع", callback_data="FAST_MODE_NORMAL"),
+        InlineKeyboardButton(fast_down_prefix + "🔻 سكالب هابط سريع", callback_data="FAST_MODE_DOWN")
+    ])
     buttons.append([InlineKeyboardButton("📊 إحصائيات الأوضاع", callback_data="MODE_STATS")])
     buttons.append([InlineKeyboardButton("🎯 اقتراح ذكي", callback_data="MODE_RECOMMEND")])
     return InlineKeyboardMarkup(buttons)
@@ -3778,6 +3798,22 @@ async def handle_mode_callback(query, data: str) -> None:
         await query.edit_message_text("❌ لا توجد بيانات كافية")
         return
     
+    if data.startswith("FAST_MODE_"):
+        fast_mode_type = data.replace("FAST_MODE_", "")
+        if fast_mode_type == "NORMAL":
+            set_fast_mode("FAST_NORMAL")
+            await query.edit_message_text(
+                "✅ تم التبديل إلى: ⚡ سكالب سريع عادي\n\n[MODE] Fast Scalp → NORMAL",
+                parse_mode="Markdown"
+            )
+        elif fast_mode_type == "DOWN":
+            set_fast_mode("FAST_DOWN")
+            await query.edit_message_text(
+                "✅ تم التبديل إلى: 🔻 سكالب هابط سريع\n\n[MODE] Fast Scalp → DOWN",
+                parse_mode="Markdown"
+            )
+        return
+
     if data.startswith("MODE_"):
         new_mode = data.replace("MODE_", "")
         if new_mode in TradeMode.ALL_MODES:
@@ -4367,7 +4403,7 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                     reset_position_state()
 
         # ═══════════════════════════════════════════════════════════════════
-        # ⚡ QUICK SCALP DOWN MODE (ISOLATED MODULE) - v4.5.PRO-FINAL
+        # ⚡ QUICK SCALP DOWN MODE (MANUAL SWITCH) - v4.5.PRO-FINAL
         # ═══════════════════════════════════════════════════════════════════
         if quick_scalp_down_state["active_trade"]:
             trade_closed = await quick_scalp_down_manage_trade(bot, chat_id, current_price, candles)
@@ -4375,11 +4411,11 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                 return
 
         if not state.position_open and get_current_mode() == "FAST_SCALP":
-            current_spread = 0.0001
-            if quick_scalp_down_should_use_mode(candles, analysis, current_spread):
-                if quick_scalp_down_get_entry_signal(candles, analysis):
-                    await quick_scalp_down_execute_trade(bot, chat_id, current_price, candles)
-                    return
+            if get_fast_mode() == "FAST_DOWN":
+                if time.time() >= quick_scalp_down_state["cooldown_until"]:
+                    if quick_scalp_down_get_entry_signal(candles, analysis):
+                        await quick_scalp_down_execute_trade(bot, chat_id, current_price, candles)
+                        return
 
         # Re-check entry (Allow immediate re-entry for aggressive mode)
         if not state.position_open:
