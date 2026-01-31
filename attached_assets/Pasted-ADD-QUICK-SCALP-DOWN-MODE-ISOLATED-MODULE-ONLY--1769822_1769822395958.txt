@@ -1,0 +1,187 @@
+ADD: QUICK SCALP DOWN MODE (ISOLATED MODULE ONLY)
+أريد إضافة وضع سكالب سريع خاص بالاتجاه الهابط فقط داخل
+FAST_SCALP_AGGRESSIVE.
+⚠️ قواعد إلزامية (Strict):
+لا تعدّل أي كود حالي إطلاقاً:
+Runner
+TP Continuation
+Profit Lock
+Trailing SL
+Breakout
+Pullback
+Entry logic
+AI system
+الإضافة يجب أن تكون:
+Module مستقل بالكامل
+State منفصل
+Stats منفصلة
+Hook واحد فقط في main loop
+عند عدم تحقق شروط السكالب: → النظام يعود 100% للوضع الطبيعي الحالي.
+لا يوجد حد يومي للصفقات.
+🎯 الهدف السلوكي
+في الترند الهابط:
+بدلاً من صفقة واحدة طويلة
+→ صفقات Buy صغيرة جدًا ومتكررة:
+TP = 0.10%
+SL = 0.12%
+خروج سريع
+Cooldown قصير
+إعادة دخول
+في غير ذلك: → النظام الطبيعي يعمل كما هو بدون أي تغيير.
+==============================
+✅ IMPLEMENTATION
+==============================
+① CONSTANTS
+نسخ التعليمات البرمجية
+Python
+TP_PERCENT = 0.0010
+SL_PERCENT = 0.0012
+
+HIGH_ATR_THRESHOLD   = 0.0015
+MEDIUM_ATR_THRESHOLD = 0.0008
+
+MAX_SPREAD = 0.0002
+
+EXTREME_OVERSOLD   = 25
+EXTREME_OVERBOUGHT = 75
+
+PERFORMANCE_WINDOW = 20
+PERFORMANCE_CHECK_INTERVAL = 10
+
+MIN_WINRATE = 0.55
+PAUSE_DURATION = 600
+② STATS (منفصل 100%)
+نسخ التعليمات البرمجية
+Python
+class QuickScalpStats:
+    def __init__(self):
+        self.trades = []
+
+    def record(self, result):
+        self.trades.append(result)
+
+    def winrate(self, window):
+        if len(self.trades) < window:
+            return None
+        recent = self.trades[-window:]
+        return recent.count("win") / len(recent)
+③ STATE
+نسخ التعليمات البرمجية
+Python
+quick_scalp_state = {
+    "paused_until": 0,
+    "stats": QuickScalpStats(),
+    "trade_count": 0,
+    "last_mode": "NORMAL"
+}
+④ REVERSAL CONFIRMATION (مهم جداً)
+نسخ التعليمات البرمجية
+Python
+def has_reversal_signal():
+    return (
+        bullish_micro_candle() or
+        rsi_cross_up(30) or
+        momentum_turning_positive()
+    )
+⑤ DOWNTREND CONFIRMATION
+نسخ التعليمات البرمجية
+Python
+def is_downtrend_confirmed():
+    return (
+        trend_direction == "DOWN" and
+        price < ema20(5) and
+        ema20(5) < ema50(5) and
+        current_spread <= MAX_SPREAD and
+        EXTREME_OVERSOLD < rsi(14) < EXTREME_OVERBOUGHT and
+        has_reversal_signal()
+    )
+⑥ SAFETY FILTER
+نسخ التعليمات البرمجية
+Python
+def is_safe_to_quick_scalp():
+    if is_high_impact_news():
+        return False
+    if is_market_closing():
+        return False
+    if volume < average_volume(20) * 0.7:
+        return False
+    return True
+⑦ COOLDOWN
+نسخ التعليمات البرمجية
+Python
+def quick_scalp_cooldown():
+    atr = get_atr_1m()
+
+    if atr >= HIGH_ATR_THRESHOLD:
+        return random.randint(20, 30)
+    elif atr >= MEDIUM_ATR_THRESHOLD:
+        return random.randint(10, 15)
+    return random.randint(5, 8)
+⑧ SMART PAUSE
+نسخ التعليمات البرمجية
+Python
+def check_performance_pause():
+    winrate = quick_scalp_state["stats"].winrate(PERFORMANCE_WINDOW)
+
+    if winrate is not None and winrate < MIN_WINRATE:
+        quick_scalp_state["paused_until"] = time.time() + PAUSE_DURATION
+        log(f"[DOWN_SCALP] PAUSED - winrate={winrate:.1%}")
+⑨ EXECUTE QUICK SCALP (بدون Runner/ProfitLock)
+نسخ التعليمات البرمجية
+Python
+def execute_quick_scalp_trade(entry_price):
+
+    disable_system("RUNNER")
+    disable_system("PROFIT_LOCK")
+    disable_system("TP_CONTINUATION")
+    disable_system("TRAILING_SL")
+
+    result = close_position(tp=TP_PERCENT, sl=SL_PERCENT)
+
+    if result == "TP":
+        quick_scalp_state["stats"].record("win")
+    else:
+        quick_scalp_state["stats"].record("loss")
+
+    quick_scalp_state["trade_count"] += 1
+
+    apply_cooldown(quick_scalp_cooldown())
+
+    if quick_scalp_state["trade_count"] % PERFORMANCE_CHECK_INTERVAL == 0:
+        check_performance_pause()
+⑩ MODE DECISION
+نسخ التعليمات البرمجية
+Python
+def should_use_quick_scalp_mode():
+
+    if time.time() < quick_scalp_state["paused_until"]:
+        return False
+
+    if not is_safe_to_quick_scalp():
+        return False
+
+    return is_downtrend_confirmed()
+🔥 الوحيد المسموح إضافته في MAIN LOOP
+نسخ التعليمات البرمجية
+Python
+if should_use_quick_scalp_mode():
+    if get_entry_signal():
+        execute_quick_scalp_trade(get_current_price())
+else:
+    run_normal_strategy()
+🔒 الضمانات
+لا تعديل أي منطق حالي
+لا لمس Runner
+لا لمس Profit Lock
+لا لمس TP Continuation
+لا لمس AI
+لا حد يومي
+فقط سكالب سريع للاتجاه الهاابط
+✅ النتيجة المتوقعة
+DOWN trend:
+صفقات كثيرة
+أرباح صغيرة
+تعرض أقل
+سيولة أسرع
+UP / SIDE:
+النظام الحالي بدون أي تغيير
