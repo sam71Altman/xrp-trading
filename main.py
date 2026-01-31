@@ -3595,20 +3595,29 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 def get_mode_keyboard():
     """إنشاء كيبورد اختيار الأوضاع"""
     current_mode = get_current_mode()
-    fast_mode = get_fast_mode()
     buttons = []
     for mode_key in TradeMode.ALL_MODES:
         display_name = TradeMode.DISPLAY_NAMES.get(mode_key, mode_key)
         prefix = "✅ " if mode_key == current_mode else "➡️ "
         buttons.append([InlineKeyboardButton(prefix + display_name, callback_data=f"MODE_{mode_key}")])
-    fast_normal_prefix = "✅ " if fast_mode == "FAST_NORMAL" else "➡️ "
-    fast_down_prefix = "✅ " if fast_mode == "FAST_DOWN" else "➡️ "
-    buttons.append([
-        InlineKeyboardButton(fast_normal_prefix + "⚡ سكالب سريع", callback_data="FAST_MODE_NORMAL"),
-        InlineKeyboardButton(fast_down_prefix + "🔻 سكالب هابط سريع", callback_data="FAST_MODE_DOWN")
-    ])
+    
+    # Unified Fast Scalp button
+    buttons.append([InlineKeyboardButton("➡️ ⚡ سكالب سريع (خيارات)", callback_data="SHOW_FAST_MODES")])
+    
     buttons.append([InlineKeyboardButton("📊 إحصائيات الأوضاع", callback_data="MODE_STATS")])
     buttons.append([InlineKeyboardButton("🎯 اقتراح ذكي", callback_data="MODE_RECOMMEND")])
+    return InlineKeyboardMarkup(buttons)
+
+def get_fast_mode_keyboard():
+    """كيبورد خيارات السكالب السريع"""
+    fast_mode = get_fast_mode()
+    fast_normal_prefix = "✅ " if fast_mode == "FAST_NORMAL" else "➡️ "
+    fast_down_prefix = "✅ " if fast_mode == "FAST_DOWN" else "➡️ "
+    buttons = [
+        [InlineKeyboardButton(fast_normal_prefix + "⚡ سكالب سريع عادي", callback_data="FAST_MODE_NORMAL")],
+        [InlineKeyboardButton(fast_down_prefix + "🔻 سكالب هابط سريع", callback_data="FAST_MODE_DOWN")],
+        [InlineKeyboardButton("🔙 العودة للأوضاع", callback_data="BACK_TO_MODES")]
+    ]
     return InlineKeyboardMarkup(buttons)
 
 
@@ -3802,18 +3811,61 @@ async def handle_mode_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         await query.edit_message_text("❌ لا توجد بيانات كافية")
         return
     
+    if data == "SHOW_FAST_MODES":
+        await query.edit_message_text(
+            "⚡ *خيارات السكالب السريع*\n\nاختر نوع السكالب المفضل:",
+            reply_markup=get_fast_mode_keyboard(),
+            parse_mode="Markdown"
+        )
+        return
+
+    if data == "BACK_TO_MODES":
+        current_mode = get_current_mode()
+        display_name = TradeMode.DISPLAY_NAMES.get(current_mode, current_mode)
+        risk_level = TradeMode.RISK_LEVELS.get(current_mode, "غير محدد")
+        mode_duration = mode_state.get_mode_duration()
+        
+        message = f"""
+🎯 *أوضاع التداول الذكية*
+═══════════════════════
+
+🧠 *الوضع الحالي:* {display_name}
+📊 *مستوى المخاطرة:* {risk_level}
+🕒 *مفعل منذ:* {mode_duration}
+
+اختر الوضع الذي يناسب أسلوب تداولك:
+
+🧠 *الوضع الذكي:* التوازن بين الجودة والكمية
+⚡ *سكالب سريع:* صفقات متعددة سريعة
+🧲 *اصطياد الارتدادات:* تركيز على القيعان
+
+⚠️ التغيير يطبق من الشمعة القادمة
+    """
+        await query.edit_message_text(
+            message,
+            reply_markup=get_mode_keyboard(),
+            parse_mode="Markdown"
+        )
+        return
+
     if data.startswith("FAST_MODE_"):
         fast_mode_type = data.replace("FAST_MODE_", "")
+        # Force switch main mode to FAST_SCALP if not already
+        if get_current_mode() != "FAST_SCALP":
+            change_trade_mode("FAST_SCALP")
+            
         if fast_mode_type == "NORMAL":
             set_fast_mode("FAST_NORMAL")
             await query.edit_message_text(
-                "✅ تم التبديل إلى: ⚡ سكالب سريع عادي\n\n[MODE] Fast Scalp → NORMAL",
+                "✅ تم التبديل إلى: ⚡ سكالب سريع عادي\n\n[MODE] FAST_SCALP active\n[SUB] NORMAL",
+                reply_markup=get_fast_mode_keyboard(),
                 parse_mode="Markdown"
             )
         elif fast_mode_type == "DOWN":
             set_fast_mode("FAST_DOWN")
             await query.edit_message_text(
-                "✅ تم التبديل إلى: 🔻 سكالب هابط سريع\n\n[MODE] Fast Scalp → DOWN",
+                "✅ تم التبديل إلى: 🔻 سكالب هابط سريع\n\n[MODE] FAST_SCALP active\n[SUB] DOWN",
+                reply_markup=get_fast_mode_keyboard(),
                 parse_mode="Markdown"
             )
         return
@@ -4601,7 +4653,7 @@ async def main() -> None:
     application.add_handler(CommandHandler("ai_emergency", cmd_ai_emergency))
     
     # Add CallbackQueryHandlers for buttons
-    application.add_handler(CallbackQueryHandler(handle_mode_callback, pattern="^(MODE_|FAST_MODE_|MODE_STATS|MODE_RECOMMEND)"))
+    application.add_handler(CallbackQueryHandler(handle_mode_callback, pattern="^(MODE_|FAST_MODE_|MODE_STATS|MODE_RECOMMEND|SHOW_FAST_MODES|BACK_TO_MODES)"))
     application.add_handler(CallbackQueryHandler(handle_callback))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
