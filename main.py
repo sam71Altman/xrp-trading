@@ -815,7 +815,9 @@ def force_close_trade_legacy(reason):
 MAX_CONCURRENT_TRADES = {"1m": 2, "5m": 1}
 
 def check_backpressure(timeframe):
-    if safety_core.active_trades.get(timeframe, 0) >= MAX_CONCURRENT_TRADES.get(timeframe, 1):
+    # Allow more concurrent trades for aggressive/scalp modes
+    max_trades = 5 if timeframe == "1m" else 2
+    if safety_core.active_trades.get(timeframe, 0) >= max_trades:
         logger.warning(f"BACKPRESSURE: Limit reached for {timeframe}")
         return True
     return False
@@ -1144,7 +1146,7 @@ from trade_modes import (
     AI_VERSION, HARD_RULES, FINAL_GUARANTEES
 )
 from ai_integration import (
-    init_ai_engine, get_ai_engine, check_ai_filter, record_trade_executed,
+    init_ai_engine, get_ai_engine, create_market_data_from_analysis, record_trade_executed,
     set_ai_mode, set_ai_weight, set_ai_limit, get_ai_status, is_trade_allowed
 )
 from trading_engine import TradeDecision
@@ -4227,13 +4229,22 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                 # --- AI ENGINE v4.5.PRO-AI ---
                 market_data = create_market_data_from_analysis(analysis, candles)
                 if not market_data:
+                    logger.warning("🚫 [AI ENGINE] Failed to create market data from analysis")
                     return
                 
                 ai_engine = get_ai_engine()
+                if not ai_engine:
+                    logger.error("❌ [AI ENGINE] Engine not initialized in signal_loop")
+                    return
+                
+                # Check mode BEFORE execution to ensure logs are clear
+                ai_status = ai_engine.get_status()
+                logger.info(f"🔍 [AI ENGINE] Mode: {ai_status.get('mode')}, Weight: {ai_status.get('weight')}")
+
                 ai_result = ai_engine.check_and_execute_trade(
                     symbol=SYMBOL,
                     direction="LONG",
-                    amount=round(state.balance * RISK_PER_TRADE, 2),
+                    amount=round(paper_state.balance * 0.1, 2),
                     original_conditions_met=True
                 )
                 
