@@ -3609,9 +3609,9 @@ def get_mode_keyboard():
         display_name = TradeMode.DISPLAY_NAMES.get(mode_key, mode_key)
         prefix = "✅ " if mode_key == current_mode else "➡️ "
         
-        # If it's FAST_SCALP, make it open the sub-menu
+        # If it's FAST_SCALP, make it open the sub-menu WITHOUT checkmark prefix logic here to avoid UI confusion
         if mode_key == "FAST_SCALP":
-            buttons.append([InlineKeyboardButton(prefix + display_name, callback_data="SHOW_FAST_MODES")])
+            buttons.append([InlineKeyboardButton("➡️ " + display_name, callback_data="SHOW_FAST_MODES")])
         else:
             buttons.append([InlineKeyboardButton(prefix + display_name, callback_data=f"MODE_{mode_key}")])
     
@@ -3893,8 +3893,10 @@ async def handle_mode_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         if new_mode in TradeMode.ALL_MODES:
             success, message = change_trade_mode(new_mode)
             if success:
+                display_name = TradeMode.DISPLAY_NAMES.get(new_mode, new_mode)
                 await query.edit_message_text(
-                    format_mode_confirmation_message(new_mode),
+                    f"✅ تم تفعيل الوضع: *{display_name}*\n\n" + format_mode_confirmation_message(new_mode),
+                    reply_markup=get_mode_keyboard(),
                     parse_mode="Markdown"
                 )
                 logger.info(f"[MODE] Changed to {new_mode} via Telegram")
