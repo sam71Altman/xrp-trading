@@ -3273,7 +3273,16 @@ def format_status_message() -> str:
     
     # Smart Trading Mode Info
     current_mode = get_current_mode()
-    mode_display = TradeMode.DISPLAY_NAMES.get(current_mode, current_mode)
+    fast_mode = get_fast_mode()
+    
+    if current_mode == "FAST_SCALP":
+        if fast_mode == "FAST_DOWN":
+            mode_display = "🔻 سكالب هابط سريع"
+        else:
+            mode_display = "⚡ سكالب سريع عادي"
+    else:
+        mode_display = TradeMode.DISPLAY_NAMES.get(current_mode, current_mode)
+        
     mode_risk = TradeMode.RISK_LEVELS.get(current_mode, "غير محدد")
     mode_duration = mode_state.get_mode_duration()
     
@@ -3613,11 +3622,10 @@ def get_mode_keyboard():
 def get_fast_mode_keyboard():
     """كيبورد خيارات السكالب السريع"""
     fast_mode = get_fast_mode()
-    fast_normal_prefix = "✅ " if fast_mode == "FAST_NORMAL" else "➡️ "
-    fast_down_prefix = "✅ " if fast_mode == "FAST_DOWN" else "➡️ "
+    # No marks on secondary buttons anymore
     buttons = [
-        [InlineKeyboardButton(fast_normal_prefix + "⚡ سكالب سريع عادي", callback_data="FAST_MODE_NORMAL")],
-        [InlineKeyboardButton(fast_down_prefix + "🔻 سكالب هابط سريع", callback_data="FAST_MODE_DOWN")],
+        [InlineKeyboardButton("⚡ سكالب سريع عادي" + (" ✅" if fast_mode == "FAST_NORMAL" else ""), callback_data="FAST_MODE_NORMAL")],
+        [InlineKeyboardButton("🔻 سكالب هابط سريع" + (" ✅" if fast_mode == "FAST_DOWN" else ""), callback_data="FAST_MODE_DOWN")],
         [InlineKeyboardButton("🔙 العودة للأوضاع", callback_data="BACK_TO_MODES")]
     ]
     return InlineKeyboardMarkup(buttons)
