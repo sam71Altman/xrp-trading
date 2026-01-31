@@ -286,6 +286,160 @@ FAST_SCALP_GOVERNANCE = {
     }
 }
 
+QUICK_SCALP_DOWN_TP_PERCENT = 0.0010
+QUICK_SCALP_DOWN_SL_PERCENT = 0.0012
+QUICK_SCALP_DOWN_HIGH_ATR_THRESHOLD = 0.0015
+QUICK_SCALP_DOWN_MEDIUM_ATR_THRESHOLD = 0.0008
+QUICK_SCALP_DOWN_MAX_SPREAD = 0.0002
+QUICK_SCALP_DOWN_EXTREME_OVERSOLD = 25
+QUICK_SCALP_DOWN_EXTREME_OVERBOUGHT = 75
+QUICK_SCALP_DOWN_PERFORMANCE_WINDOW = 20
+QUICK_SCALP_DOWN_PERFORMANCE_CHECK_INTERVAL = 10
+QUICK_SCALP_DOWN_MIN_WINRATE = 0.55
+QUICK_SCALP_DOWN_PAUSE_DURATION = 600
+
+class QuickScalpDownStats:
+    def __init__(self):
+        self.trades = []
+
+    def record(self, result):
+        self.trades.append(result)
+
+    def winrate(self, window):
+        if len(self.trades) < window:
+            return None
+        recent = self.trades[-window:]
+        return recent.count("win") / len(recent)
+
+quick_scalp_down_state = {
+    "paused_until": 0,
+    "stats": QuickScalpDownStats(),
+    "trade_count": 0,
+    "last_mode": "NORMAL",
+    "cooldown_until": 0,
+    "active_trade": None
+}
+
+def quick_scalp_down_has_reversal_signal(candles, analysis):
+    if not candles or len(candles) < 3:
+        return False
+    current = candles[-1]
+    prev = candles[-2]
+    rsi = analysis.get('rsi', 50)
+    bullish_micro = current['close'] > current['open'] and (current['close'] - current['open']) > (current['high'] - current['low']) * 0.6
+    rsi_cross_up = rsi > 30 and analysis.get('prev_rsi', rsi) <= 30
+    macd_hist = analysis.get('macd_histogram', 0)
+    prev_macd_hist = analysis.get('prev_macd_histogram', macd_hist)
+    momentum_positive = macd_hist > prev_macd_hist
+    return bullish_micro or rsi_cross_up or momentum_positive
+
+def quick_scalp_down_is_downtrend_confirmed(candles, analysis, current_spread):
+    if not candles or len(candles) < 50:
+        return False
+    current_price = candles[-1]['close']
+    ema20 = analysis.get('ema20', 0)
+    ema50 = analysis.get('ema50', 0)
+    rsi = analysis.get('rsi', 50)
+    trend_down = ema20 < ema50
+    price_below_ema = current_price < ema20
+    spread_ok = current_spread <= QUICK_SCALP_DOWN_MAX_SPREAD
+    rsi_ok = QUICK_SCALP_DOWN_EXTREME_OVERSOLD < rsi < QUICK_SCALP_DOWN_EXTREME_OVERBOUGHT
+    reversal = quick_scalp_down_has_reversal_signal(candles, analysis)
+    return trend_down and price_below_ema and spread_ok and rsi_ok and reversal
+
+def quick_scalp_down_is_safe(candles, analysis):
+    if not candles or len(candles) < 21:
+        return False
+    current_volume = candles[-1].get('volume', 0)
+    avg_volume = sum(c.get('volume', 0) for c in candles[-21:-1]) / 20 if len(candles) >= 21 else current_volume
+    if current_volume < avg_volume * 0.7:
+        return False
+    return True
+
+def quick_scalp_down_get_cooldown(atr):
+    import random
+    if atr is None:
+        return random.randint(5, 8)
+    if atr >= QUICK_SCALP_DOWN_HIGH_ATR_THRESHOLD:
+        return random.randint(20, 30)
+    elif atr >= QUICK_SCALP_DOWN_MEDIUM_ATR_THRESHOLD:
+        return random.randint(10, 15)
+    return random.randint(5, 8)
+
+def quick_scalp_down_check_performance_pause():
+    winrate = quick_scalp_down_state["stats"].winrate(QUICK_SCALP_DOWN_PERFORMANCE_WINDOW)
+    if winrate is not None and winrate < QUICK_SCALP_DOWN_MIN_WINRATE:
+        quick_scalp_down_state["paused_until"] = time.time() + QUICK_SCALP_DOWN_PAUSE_DURATION
+        logger.info(f"[DOWN_SCALP] PAUSED - winrate={winrate:.1%}")
+
+def quick_scalp_down_should_use_mode(candles, analysis, current_spread):
+    if time.time() < quick_scalp_down_state["paused_until"]:
+        return False
+    if time.time() < quick_scalp_down_state["cooldown_until"]:
+        return False
+    if not quick_scalp_down_is_safe(candles, analysis):
+        return False
+    return quick_scalp_down_is_downtrend_confirmed(candles, analysis, current_spread)
+
+def quick_scalp_down_get_entry_signal(candles, analysis):
+    if not candles or len(candles) < 5:
+        return False
+    current = candles[-1]
+    prev = candles[-2]
+    rsi = analysis.get('rsi', 50)
+    bullish_candle = current['close'] > current['open']
+    volume_increase = current.get('volume', 0) > prev.get('volume', 0)
+    rsi_recovering = rsi > 30 and rsi < 50
+    return bullish_candle and volume_increase and rsi_recovering
+
+async def quick_scalp_down_execute_trade(bot, chat_id, entry_price, candles):
+    tp_price = entry_price * (1 + QUICK_SCALP_DOWN_TP_PERCENT)
+    sl_price = entry_price * (1 - QUICK_SCALP_DOWN_SL_PERCENT)
+    quick_scalp_down_state["active_trade"] = {
+        "entry_price": entry_price,
+        "tp_price": tp_price,
+        "sl_price": sl_price,
+        "entry_time": time.time()
+    }
+    quick_scalp_down_state["trade_count"] += 1
+    logger.info(f"[DOWN_SCALP] Entry: {entry_price:.6f} TP: {tp_price:.6f} SL: {sl_price:.6f}")
+    msg = f"⚡ **Quick Scalp DOWN**\nEntry: {entry_price:.6f}\nTP: +{QUICK_SCALP_DOWN_TP_PERCENT*100:.2f}%\nSL: -{QUICK_SCALP_DOWN_SL_PERCENT*100:.2f}%"
+    await bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
+    return True
+
+async def quick_scalp_down_manage_trade(bot, chat_id, current_price, candles):
+    trade = quick_scalp_down_state["active_trade"]
+    if not trade:
+        return False
+    entry_price = trade["entry_price"]
+    tp_price = trade["tp_price"]
+    sl_price = trade["sl_price"]
+    if current_price >= tp_price:
+        pnl_pct = ((current_price - entry_price) / entry_price) * 100
+        quick_scalp_down_state["stats"].record("win")
+        quick_scalp_down_state["active_trade"] = None
+        atr = calculate_atr(candles) if candles else None
+        quick_scalp_down_state["cooldown_until"] = time.time() + quick_scalp_down_get_cooldown(atr)
+        if quick_scalp_down_state["trade_count"] % QUICK_SCALP_DOWN_PERFORMANCE_CHECK_INTERVAL == 0:
+            quick_scalp_down_check_performance_pause()
+        logger.info(f"[DOWN_SCALP] TP HIT: +{pnl_pct:.4f}%")
+        msg = f"✅ **Quick Scalp TP**\nProfit: +{pnl_pct:.4f}%"
+        await bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
+        return True
+    if current_price <= sl_price:
+        pnl_pct = ((current_price - entry_price) / entry_price) * 100
+        quick_scalp_down_state["stats"].record("loss")
+        quick_scalp_down_state["active_trade"] = None
+        atr = calculate_atr(candles) if candles else None
+        quick_scalp_down_state["cooldown_until"] = time.time() + quick_scalp_down_get_cooldown(atr)
+        if quick_scalp_down_state["trade_count"] % QUICK_SCALP_DOWN_PERFORMANCE_CHECK_INTERVAL == 0:
+            quick_scalp_down_check_performance_pause()
+        logger.info(f"[DOWN_SCALP] SL HIT: {pnl_pct:.4f}%")
+        msg = f"❌ **Quick Scalp SL**\nLoss: {pnl_pct:.4f}%"
+        await bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
+        return True
+    return False
+
 def check_ema_failure_confirmation(analysis: dict, candles: list, 
                                     entry_price: float, current_price: float) -> bool:
     """
@@ -4211,6 +4365,21 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                     msg = format_exit_message(state.entry_price, exit_price, pnl_pct, pnl_usdt, "aggressive_flip", duration, balance)
                     await bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
                     reset_position_state()
+
+        # ═══════════════════════════════════════════════════════════════════
+        # ⚡ QUICK SCALP DOWN MODE (ISOLATED MODULE) - v4.5.PRO-FINAL
+        # ═══════════════════════════════════════════════════════════════════
+        if quick_scalp_down_state["active_trade"]:
+            trade_closed = await quick_scalp_down_manage_trade(bot, chat_id, current_price, candles)
+            if trade_closed:
+                return
+
+        if not state.position_open and get_current_mode() == "FAST_SCALP":
+            current_spread = 0.0001
+            if quick_scalp_down_should_use_mode(candles, analysis, current_spread):
+                if quick_scalp_down_get_entry_signal(candles, analysis):
+                    await quick_scalp_down_execute_trade(bot, chat_id, current_price, candles)
+                    return
 
         # Re-check entry (Allow immediate re-entry for aggressive mode)
         if not state.position_open:
