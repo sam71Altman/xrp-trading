@@ -460,39 +460,10 @@ async def quick_scalp_down_manage_trade(bot, chat_id, current_price, candles):
     tp_price = trade["tp_price"]
     sl_price = trade["sl_price"]
     if current_price >= tp_price:
-        pnl_pct = ((current_price - entry_price) / entry_price) * 100
-        quick_scalp_down_state["stats"].record("win")
-        quick_scalp_down_state["consecutive_losses"] = 0 # Reset losses
-        quick_scalp_down_state["active_trade"] = None
-        
-        # Sync with global state to close position in UI
-        state.position_open = False
-        state.entry_price = 0
-        state.last_signal_score = 0
-        state.last_close = current_price
-        
-        atr = calculate_atr(candles) if candles else None
-        quick_scalp_down_state["cooldown_until"] = time.time() + quick_scalp_down_get_cooldown(atr)
-        if quick_scalp_down_state["trade_count"] % QUICK_SCALP_DOWN_PERFORMANCE_CHECK_INTERVAL == 0:
-            quick_scalp_down_check_performance_pause()
-        
-        # Log to permanent history
-        execute_paper_exit(entry_price, current_price, "quick_scalp_down", 100, 1)
-        log_trade("EXIT", "QUICK_SCALP_DOWN", current_price, pnl_pct)
-        
-        logger.info(f"[DOWN_SCALP] TP HIT: +{pnl_pct:.4f}%")
-        msg = f"✅ **Quick Scalp TP**\nProfit: +{pnl_pct:.4f}%"
-        await bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
+        finalize_trade("WIN", entry_price, current_price, "quick_scalp_down", 100, 1)
         return True
     if current_price <= sl_price:
-        pnl_pct = ((current_price - entry_price) / entry_price) * 100
-        quick_scalp_down_state["stats"].record("loss")
-        
-        # Sync with global state to close position in UI
-        state.position_open = False
-        state.entry_price = 0
-        state.last_signal_score = 0
-        state.last_close = current_price
+        finalize_trade("LOSS", entry_price, current_price, "quick_scalp_down_loss", 0, 1)
         
         # 3. LOSS STREAK EMERGENCY BRAKE
         quick_scalp_down_state["consecutive_losses"] += 1
@@ -500,13 +471,9 @@ async def quick_scalp_down_manage_trade(bot, chat_id, current_price, candles):
             quick_scalp_down_state["cooldown_until"] = time.time() + QUICK_SCALP_DOWN_LOSS_PAUSE_DURATION
             quick_scalp_down_state["consecutive_losses"] = 0 # Reset after pause
             logger.warning(f"[DOWN_SCALP] EMERGENCY PAUSE - {QUICK_SCALP_DOWN_MAX_CONSECUTIVE_LOSSES} consecutive losses")
-            await bot.send_message(chat_id=chat_id, text="⚠️ **EMERGENCY PAUSE**: 3 consecutive losses. Pausing 2 mins.")
+            asyncio.create_task(bot.send_message(chat_id=chat_id, text="⚠️ **EMERGENCY PAUSE**: 3 consecutive losses. Pausing 2 mins."))
             
         quick_scalp_down_state["active_trade"] = None
-        
-        # Log to permanent history
-        execute_paper_exit(entry_price, current_price, "quick_scalp_down_loss", 0, 1)
-        log_trade("EXIT", "QUICK_SCALP_DOWN_LOSS", current_price, pnl_pct)
         
         atr = calculate_atr(candles) if candles else None
         # Ensure we don't overwrite the longer emergency pause if it's already set
@@ -514,9 +481,6 @@ async def quick_scalp_down_manage_trade(bot, chat_id, current_price, candles):
         quick_scalp_down_state["cooldown_until"] = max(quick_scalp_down_state["cooldown_until"], new_cooldown)
         if quick_scalp_down_state["trade_count"] % QUICK_SCALP_DOWN_PERFORMANCE_CHECK_INTERVAL == 0:
             quick_scalp_down_check_performance_pause()
-        logger.info(f"[DOWN_SCALP] SL HIT: {pnl_pct:.4f}%")
-        msg = f"❌ **Quick Scalp SL**\nLoss: {pnl_pct:.4f}%"
-        await bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
         return True
     return False
 
@@ -2730,10 +2694,7 @@ def manage_trade_exits(analysis: dict, candles: List[dict]) -> Optional[str]:
             logger.info(f"[RUNNER_EXIT] reason=TIMEOUT profit={pnl_pct:.4f}%")
             update_runner_metrics(pnl_pct, "RUNNER_TIMEOUT")
             RUNNER_METRICS["runner_timeouts"] += 1
-            state.runner_active = False
-            force_close_trade("RUNNER_TIMEOUT")
-            circuit_breaker_logic.record_trade(pnl_pct)
-            state.position_open = False
+            finalize_trade("TIMEOUT", entry_price, current_price, "RUNNER_TIMEOUT", state.last_signal_score or 100, int(runner_elapsed))
             return "runner_timeout"
             
         # 🛡️ 2. SL Hit
@@ -2741,10 +2702,7 @@ def manage_trade_exits(analysis: dict, candles: List[dict]) -> Optional[str]:
             logger.info(f"[RUNNER_EXIT] reason=SL_HIT profit={pnl_pct:.4f}%")
             update_runner_metrics(pnl_pct, "RUNNER_SL_HIT")
             RUNNER_METRICS["runner_sl_hits"] += 1
-            state.runner_active = False
-            force_close_trade("RUNNER_SL_HIT")
-            circuit_breaker_logic.record_trade(pnl_pct)
-            state.position_open = False
+            finalize_trade("LOSS", entry_price, current_price, "RUNNER_SL_HIT", state.last_signal_score or 100, int(runner_elapsed))
             return "runner_sl_hit"
             
         # 📈 3. Trailing Update
@@ -2757,20 +2715,14 @@ def manage_trade_exits(analysis: dict, candles: List[dict]) -> Optional[str]:
         if check_runner_momentum_fade(analysis, candles):
             logger.info(f"[RUNNER_EXIT] reason=MOMENTUM_FADE profit={pnl_pct:.4f}%")
             update_runner_metrics(pnl_pct, "MOMENTUM_FADE")
-            state.runner_active = False
-            force_close_trade("MOMENTUM_FADE")
-            circuit_breaker_logic.record_trade(pnl_pct)
-            state.position_open = False
+            finalize_trade("WIN", entry_price, current_price, "MOMENTUM_FADE", state.last_signal_score or 100, int(runner_elapsed))
             return "runner_momentum_fade"
 
         # 🧲 5. Conditions Failure
         if not check_runner_continuation_conditions(analysis, candles):
             logger.info(f"[RUNNER_EXIT] reason=CONDITIONS_FAILED profit={pnl_pct:.4f}%")
             update_runner_metrics(pnl_pct, "CONDITIONS_FAILED")
-            state.runner_active = False
-            force_close_trade("RUNNER_CONDITIONS_FAILED")
-            circuit_breaker_logic.record_trade(pnl_pct)
-            state.position_open = False
+            finalize_trade("WIN", entry_price, current_price, "RUNNER_CONDITIONS_FAILED", state.last_signal_score or 100, int(runner_elapsed))
             return "runner_conditions_failed"
 
         return None
@@ -2839,15 +2791,13 @@ def check_exit_signal(analysis: dict, candles: List[dict]) -> Optional[str]:
         
         # v4.4: FORCE CLOSE (TP OVERRIDES ALL) - السلوك الافتراضي
         logger.info(f"⚡ TP EVENT: Force closing trade. PnL: {pnl_pct:.4f}%")
-        if force_close_trade("TP_EXECUTED"):
-            latency = (time.time() - start_exec) * 1000
-            SYSTEM_HEALTH["tp_execution_latency_p99"] = latency
-            logger.info(f"🎯 TP EXECUTED | Latency: {latency:.2f}ms")
-            
-            circuit_breaker_logic.record_trade(pnl_pct)
-            state.position_open = False
-            safety_core.active_trades[state.timeframe] -= 1
-            return "tp_trigger"
+        finalize_trade("TP", entry_price, current_price, "TP_EXECUTED", state.last_signal_score or 100, get_trade_duration_minutes())
+        
+        latency = (time.time() - start_exec) * 1000
+        SYSTEM_HEALTH["tp_execution_latency_p99"] = latency
+        logger.info(f"🎯 TP EXECUTED | Latency: {latency:.2f}ms")
+        
+        return "tp_trigger"
 
         if state.hold_active:
             logger.info("[HOLD] TP Triggered - Releasing hold for normal exit")
@@ -3058,116 +3008,43 @@ def check_lpem_invalidation(current_price: float, analysis: dict):
         release_lpem("safety_timeout")
         return
 
-def execute_paper_exit(entry_price: float, exit_price: float, reason: str,
-                       score: int, duration_min: int) -> tuple:
-    # Use Frozen Quantity at Close (NO RE-CALCULATION - 3.6.2)
-    qty = paper_state.position_qty
+def finalize_trade(result, entry_price, exit_price, reason, score, duration_min):
+    """
+    نظام التوثيق الموحد لإغلاق الصفقات (Trade Lifecycle Sync)
+    """
+    # 1. تصفير حالة الصفقة فوراً (MANDATORY)
+    reset_position_state()
     
-    # Enforce Valid Quantity (MANDATORY FIX 1)
-    if qty <= 0:
-        logger.warning(f"Abort exit execution: Quantity is zero.")
-        return 0.0, 0.0, paper_state.balance
-        
-    # Correct PnL Calculation (ABSOLUTE VALUE - 3.6.2)
-    pnl_usdt = (exit_price - entry_price) * qty
-    pnl_pct = ((exit_price - entry_price) / entry_price) * 100
+    # 2. تحديث الرصيد وتسجيل في التاريخ الدائم (Paper Trades)
+    pnl_usdt = (exit_price - entry_price) * paper_state.position_qty if paper_state.position_qty > 0 else 0
+    pnl_pct = ((exit_price - entry_price) / entry_price) * 100 if entry_price > 0 else 0
     
-    # Calculate price move percentage
-    price_move_pct = abs(pnl_pct)
-    trade_duration_sec = duration_min * 60
-    
-    # Zero-Move Loop Fix (v3.7.3): Block fake exits
-    # Hard exits always allowed (STOP_LOSS, MANUAL_CLOSE, etc.)
-    if reason.upper() not in HARD_EXIT_REASONS:
-        if price_move_pct < MIN_EXIT_PRICE_MOVE_PCT and trade_duration_sec < MIN_EXIT_TIME_SECONDS:
-            logger.info(
-                f"[HOTFIX] Exit blocked | reason={reason}, "
-                f"move={price_move_pct:.4f}%, duration={trade_duration_sec}s"
-            )
-            return None  # Return None to signify blocked exit
-
-    # Logging Validation (Hard Check - 3.6.2)
-    if not (qty > 0 and (abs(pnl_usdt) > 0 or exit_price == entry_price)):
-        logger.error(f"Validation failed: Qty={qty}, PnL={pnl_usdt}. Skipping balance update.")
-        return None  # Return None to signify blocked exit
-
     paper_state.balance += pnl_usdt
     paper_state.update_peak()
     
-    # Post-Exit Market Quality Gate (PEG v1.3)
-    PostExitGuard.get().record_exit(exit_price)
-    
-    # LPEM Activation Logic (v3.7.2 - Fixed Wiring + v3.7.3 Zero-Move Protection)
-    # Only record LPEM if there's actual price movement
-    if price_move_pct >= MIN_EXIT_PRICE_MOVE_PCT:
-        if 0.01 <= pnl_pct <= 0.06:
-            activate_lpem("LONG", exit_price, pnl_pct, reason)
-        else:
-            if pnl_pct <= 0 or pnl_pct > 0.06:
-                release_lpem("major_exit_or_loss")
-    else:
-        logger.info(f"[LPEM] Ignored zero-move exit: move={price_move_pct:.4f}%")
-    
-    if pnl_usdt < 0:
-        paper_state.loss_streak += 1
-        state.consecutive_losses += 1
-        state.consecutive_wins = 0
-        
-        # Classify and log loss
-        candles = get_klines(SYMBOL, state.timeframe)
-        if candles:
-            ltype = classify_loss(entry_price, exit_price, state.entry_candles_snapshot, candles)
-            log_loss_event(ltype, pnl_pct, entry_price, exit_price)
-    else:
-        paper_state.loss_streak = 0
-        state.consecutive_wins += 1
-        state.consecutive_losses = 0
-    
-    if state.consecutive_losses >= 2:
-        state.pause_until = get_now() + timedelta(minutes=COOLDOWN_PAUSE_MINUTES)
-    
-    # 1. Store raw values
-    trade_pnl_pct = pnl_pct
-    trade_pnl_usdt = pnl_usdt
-    
-    # 2. Format for display (rounding only here)
-    display_pnl_pct = round(trade_pnl_pct, 2)
-    display_pnl_usdt = round(trade_pnl_usdt, 2)
-    
-    # 3. Handle 0.00 rounding issues
-    if abs(display_pnl_pct) < 0.01:
-        display_pnl_pct = 0.00
-        display_pnl_usdt = 0.00
-
     log_paper_trade(
-        "EXIT", entry_price, exit_price, trade_pnl_pct, trade_pnl_usdt,
+        "EXIT", entry_price, exit_price, pnl_pct, pnl_usdt,
         paper_state.balance, score, paper_state.entry_reason,
         reason, duration_min
     )
     
-    # Record mode performance (Smart Trading System)
-    is_win = pnl_usdt >= 0
-    record_mode_trade(pnl_usdt, is_win)
-    logger.info(f"[MODE TRADE] Recorded for mode {get_current_mode()}: ${pnl_usdt:.4f}, win={is_win}")
+    # 3. تسجيل في سجل التليجرام
+    log_trade("EXIT", reason, exit_price, pnl_pct)
     
-    # Reset position after logging
-    paper_state.position_qty = 0.0
-    paper_state.entry_reason = ""
-    exit_intel.stop_monitoring() # Stop Intel (v3.7)
+    # 4. تصفير عدادات الحماية
+    safety_core.active_trades = {"1m": 0, "5m": 0}
     
-    # --- MANDATORY STATE RESET (v4.5.PRO-FIX) ---
-    safety_core.active_trades = {"1m": 0, "5m": 0} # Global reset of all counters
-    state.hold_active = False
-    state.last_entry_block_reason = None
-    state.pause_until = 0  # Force clear cooldown/pause (Safe integer reset)
-    state.consecutive_losses = 0 # Reset loss counter to prevent immediate pause
-    logger.info(f"[STATE_RESET] Backpressure (Global), Hold, Cooldown, and Losses cleared after {reason} exit.")
-    
-    # 🔓 DECOUPLED UI UPDATE (Non-blocking)
+    # 5. إرسال التحديث للواجهة
     exit_msg = format_exit_message(entry_price, exit_price, pnl_pct, pnl_usdt, reason, duration_min, paper_state.balance)
     update_ui_async(exit_msg, "exit_signal")
     
+    logger.info(f"[LIFECYCLE] Trade finalized: {reason} | PnL: {pnl_pct:.2f}%")
     return pnl_pct, pnl_usdt, paper_state.balance
+
+def execute_paper_exit(entry_price: float, exit_price: float, reason: str,
+                       score: int, duration_min: int) -> tuple:
+    # This is now just a wrapper for finalize_trade to maintain compatibility
+    return finalize_trade("EXIT", entry_price, exit_price, reason, score, duration_min)
 
 
 def update_ui_async(text: str, msg_type: str = "status"):
