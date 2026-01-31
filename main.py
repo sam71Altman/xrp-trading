@@ -433,6 +433,11 @@ async def quick_scalp_down_execute_trade(bot, chat_id, entry_price, candles):
     # Record entry candle time
     quick_scalp_down_state["last_entry_candle"] = candles[-1].get('time')
     
+    # Sync with global state for UI visibility
+    state.position_open = True
+    state.entry_price = entry_price
+    state.last_signal_score = 100 # Direct score for scalp
+    
     tp_price = entry_price * (1 + QUICK_SCALP_DOWN_TP_PERCENT)
     sl_price = entry_price * (1 - QUICK_SCALP_DOWN_SL_PERCENT)
     quick_scalp_down_state["active_trade"] = {
@@ -459,10 +464,20 @@ async def quick_scalp_down_manage_trade(bot, chat_id, current_price, candles):
         quick_scalp_down_state["stats"].record("win")
         quick_scalp_down_state["consecutive_losses"] = 0 # Reset losses
         quick_scalp_down_state["active_trade"] = None
+        
+        # Sync with global state to close position in UI
+        state.position_open = False
+        state.entry_price = 0
+        
         atr = calculate_atr(candles) if candles else None
         quick_scalp_down_state["cooldown_until"] = time.time() + quick_scalp_down_get_cooldown(atr)
         if quick_scalp_down_state["trade_count"] % QUICK_SCALP_DOWN_PERFORMANCE_CHECK_INTERVAL == 0:
             quick_scalp_down_check_performance_pause()
+        
+        # Log to permanent history
+        execute_paper_exit(entry_price, current_price, "quick_scalp_down", 100, 1)
+        log_trade("EXIT", "QUICK_SCALP_DOWN", current_price, pnl_pct)
+        
         logger.info(f"[DOWN_SCALP] TP HIT: +{pnl_pct:.4f}%")
         msg = f"✅ **Quick Scalp TP**\nProfit: +{pnl_pct:.4f}%"
         await bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
@@ -470,6 +485,10 @@ async def quick_scalp_down_manage_trade(bot, chat_id, current_price, candles):
     if current_price <= sl_price:
         pnl_pct = ((current_price - entry_price) / entry_price) * 100
         quick_scalp_down_state["stats"].record("loss")
+        
+        # Sync with global state to close position in UI
+        state.position_open = False
+        state.entry_price = 0
         
         # 3. LOSS STREAK EMERGENCY BRAKE
         quick_scalp_down_state["consecutive_losses"] += 1
@@ -480,6 +499,11 @@ async def quick_scalp_down_manage_trade(bot, chat_id, current_price, candles):
             await bot.send_message(chat_id=chat_id, text="⚠️ **EMERGENCY PAUSE**: 3 consecutive losses. Pausing 2 mins.")
             
         quick_scalp_down_state["active_trade"] = None
+        
+        # Log to permanent history
+        execute_paper_exit(entry_price, current_price, "quick_scalp_down_loss", 0, 1)
+        log_trade("EXIT", "QUICK_SCALP_DOWN_LOSS", current_price, pnl_pct)
+        
         atr = calculate_atr(candles) if candles else None
         # Ensure we don't overwrite the longer emergency pause if it's already set
         new_cooldown = time.time() + quick_scalp_down_get_cooldown(atr)
