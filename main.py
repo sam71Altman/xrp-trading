@@ -325,6 +325,17 @@ quick_scalp_down_state = {
 QUICK_SCALP_DOWN_MAX_CONSECUTIVE_LOSSES = 3
 QUICK_SCALP_DOWN_LOSS_PAUSE_DURATION = 120
 
+def set_fast_mode(mode):
+    global current_fast_mode
+    old_mode = current_fast_mode
+    current_fast_mode = mode
+    mode_name = "NORMAL" if mode == "FAST_NORMAL" else "DOWN"
+    logger.info(f"[MODE] Fast Scalp → {mode_name}")
+    return old_mode
+
+def get_fast_mode():
+    return current_fast_mode
+
 def quick_scalp_down_has_reversal_signal(candles, analysis):
     if not candles or len(candles) < 3:
         return False
