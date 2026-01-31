@@ -3767,8 +3767,12 @@ async def cmd_validate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
 
 
-async def handle_mode_callback(query, data: str) -> None:
+async def handle_mode_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """معالجة callbacks الأوضاع"""
+    query = update.callback_query
+    data = query.data
+    await query.answer()
+    
     if data == "MODE_STATS":
         await query.edit_message_text(
             format_mode_stats_message(),
