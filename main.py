@@ -3622,10 +3622,18 @@ def get_mode_keyboard():
 def get_fast_mode_keyboard():
     """كيبورد خيارات السكالب السريع"""
     fast_mode = get_fast_mode()
-    # No marks on secondary buttons anymore
+    
+    fast_normal_text = "⚡ سكالب سريع عادي"
+    if fast_mode == "FAST_NORMAL":
+        fast_normal_text = "✅ " + fast_normal_text
+    
+    fast_down_text = "🔻 سكالب هابط سريع"
+    if fast_mode == "FAST_DOWN":
+        fast_down_text = "✅ " + fast_down_text
+        
     buttons = [
-        [InlineKeyboardButton("⚡ سكالب سريع عادي" + (" ✅" if fast_mode == "FAST_NORMAL" else ""), callback_data="FAST_MODE_NORMAL")],
-        [InlineKeyboardButton("🔻 سكالب هابط سريع" + (" ✅" if fast_mode == "FAST_DOWN" else ""), callback_data="FAST_MODE_DOWN")],
+        [InlineKeyboardButton(fast_normal_text, callback_data="FAST_MODE_NORMAL")],
+        [InlineKeyboardButton(fast_down_text, callback_data="FAST_MODE_DOWN")],
         [InlineKeyboardButton("🔙 العودة للأوضاع", callback_data="BACK_TO_MODES")]
     ]
     return InlineKeyboardMarkup(buttons)
@@ -3867,14 +3875,14 @@ async def handle_mode_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         if fast_mode_type == "NORMAL":
             set_fast_mode("FAST_NORMAL")
             await query.edit_message_text(
-                "✅ تم التبديل إلى: ⚡ سكالب سريع عادي\n\n[MODE] FAST_SCALP active\n[SUB] NORMAL",
+                "✅ تم تفعيل الوضع: *⚡ سكالب سريع عادي*\n\n[MODE] FAST_SCALP active\n[SUB] NORMAL",
                 reply_markup=get_fast_mode_keyboard(),
                 parse_mode="Markdown"
             )
         elif fast_mode_type == "DOWN":
             set_fast_mode("FAST_DOWN")
             await query.edit_message_text(
-                "✅ تم التبديل إلى: 🔻 سكالب هابط سريع\n\n[MODE] FAST_SCALP active\n[SUB] DOWN",
+                "✅ تم تفعيل الوضع: *🔻 سكالب هابط سريع*\n\n[MODE] FAST_SCALP active\n[SUB] DOWN",
                 reply_markup=get_fast_mode_keyboard(),
                 parse_mode="Markdown"
             )
