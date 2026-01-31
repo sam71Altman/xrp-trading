@@ -4227,15 +4227,14 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                         return
                 
                 # --- AI ENGINE v4.5.PRO-AI ---
-                market_data = create_market_data_from_analysis(analysis, candles)
-                if not market_data:
-                    logger.warning("🚫 [AI ENGINE] Failed to create market data from analysis")
-                    return
-                
+                # --- AI ENGINE v4.5.PRO-AI ---
                 ai_engine = get_ai_engine()
                 if not ai_engine:
                     logger.error("❌ [AI ENGINE] Engine not initialized in signal_loop")
                     return
+                
+                # Update the market data provider with a closure to ensure fresh data
+                ai_engine.get_market_data_fn = lambda symbol: create_market_data_from_analysis(analysis, candles)
                 
                 # Check mode BEFORE execution to ensure logs are clear
                 ai_status = ai_engine.get_status()
