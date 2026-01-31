@@ -1754,22 +1754,23 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     
     # AI System callbacks
     elif query.data == "AI_TOGGLE":
-        success, message = ai_system.toggle()
-        await query.edit_message_text(f"🧠 {message}")
+        ai_status = get_ai_status()
+        new_mode = "OFF" if ai_status.get('mode') != "OFF" else "FULL"
+        result = set_ai_mode(new_mode)
+        await query.edit_message_text(f"🧠 {result}")
     
     elif query.data.startswith("AI_MODE_"):
         new_mode = query.data.replace("AI_MODE_", "")
-        success, message = ai_system.set_mode(new_mode)
-        await query.edit_message_text(f"🧠 {message}")
+        result = set_ai_mode(new_mode)
+        await query.edit_message_text(f"🧠 {result}")
     
     elif query.data.startswith("AI_LEVEL_"):
         new_level = query.data.replace("AI_LEVEL_", "")
-        success = ai_impact_guard.set_impact_level(new_level)
-        level_label = AI_IMPACT_LEVELS.get(new_level, {}).get('label', new_level)
-        if success:
-            await query.edit_message_text(f"📊 تم تغيير سقف التأثير إلى: {level_label}")
-        else:
-            await query.edit_message_text("❌ مستوى غير صالح")
+        # Map old impact levels to new daily limits if needed, or just set a default
+        limit_map = {"LOW": 20, "MEDIUM": 50, "HIGH": 100}
+        new_limit = limit_map.get(new_level.upper(), 50)
+        result = set_ai_limit(new_limit)
+        await query.edit_message_text(f"📊 تم تغيير سقف التدخلات إلى: {new_limit}")
     
     elif query.data.startswith("NEW_AI_MODE_"):
         new_mode = query.data.replace("NEW_AI_MODE_", "")
@@ -3107,11 +3108,15 @@ def format_status_message() -> str:
     mode_risk = TradeMode.RISK_LEVELS.get(current_mode, "غير محدد")
     mode_duration = mode_state.get_mode_duration()
     
-    # AI System Info ({SYSTEM_VERSION})
-    ai_status = ai_system.get_status()
-    guard_status = ai_impact_guard.get_status()
-    ai_emoji = "✅" if ai_status['enabled'] else "❌"
-    usage_bar = "█" * int(guard_status['usage_pct'] / 20) + "░" * (5 - int(guard_status['usage_pct'] / 20))
+    # AI System Info (v4.5.PRO-AI)
+    ai_status = get_ai_status()
+    ai_mode = ai_status.get('mode', 'OFF')
+    interventions = ai_status.get('daily_interventions', 0)
+    daily_limit = ai_status.get('daily_limit', 50)
+    
+    ai_emoji = "✅" if ai_mode != "OFF" else "❌"
+    usage_pct = (interventions / daily_limit * 100) if daily_limit > 0 else 0
+    usage_bar = "█" * int(usage_pct / 20) + "░" * (5 - int(usage_pct / 20))
     
     return (
         f"📊 *حالة البوت*\n"
@@ -3127,8 +3132,8 @@ def format_status_message() -> str:
         f"📊 *المخاطرة:* {mode_risk}\n"
         f"🕒 *مفعل منذ:* {mode_duration}\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🤖 *نظام الذكاء:* {ai_emoji} {ai_status['mode_label']}\n"
-        f"📊 *سقف التأثير:* [{usage_bar}] {guard_status['usage_pct']:.0f}%\n"
+        f"🤖 *نظام الذكاء:* {ai_emoji} {ai_mode}\n"
+        f"📊 *سقف التأثير:* [{usage_bar}] {usage_pct:.0f}%\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"آخر سعر: {state.last_close if state.last_close else '---'}\n"
         f"🔧 /mode • 🧠 /ai • ✅ /validate"
@@ -3362,8 +3367,8 @@ async def cmd_ai(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def cmd_ai_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """إيقاف طارئ للذكاء"""
-    result = ai_system.emergency_shutdown("Manual emergency shutdown by user")
-    await update.message.reply_text(result, parse_mode="Markdown")
+    result = set_ai_mode("OFF")
+    await update.message.reply_text(f"🚨 تم إيقاف الذكاء الاصطناعي فوراً: {result}", parse_mode="Markdown")
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
