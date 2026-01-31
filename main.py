@@ -468,6 +468,8 @@ async def quick_scalp_down_manage_trade(bot, chat_id, current_price, candles):
         # Sync with global state to close position in UI
         state.position_open = False
         state.entry_price = 0
+        state.last_signal_score = 0
+        state.last_close = current_price
         
         atr = calculate_atr(candles) if candles else None
         quick_scalp_down_state["cooldown_until"] = time.time() + quick_scalp_down_get_cooldown(atr)
@@ -489,6 +491,8 @@ async def quick_scalp_down_manage_trade(bot, chat_id, current_price, candles):
         # Sync with global state to close position in UI
         state.position_open = False
         state.entry_price = 0
+        state.last_signal_score = 0
+        state.last_close = current_price
         
         # 3. LOSS STREAK EMERGENCY BRAKE
         quick_scalp_down_state["consecutive_losses"] += 1
