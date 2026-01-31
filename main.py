@@ -4227,7 +4227,6 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                         return
                 
                 # --- AI ENGINE v4.5.PRO-AI ---
-                # --- AI ENGINE v4.5.PRO-AI ---
                 ai_engine = get_ai_engine()
                 if not ai_engine:
                     logger.error("❌ [AI ENGINE] Engine not initialized in signal_loop")
@@ -4235,6 +4234,13 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                 
                 # Update the market data provider with a closure to ensure fresh data
                 ai_engine.get_market_data_fn = lambda symbol: create_market_data_from_analysis(analysis, candles)
+                
+                # Pre-calculate targets for potential immediate execution in AI OFF/LEARN modes
+                entry_price = analysis["close"]
+                tp, sl = calculate_targets(entry_price, candles)
+
+                # Update execution function to include targets
+                ai_engine.execute_trade_fn = lambda symbol, direction, amount: execute_paper_buy(entry_price, 10, ["AI_BYPASS"], tp, sl)
                 
                 # Check mode BEFORE execution to ensure logs are clear
                 ai_status = ai_engine.get_status()
@@ -4251,20 +4257,19 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                     logger.info(f"🚫 [AI ENGINE] Trade blocked: {ai_result.decision.value} | score={ai_result.score}")
                     return
                 
-                entry_price = analysis["close"]
-                tp, sl = calculate_targets(entry_price, candles)
+                # Logic below only executes if trade was NOT already executed by AI engine
+                if ai_result.decision in [TradeDecision.ALLOWED_OFF_MODE, TradeDecision.ALLOWED_LEARN_MODE, TradeDecision.ALLOWED, TradeDecision.ALLOWED_LIMIT_FALLBACK]:
+                    # The AI engine already called execute_trade_fn
+                    # Just need to update the Telegram and state
+                    score = ai_result.score if ai_result.score else 10
+                    reasons = ["AI_BYPASS"]
+                    qty = round(FIXED_TRADE_SIZE / entry_price, 2)
+                else:
+                    # Fallback for unexpected states
+                    return
                 
-                score, reasons = calculate_signal_score(analysis, candles)
-                state.last_signal_score = score
-                state.last_signal_reasons = reasons
-                state.last_signal_reason = ", ".join(reasons)
-                
-                if ai_result.score:
-                    reasons.append(f"AI:{ai_result.score:.2f}")
-
-                qty = execute_paper_buy(entry_price, score, reasons, tp, sl)
                 record_trade_executed(SYMBOL)
-                log_trade("BUY", state.last_signal_reason, entry_price, None)
+                log_trade("BUY", "AI_EXECUTION", entry_price, None)
                 
                 msg = format_buy_message(entry_price, tp, sl, state.timeframe, score, qty)
                 await bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")

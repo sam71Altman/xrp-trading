@@ -74,6 +74,7 @@ class TradingEngine:
             )
         
         if self.ai_state.mode == AIMode.OFF:
+            self._log_decision(symbol, None, TradeDecision.ALLOWED_OFF_MODE)
             return self._execute_with_result(
                 symbol, direction, amount,
                 TradeDecision.ALLOWED_OFF_MODE, None, "AI OFF"
