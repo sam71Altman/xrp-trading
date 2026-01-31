@@ -3599,10 +3599,12 @@ def get_mode_keyboard():
     for mode_key in TradeMode.ALL_MODES:
         display_name = TradeMode.DISPLAY_NAMES.get(mode_key, mode_key)
         prefix = "✅ " if mode_key == current_mode else "➡️ "
-        buttons.append([InlineKeyboardButton(prefix + display_name, callback_data=f"MODE_{mode_key}")])
-    
-    # Unified Fast Scalp button
-    buttons.append([InlineKeyboardButton("➡️ ⚡ سكالب سريع (خيارات)", callback_data="SHOW_FAST_MODES")])
+        
+        # If it's FAST_SCALP, make it open the sub-menu
+        if mode_key == "FAST_SCALP":
+            buttons.append([InlineKeyboardButton(prefix + display_name, callback_data="SHOW_FAST_MODES")])
+        else:
+            buttons.append([InlineKeyboardButton(prefix + display_name, callback_data=f"MODE_{mode_key}")])
     
     buttons.append([InlineKeyboardButton("📊 إحصائيات الأوضاع", callback_data="MODE_STATS")])
     buttons.append([InlineKeyboardButton("🎯 اقتراح ذكي", callback_data="MODE_RECOMMEND")])
