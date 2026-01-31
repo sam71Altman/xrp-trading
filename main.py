@@ -4596,7 +4596,8 @@ async def main() -> None:
     application.add_handler(CommandHandler("ai", cmd_ai))
     application.add_handler(CommandHandler("ai_emergency", cmd_ai_emergency))
     
-    # Add CallbackQueryHandler for buttons
+    # Add CallbackQueryHandlers for buttons
+    application.add_handler(CallbackQueryHandler(handle_mode_callback, pattern="^(MODE_|FAST_MODE_|MODE_STATS|MODE_RECOMMEND)"))
     application.add_handler(CallbackQueryHandler(handle_callback))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
