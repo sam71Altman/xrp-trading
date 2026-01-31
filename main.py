@@ -317,34 +317,34 @@ quick_scalp_down_state = {
     "trade_count": 0,
     "last_mode": "NORMAL",
     "cooldown_until": 0,
-    "active_trade": None
+    "active_trade": None,
+    "last_entry_candle": None,
+    "consecutive_losses": 0
 }
 
-current_fast_mode = "FAST_NORMAL"
-
-def set_fast_mode(mode):
-    global current_fast_mode
-    old_mode = current_fast_mode
-    current_fast_mode = mode
-    mode_name = "NORMAL" if mode == "FAST_NORMAL" else "DOWN"
-    logger.info(f"[MODE] Fast Scalp → {mode_name}")
-    return old_mode
-
-def get_fast_mode():
-    return current_fast_mode
+QUICK_SCALP_DOWN_MAX_CONSECUTIVE_LOSSES = 3
+QUICK_SCALP_DOWN_LOSS_PAUSE_DURATION = 120
 
 def quick_scalp_down_has_reversal_signal(candles, analysis):
     if not candles or len(candles) < 3:
         return False
     current = candles[-1]
-    prev = candles[-2]
     rsi = analysis.get('rsi', 50)
-    bullish_micro = current['close'] > current['open'] and (current['close'] - current['open']) > (current['high'] - current['low']) * 0.6
-    rsi_cross_up = rsi > 30 and analysis.get('prev_rsi', rsi) <= 30
+    
+    score = 0
+    # 1. Bullish Micro Candle
+    if current['close'] > current['open'] and (current['close'] - current['open']) > (current['high'] - current['low']) * 0.6:
+        score += 1
+    # 2. RSI Cross Up 30
+    if rsi > 30 and analysis.get('prev_rsi', rsi) <= 30:
+        score += 1
+    # 3. Momentum Turning Positive
     macd_hist = analysis.get('macd_histogram', 0)
     prev_macd_hist = analysis.get('prev_macd_histogram', macd_hist)
-    momentum_positive = macd_hist > prev_macd_hist
-    return bullish_micro or rsi_cross_up or momentum_positive
+    if macd_hist > prev_macd_hist:
+        score += 1
+        
+    return score >= 2
 
 def quick_scalp_down_is_downtrend_confirmed(candles, analysis, current_spread):
     if not candles or len(candles) < 50:
@@ -397,6 +397,16 @@ def quick_scalp_down_should_use_mode(candles, analysis, current_spread):
 def quick_scalp_down_get_entry_signal(candles, analysis):
     if not candles or len(candles) < 5:
         return False
+    
+    # 1. NO SAME-CANDLE RE-ENTRY
+    current_candle_time = candles[-1].get('time')
+    if current_candle_time == quick_scalp_down_state["last_entry_candle"]:
+        return False
+        
+    # 2. Reversal Confirmation (Already updated in has_reversal_signal via score >= 2)
+    if not quick_scalp_down_has_reversal_signal(candles, analysis):
+        return False
+        
     current = candles[-1]
     prev = candles[-2]
     rsi = analysis.get('rsi', 50)
@@ -406,6 +416,9 @@ def quick_scalp_down_get_entry_signal(candles, analysis):
     return bullish_candle and volume_increase and rsi_recovering
 
 async def quick_scalp_down_execute_trade(bot, chat_id, entry_price, candles):
+    # Record entry candle time
+    quick_scalp_down_state["last_entry_candle"] = candles[-1].get('time')
+    
     tp_price = entry_price * (1 + QUICK_SCALP_DOWN_TP_PERCENT)
     sl_price = entry_price * (1 - QUICK_SCALP_DOWN_SL_PERCENT)
     quick_scalp_down_state["active_trade"] = {
@@ -430,6 +443,7 @@ async def quick_scalp_down_manage_trade(bot, chat_id, current_price, candles):
     if current_price >= tp_price:
         pnl_pct = ((current_price - entry_price) / entry_price) * 100
         quick_scalp_down_state["stats"].record("win")
+        quick_scalp_down_state["consecutive_losses"] = 0 # Reset losses
         quick_scalp_down_state["active_trade"] = None
         atr = calculate_atr(candles) if candles else None
         quick_scalp_down_state["cooldown_until"] = time.time() + quick_scalp_down_get_cooldown(atr)
@@ -442,9 +456,20 @@ async def quick_scalp_down_manage_trade(bot, chat_id, current_price, candles):
     if current_price <= sl_price:
         pnl_pct = ((current_price - entry_price) / entry_price) * 100
         quick_scalp_down_state["stats"].record("loss")
+        
+        # 3. LOSS STREAK EMERGENCY BRAKE
+        quick_scalp_down_state["consecutive_losses"] += 1
+        if quick_scalp_down_state["consecutive_losses"] >= QUICK_SCALP_DOWN_MAX_CONSECUTIVE_LOSSES:
+            quick_scalp_down_state["cooldown_until"] = time.time() + QUICK_SCALP_DOWN_LOSS_PAUSE_DURATION
+            quick_scalp_down_state["consecutive_losses"] = 0 # Reset after pause
+            logger.warning(f"[DOWN_SCALP] EMERGENCY PAUSE - {QUICK_SCALP_DOWN_MAX_CONSECUTIVE_LOSSES} consecutive losses")
+            await bot.send_message(chat_id=chat_id, text="⚠️ **EMERGENCY PAUSE**: 3 consecutive losses. Pausing 2 mins.")
+            
         quick_scalp_down_state["active_trade"] = None
         atr = calculate_atr(candles) if candles else None
-        quick_scalp_down_state["cooldown_until"] = time.time() + quick_scalp_down_get_cooldown(atr)
+        # Ensure we don't overwrite the longer emergency pause if it's already set
+        new_cooldown = time.time() + quick_scalp_down_get_cooldown(atr)
+        quick_scalp_down_state["cooldown_until"] = max(quick_scalp_down_state["cooldown_until"], new_cooldown)
         if quick_scalp_down_state["trade_count"] % QUICK_SCALP_DOWN_PERFORMANCE_CHECK_INTERVAL == 0:
             quick_scalp_down_check_performance_pause()
         logger.info(f"[DOWN_SCALP] SL HIT: {pnl_pct:.4f}%")
