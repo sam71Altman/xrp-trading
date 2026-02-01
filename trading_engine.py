@@ -259,6 +259,46 @@ class TradingEngine:
             "closing": self._closing
         }
 
+    async def close_trade_atomically(self, reason: str, exit_price: float) -> bool:
+        """
+        SINGLE ATOMIC CLOSE PATH.
+        The ONLY place allowed to:
+        - Call broker close
+        - Update state
+        - Send telegram notification
+        """
+        async with self._trade_lock:
+            if not self._position_open or self._closing:
+                logger.warning(f"[CLOSE] Ignored: pos_open={self._position_open}, closing={self._closing}")
+                return False
+
+            self._closing = True
+            logger.info(f"[CLOSE] Executing: {reason} @ {exit_price}")
+
+            try:
+                # 1. Broker Close (Async)
+                if self.broker:
+                    # Logic to call broker.order(SELL)
+                    await self.broker.order(self._position_symbol, "SELL", 0) # Assuming amount 0 means close all
+
+                # 2. Update Engine State
+                self._position_open = False
+                self._position_symbol = None
+                self._entry_price = 0.0
+                self._position_version += 1
+
+                # 3. Notification
+                if self.telegram:
+                    await self.telegram.send(f"🔴 CLOSE: {reason} @ {exit_price}")
+
+                logger.info(f"[CLOSE] Success: {reason}")
+                return True
+            except Exception as e:
+                logger.error(f"[CLOSE] Failed: {e}")
+                return False
+            finally:
+                self._closing = False
+
     async def _execute_under_lock(self, signal):
         signal_type = signal.type if hasattr(signal, 'type') else signal.get("type")
         

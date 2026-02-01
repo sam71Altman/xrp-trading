@@ -1345,61 +1345,26 @@ def process_tick(tick_price: float, strategy_id: str, trade_id: str,
     
     return False
 
-def force_close_trade(strategy_id: str, trade_id: str = None, reason: str = "UNKNOWN"):
+async def force_close_trade(strategy_id: str, trade_id: str = None, reason: str = "UNKNOWN"):
     """
-    FORCE CLOSE WITH ESCALATION
-    CRITICAL FIX: Now calls reset_position_state() to prevent STATE DRIFT
+    SINGLE ATOMIC CLOSE PATH REDIRECT
     """
-    safety_core.set_state(TradeState.CLOSING, strategy_id)
-    strategy = safety_core.get_strategy(strategy_id)
-    
-    for method in CLOSE_STRATEGIES:
-        for attempt in range(3):
-            try:
-                # Execute close (simulation in paper trading)
-                if execute_close_method(method, trade_id):
-                    safety_core.emit_event(strategy_id, "TRADE_CLOSED", {
-                        "reason": reason, 
-                        "method": method,
-                        "trade_id": trade_id
-                    })
-                    safety_core.set_state(TradeState.CLOSED, strategy_id)
-                    
-                    # CRITICAL FIX: Reset engine state to prevent STATE DRIFT
-                    # This was the ROOT CAUSE of close without telegram message bug
-                    reset_position_state()
-                    logger.info(f"[FORCE_CLOSE] position_open reset to False for {reason}")
-                    
-                    # Update metrics
-                    if reason == "TP_EXECUTED":
-                        strategy.metrics["tp_hits"] += 1
-                    elif reason == "SL_HIT":
-                        strategy.metrics["sl_hits"] += 1
-                    elif reason == "EMA_FAILURE_EXIT":
-                        strategy.metrics["ema_exits"] += 1
-                    elif reason == "MAX_TIME_ESCAPE":
-                        strategy.metrics["max_time_escapes"] += 1
-                    
-                    strategy.metrics["total_trades"] += 1
-                    return True
-            except Exception as e:
-                logger.error(f"[{strategy_id}] Close attempt {attempt+1} failed: {e}")
-                time.sleep(0.05)  # 50ms retry delay
-    
-    # All strategies failed - still reset state to prevent permanent stuck
-    reset_position_state()
-    logger.error(f"[FORCE_CLOSE] All methods failed, position_open forced to False")
-    safety_core.handle_critical_failure("CATASTROPHIC", strategy_id)
-    return False
+    # Use global engine instance
+    current_price = 0.0 # Standard exit price
+    await engine.close_trade_atomically(reason, current_price)
 
-def execute_close_method(method: str, trade_id: str) -> bool:
-    """Execute specific close method (paper trading simulation)"""
-    logger.info(f"[EXEC] Closing trade {trade_id} via {method}")
-    return True  # Paper trading always succeeds
-
-# Legacy compatibility wrapper
 def force_close_trade_legacy(reason):
-    return force_close_trade("SCALP_FAST", None, reason)
+    """
+    Legacy wrapper - schedules async close
+    """
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            loop.create_task(engine.close_trade_atomically(reason, 0.0))
+        else:
+            asyncio.run(engine.close_trade_atomically(reason, 0.0))
+    except Exception:
+        pass
 
 # --- Backpressure & Limits ---
 MAX_CONCURRENT_TRADES = {"1m": 2, "5m": 1}
