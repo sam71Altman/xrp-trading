@@ -7,6 +7,7 @@ from typing import Callable, Optional, Dict, Any
 from enum import Enum
 from dataclasses import dataclass
 import logging
+import asyncio
 
 from ai_state import AIState, AIMode, AIWeight
 from ai_filter import SimpleAIFilter, MarketData
@@ -38,12 +39,27 @@ class TradingEngine:
     def __init__(
         self,
         execute_trade_fn: Callable[[str, str, float], bool],
-        get_market_data_fn: Callable[[str], Optional[MarketData]]
+        get_market_data_fn: Callable[[str], Optional[MarketData]],
+        broker=None,
+        telegram=None
     ):
         self.execute_trade_fn = execute_trade_fn
         self.get_market_data_fn = get_market_data_fn
         self.ai_state = AIState()
         self.ai_filter = SimpleAIFilter()
+        self.broker = broker
+        self.telegram = telegram
+
+        self._trade_lock = asyncio.Lock()
+        self._trade_queue = asyncio.Queue(maxsize=1)
+
+        self._position_open = False
+        self._position_symbol = None
+        self._entry_price = 0.0
+        self._position_version = 0
+
+        self._last_trade_id = None
+        self._pipeline_task = None
     
     def check_and_execute_trade(
         self,
@@ -187,3 +203,104 @@ class TradingEngine:
     
     def get_status(self) -> Dict[str, Any]:
         return self.ai_state.get_status()
+
+    async def request_trade(self, signal):
+        """
+        Wait briefly instead of dropping immediately.
+        Prevents silent signal loss.
+        """
+        try:
+            async with asyncio.timeout(1.0):
+                await self._trade_queue.put(signal)
+                return True
+        except asyncio.TimeoutError:
+            return False
+
+    async def _trade_pipeline(self):
+        while True:
+            try:
+                try:
+                    async with asyncio.timeout(1.0):
+                        signal = await self._trade_queue.get()
+                except asyncio.TimeoutError:
+                    continue
+
+                await self._execute_trade_atomically(signal)
+
+                self._trade_queue.task_done()
+
+            except Exception:
+                logger.exception("[Pipeline crash prevented]")
+
+    async def _execute_trade_atomically(self, signal):
+        try:
+            async with asyncio.timeout(0.5):
+                async with self._trade_lock:
+                    return await self._execute_under_lock(signal)
+        except asyncio.TimeoutError:
+            return False
+
+    async def _execute_under_lock(self, signal):
+        if signal.type == "OPEN":
+            if self._position_open:
+                return False
+
+            try:
+                async with asyncio.timeout(3.0):
+                    order = await self.broker.order(
+                        signal.symbol,
+                        "BUY",
+                        signal.amount
+                    )
+            except asyncio.TimeoutError:
+                return False
+
+            self._position_open = True
+            self._position_symbol = signal.symbol
+            self._entry_price = order.price
+            self._position_version += 1
+
+            await self._notify_trade_once(order)
+
+            return True
+
+        elif signal.type == "CLOSE":
+            if not self._position_open:
+                return False
+
+            try:
+                async with asyncio.timeout(3.0):
+                    order = await self.broker.order(
+                        self._position_symbol,
+                        "SELL",
+                        signal.amount
+                    )
+            except asyncio.TimeoutError:
+                return False
+
+            self._position_open = False
+            self._position_symbol = None
+            self._entry_price = 0.0
+            self._position_version += 1
+
+            await self._notify_trade_once(order)
+
+            return True
+
+        return False
+
+    async def _notify_trade_once(self, order):
+        if order.id == self._last_trade_id:
+            return
+
+        message = f"{order.side} {order.symbol} @ {order.price}"
+
+        try:
+            await self.telegram.send(message)
+            self._last_trade_id = order.id
+        except Exception:
+            logger.exception("Telegram send failed")
+
+    async def start_trading_core(self):
+        if not self._pipeline_task:
+            self._pipeline_task = asyncio.create_task(self._trade_pipeline())
