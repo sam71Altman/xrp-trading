@@ -1,0 +1,140 @@
+TASK: Add STRICT TP/SL exit ONLY for FAST_SCALP DOWN submode
+
+CRITICAL:
+DO NOT change global exit logic
+DO NOT affect other modes
+DO NOT modify FAST normal / RUNNER / AI / other systems
+DO NOT create new engine
+
+We ONLY add extra exit enforcement for:
+
+fast_submode == "DOWN"
+
+Nothing else.
+
+
+==================================================
+GOAL (DOWN MODE ONLY)
+==================================================
+
+When FAST_SCALP + DOWN:
+
+TP = +0.10%
+SL = -0.12%
+
+Close IMMEDIATELY when hit.
+
+NO trailing
+NO continuation
+NO profit lock
+NO delay
+NO waiting
+
+Hard exit only.
+
+
+==================================================
+IMPLEMENTATION RULES
+==================================================
+
+1) DO NOT place exit inside strategy
+2) DO NOT send CLOSE from strategy
+3) Engine remains single execution point
+4) Only add conditional logic inside engine
+
+
+==================================================
+STEP 1 — ADD CONSTANTS
+==================================================
+
+INSIDE TradingEngine:
+
+QUICK_DOWN_TP = 0.10
+QUICK_DOWN_SL = 0.12
+
+
+==================================================
+STEP 2 — ADD CONDITIONAL EXIT CHECK (ENGINE ONLY)
+==================================================
+
+Add:
+
+async def _check_quick_down_exit(self, price: float):
+
+    # ONLY active in DOWN
+    if self.fast_submode != "DOWN":
+        return
+
+    if not self._position_open:
+        return
+
+    pnl = (price - self._entry_price) / self._entry_price * 100
+
+    if pnl >= QUICK_DOWN_TP:
+        await self.request_trade({"type": "CLOSE"})
+        return
+
+    if pnl <= -QUICK_DOWN_SL:
+        await self.request_trade({"type": "CLOSE"})
+        return
+
+
+==================================================
+STEP 3 — CALL IT INSIDE MAIN LOOP ONLY
+==================================================
+
+Inside existing tick/update loop:
+
+await self._check_quick_down_exit(current_price)
+
+Do NOT touch any other exit logic.
+
+
+==================================================
+STEP 4 — PREVENT DOUBLE CLOSE (SAFETY)
+==================================================
+
+Inside engine:
+
+self._closing = False
+
+Modify CLOSE execution:
+
+if signal["type"] == "CLOSE":
+
+    if self._closing or not self._position_open:
+        return False
+
+    self._closing = True
+
+    try:
+        # existing close logic
+    finally:
+        self._closing = False
+
+
+==================================================
+EXPECTED RESULT
+==================================================
+
+FAST NORMAL:
+unchanged
+
+RUNNER:
+unchanged
+
+AI:
+unchanged
+
+DOWN QUICK SCALP:
+TP closes exactly at +0.10%
+SL closes exactly at -0.12%
+single close only
+single telegram only
+no late exits like 0.19%
+no duplicate messages
+
+
+IMPORTANT:
+Modify existing TradingEngine only.
+Do not add new systems.

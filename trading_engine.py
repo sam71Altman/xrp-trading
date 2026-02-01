@@ -35,6 +35,9 @@ class TradeResult:
 
 
 class TradingEngine:
+
+    QUICK_DOWN_TP = 0.10
+    QUICK_DOWN_SL = 0.12
     
     def __init__(
         self,
@@ -60,6 +63,9 @@ class TradingEngine:
 
         self._last_trade_id = None
         self._pipeline_task = None
+
+        self.fast_submode = None
+        self._closing = False
     
     def check_and_execute_trade(
         self,
@@ -241,22 +247,27 @@ class TradingEngine:
             return False
 
     async def _execute_under_lock(self, signal):
-        if signal.type == "OPEN":
+        signal_type = signal.type if hasattr(signal, 'type') else signal.get("type")
+        
+        if signal_type == "OPEN":
             if self._position_open:
                 return False
+
+            symbol = signal.symbol if hasattr(signal, 'symbol') else signal.get("symbol")
+            amount = signal.amount if hasattr(signal, 'amount') else signal.get("amount", 0)
 
             try:
                 async with asyncio.timeout(3.0):
                     order = await self.broker.order(
-                        signal.symbol,
+                        symbol,
                         "BUY",
-                        signal.amount
+                        amount
                     )
             except asyncio.TimeoutError:
                 return False
 
             self._position_open = True
-            self._position_symbol = signal.symbol
+            self._position_symbol = symbol
             self._entry_price = order.price
             self._position_version += 1
 
@@ -264,28 +275,32 @@ class TradingEngine:
 
             return True
 
-        elif signal.type == "CLOSE":
-            if not self._position_open:
+        elif signal_type == "CLOSE":
+            if self._closing or not self._position_open:
                 return False
+
+            self._closing = True
 
             try:
                 async with asyncio.timeout(3.0):
                     order = await self.broker.order(
                         self._position_symbol,
                         "SELL",
-                        signal.amount
+                        signal.amount if hasattr(signal, 'amount') else signal.get("amount", 0)
                     )
+
+                self._position_open = False
+                self._position_symbol = None
+                self._entry_price = 0.0
+                self._position_version += 1
+
+                await self._notify_trade_once(order)
+
+                return True
             except asyncio.TimeoutError:
                 return False
-
-            self._position_open = False
-            self._position_symbol = None
-            self._entry_price = 0.0
-            self._position_version += 1
-
-            await self._notify_trade_once(order)
-
-            return True
+            finally:
+                self._closing = False
 
         return False
 
@@ -304,3 +319,30 @@ class TradingEngine:
     async def start_trading_core(self):
         if not self._pipeline_task:
             self._pipeline_task = asyncio.create_task(self._trade_pipeline())
+
+    async def _check_quick_down_exit(self, price: float):
+        """
+        STRICT TP/SL exit ONLY for FAST_SCALP DOWN submode.
+        TP = +0.10%, SL = -0.12%
+        Hard exit only - no trailing, no continuation.
+        """
+        if self.fast_submode != "DOWN":
+            return
+
+        if not self._position_open:
+            return
+
+        if self._entry_price <= 0:
+            return
+
+        pnl = (price - self._entry_price) / self._entry_price * 100
+
+        if pnl >= self.QUICK_DOWN_TP:
+            logger.info(f"[DOWN EXIT] TP hit: {pnl:.4f}% >= {self.QUICK_DOWN_TP}%")
+            await self.request_trade({"type": "CLOSE"})
+            return
+
+        if pnl <= -self.QUICK_DOWN_SL:
+            logger.info(f"[DOWN EXIT] SL hit: {pnl:.4f}% <= -{self.QUICK_DOWN_SL}%")
+            await self.request_trade({"type": "CLOSE"})
+            return
