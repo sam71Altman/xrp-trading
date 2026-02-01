@@ -1,10 +1,10 @@
-# XRP/USDT Telegram Signals Bot v4.5.PRO-FINAL
+# XRP/USDT Telegram Signals Bot v4.6.PRO
 
 ## Overview
 
 A Python Telegram trading signals bot for XRP/USDT that runs paper trading simulations with a multi-layer Kill Switch protection system, Smart Adaptive Trading System, and Governed AI Intelligence layer. It fetches price data from Binance API (read-only), analyzes using EMA crossover and breakout strategies, and sends buy/exit signals to Telegram.
 
-### Strategy-Isolated Production-Grade Architecture (v4.5.PRO-FINAL)
+### Institutional Production-Grade Architecture (v4.6.PRO)
 
 **SYSTEM PHILOSOPHY (ABSOLUTE – NON-NEGOTIABLE)**
 - TP = EXECUTION EVENT (إغلاق فوري)
@@ -15,6 +15,49 @@ A Python Telegram trading signals bot for XRP/USDT that runs paper trading simul
 - UI = VIEW ONLY
 - FAILURE IS ISOLATED PER STRATEGY
 - SAFETY > AVAILABILITY
+
+**v4.6.PRO GUARANTEES**
+- ZERO duplicate trades
+- ZERO duplicate telegram messages
+- ZERO race conditions
+- ZERO state mismatch (UI == Engine == DB)
+- ONE execution path only
+- ONE state source only
+- Deterministic behavior
+- Production/institutional reliability
+
+### v4.6.PRO Infrastructure Components
+
+**ExecutionEngine** (Single Writer Principle)
+- `_trade_lock`: asyncio.Lock for atomic operations
+- `execute_trade_atomically()`: ONLY method that may call broker, update state, send telegram
+- Pipeline isolation via asyncio.Queue(maxsize=1)
+
+**TradingSnapshot** (Immutable)
+- Created once per cycle, never modified
+- Contains: timestamp, position_open, price, entry_price, indicators, candles, mode, balance
+
+**TradeSignal** (Pure)
+- Pure signal from strategies - NO side effects
+- Contains: action, confidence, reasons, suggested_tp, suggested_sl, source
+
+**CircuitBreaker**
+- Failure threshold: 3 failures
+- Recovery timeout: 60 seconds
+- Auto-recovery when healthy
+
+**RateLimiter**
+- Max 2 trades per minute
+- Max 10 trades per hour
+
+**AuditTrail** (Non-blocking)
+- In-memory buffer with async flush
+- Writes to audit_trail.jsonl
+
+**StateGuard** (Dual Failsafe)
+- Real-time state consistency verification
+- Emergency halt on state mismatch
+- Backup guard for failsafe
 
 **Multi-Strategy Architecture**
 - SCALP_FAST: 1m/5m frames with isolated state
