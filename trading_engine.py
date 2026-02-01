@@ -380,9 +380,34 @@ class TradingEngine:
         except Exception:
             logger.exception("Telegram send failed")
 
+    async def _state_guard_loop(self):
+        """
+        Lightweight StateGuard loop.
+        Compares UI vs Engine vs DB and logs mismatch.
+        """
+        while True:
+            try:
+                # 1. Get Engine State
+                engine_state = self.get_position_state()
+                
+                # 2. Mocking UI and DB state for now (since they reside in main.py/files)
+                # In production, these would be fetched via callbacks
+                ui_state = engine_state # Placeholder
+                db_state = engine_state # Placeholder
+                
+                if not (ui_state["position_open"] == engine_state["position_open"] == db_state["position_open"]):
+                    logger.warning(f"[STATE_GUARD] Mismatch detected! UI: {ui_state['position_open']}, Engine: {engine_state['position_open']}, DB: {db_state['position_open']}")
+                
+                await asyncio.sleep(2.0)
+            except Exception as e:
+                logger.error(f"[STATE_GUARD] Error: {e}")
+                await asyncio.sleep(5.0)
+
     async def start_trading_core(self):
         if not self._pipeline_task:
             self._pipeline_task = asyncio.create_task(self._trade_pipeline())
+        # Start State Guard
+        asyncio.create_task(self._state_guard_loop())
 
     async def _check_quick_down_exit(self, price: float):
         """
