@@ -2162,7 +2162,7 @@ class LegacyBotState:
     @property
     def position_open(self) -> bool:
         """SINGLE SOURCE OF TRUTH redirect"""
-        if 'engine' in globals():
+        if 'engine' in globals() and engine:
             return engine.get_position_state().get("position_open", False)
         return False
 
@@ -4503,7 +4503,7 @@ async def cmd_diagnostic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     closed_trades = get_closed_trades()
     msg += "🧾 *Paper Trading*\n"
     msg += f"• الرصيد: {paper_state.balance:.2f} USDT\n"
-    msg += f"• صفقة مفتوحة: {'نعم' if paper_state.position_qty > 0 else 'لا'}\n"
+    msg += f"• صفقة مفتوحة: {'نعم' if engine.get_position_state().get('position_open') else 'لا'}\n"
     if paper_state.position_qty > 0 and state.entry_price is not None:
         entry_price_str = f"{state.entry_price:.4f}" if state.entry_price is not None else "None"
         msg += f"• سعر الدخول: {entry_price_str}\n"
