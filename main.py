@@ -14,6 +14,317 @@ import threading
 import json
 from threading import Lock
 from datetime import datetime, timezone
+from dataclasses import dataclass, field
+from typing import Optional, List, Dict, Any, Callable
+from enum import Enum
+from collections import deque
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# v4.6.PRO INSTITUTIONAL PRODUCTION HARDENING INFRASTRUCTURE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TradeAction(Enum):
+    NONE = "NONE"
+    BUY = "BUY"
+    SELL = "SELL"
+    HOLD = "HOLD"
+
+@dataclass(frozen=True)
+class TradingSnapshot:
+    """Phase 2: Immutable snapshot - created once per cycle, never modified"""
+    timestamp: float
+    position_open: bool
+    price: float
+    entry_price: Optional[float]
+    indicators: Dict[str, Any]
+    candles: tuple
+    mode: str
+    balance: float
+
+@dataclass
+class TradeSignal:
+    """Pure signal from strategies - no side effects"""
+    action: TradeAction
+    confidence: float
+    reasons: List[str]
+    suggested_tp: Optional[float] = None
+    suggested_sl: Optional[float] = None
+    source: str = "unknown"
+
+class CircuitBreaker:
+    """Phase 9: Circuit breaker for system protection"""
+    def __init__(self, failure_threshold: int = 3, recovery_timeout: float = 60.0):
+        self._lock = asyncio.Lock()
+        self.failure_count = 0
+        self.failure_threshold = failure_threshold
+        self.recovery_timeout = recovery_timeout
+        self.is_open = False
+        self.last_failure_time: float = 0
+        self.last_open_reason: str = ""
+    
+    async def record_failure(self, reason: str = ""):
+        async with self._lock:
+            self.failure_count += 1
+            self.last_failure_time = time.time()
+            if self.failure_count >= self.failure_threshold:
+                self.is_open = True
+                self.last_open_reason = reason
+                logging.getLogger(__name__).critical(f"[CIRCUIT_BREAKER] OPENED: {reason}")
+    
+    async def record_success(self):
+        async with self._lock:
+            self.failure_count = 0
+    
+    async def is_closed(self) -> bool:
+        async with self._lock:
+            if not self.is_open:
+                return True
+            if time.time() - self.last_failure_time > self.recovery_timeout:
+                self.is_open = False
+                self.failure_count = 0
+                logging.getLogger(__name__).info("[CIRCUIT_BREAKER] Auto-recovery: CLOSED")
+                return True
+            return False
+    
+    async def force_open(self, reason: str):
+        async with self._lock:
+            self.is_open = True
+            self.last_open_reason = reason
+            self.last_failure_time = time.time()
+            logging.getLogger(__name__).critical(f"[CIRCUIT_BREAKER] FORCE OPENED: {reason}")
+
+class RateLimiter:
+    """Phase 9: Rate limiter to prevent excessive trades"""
+    def __init__(self, max_trades_per_minute: int = 2, max_trades_per_hour: int = 10):
+        self._lock = asyncio.Lock()
+        self.max_per_minute = max_trades_per_minute
+        self.max_per_hour = max_trades_per_hour
+        self.minute_trades: deque = deque()
+        self.hour_trades: deque = deque()
+    
+    async def is_allowed(self) -> bool:
+        async with self._lock:
+            now = time.time()
+            while self.minute_trades and now - self.minute_trades[0] > 60:
+                self.minute_trades.popleft()
+            while self.hour_trades and now - self.hour_trades[0] > 3600:
+                self.hour_trades.popleft()
+            if len(self.minute_trades) >= self.max_per_minute:
+                return False
+            if len(self.hour_trades) >= self.max_per_hour:
+                return False
+            return True
+    
+    async def record_trade(self):
+        async with self._lock:
+            now = time.time()
+            self.minute_trades.append(now)
+            self.hour_trades.append(now)
+
+class AuditTrail:
+    """Phase 10: Buffered audit trail for non-blocking logging"""
+    def __init__(self, buffer_size: int = 100, flush_interval: float = 5.0):
+        self._lock = asyncio.Lock()
+        self.buffer: List[Dict] = []
+        self.buffer_size = buffer_size
+        self.flush_interval = flush_interval
+        self.last_flush: float = time.time()
+        self._flush_task: Optional[asyncio.Task] = None
+    
+    async def log(self, event_type: str, data: Dict):
+        async with self._lock:
+            entry = {
+                "timestamp": time.time(),
+                "event_type": event_type,
+                "data": data
+            }
+            self.buffer.append(entry)
+            if len(self.buffer) >= self.buffer_size:
+                await self._flush_unsafe()
+    
+    async def _flush_unsafe(self):
+        if not self.buffer:
+            return
+        try:
+            with open("audit_trail.jsonl", "a") as f:
+                for entry in self.buffer:
+                    f.write(json.dumps(entry) + "\n")
+            self.buffer.clear()
+            self.last_flush = time.time()
+        except Exception as e:
+            logging.getLogger(__name__).error(f"[AUDIT] Flush failed: {e}")
+    
+    async def flush(self):
+        async with self._lock:
+            await self._flush_unsafe()
+    
+    async def start_auto_flush(self):
+        async def flush_loop():
+            while True:
+                await asyncio.sleep(self.flush_interval)
+                await self.flush()
+        self._flush_task = asyncio.create_task(flush_loop())
+
+class StateGuard:
+    """Phase 11 & 12: Real-time state guard with dual failsafe"""
+    def __init__(self):
+        self._lock = asyncio.Lock()
+        self.is_active = True
+        self.is_backup = False
+        self.last_check: float = time.time()
+        self.mismatch_count: int = 0
+        self.max_mismatches: int = 3
+        self.emergency_halt: bool = False
+        self.halt_reason: str = ""
+    
+    async def verify_state_consistency(self, engine_state: Dict, ui_state: Dict, db_state: Dict) -> bool:
+        async with self._lock:
+            self.last_check = time.time()
+            position_match = engine_state.get("position_open") == ui_state.get("position_open") == db_state.get("position_open", engine_state.get("position_open"))
+            price_tolerance = 0.001
+            engine_price = engine_state.get("entry_price", 0) or 0
+            ui_price = ui_state.get("entry_price", 0) or 0
+            price_match = abs(engine_price - ui_price) < price_tolerance if engine_price and ui_price else True
+            
+            if not position_match or not price_match:
+                self.mismatch_count += 1
+                logging.getLogger(__name__).warning(f"[STATE_GUARD] Mismatch #{self.mismatch_count}: pos={position_match}, price={price_match}")
+                if self.mismatch_count >= self.max_mismatches:
+                    await self._trigger_emergency_halt("State consistency failure")
+                    return False
+            else:
+                self.mismatch_count = 0
+            return True
+    
+    async def _trigger_emergency_halt(self, reason: str):
+        self.emergency_halt = True
+        self.halt_reason = reason
+        logging.getLogger(__name__).critical(f"[STATE_GUARD] EMERGENCY HALT: {reason}")
+    
+    async def is_healthy(self) -> bool:
+        async with self._lock:
+            return not self.emergency_halt and self.is_active
+    
+    async def resume(self):
+        async with self._lock:
+            self.emergency_halt = False
+            self.halt_reason = ""
+            self.mismatch_count = 0
+            logging.getLogger(__name__).info("[STATE_GUARD] Resumed from halt")
+
+class ExecutionEngine:
+    """Phase 1, 5, 6: Single writer, single execution point, single notification point"""
+    def __init__(self):
+        self._trade_lock = asyncio.Lock()
+        self._pipeline_queue: asyncio.Queue = asyncio.Queue(maxsize=1)
+        self.circuit_breaker = CircuitBreaker()
+        self.rate_limiter = RateLimiter()
+        self.audit_trail = AuditTrail()
+        self.state_guard = StateGuard()
+        self.recovery_attempts: int = 0
+        self.max_recovery_attempts: int = 3
+        self._pending_notification: Optional[Dict] = None
+        self._last_execution_id: str = ""
+    
+    async def execute_trade_atomically(
+        self,
+        signal: TradeSignal,
+        snapshot: TradingSnapshot,
+        execute_fn: Callable,
+        notify_fn: Callable,
+        state_update_fn: Callable
+    ) -> bool:
+        """Phase 5 & 6: ONLY method that may call broker, update state, send telegram"""
+        execution_id = f"{int(time.time() * 1000)}_{signal.action.value}"
+        
+        if execution_id == self._last_execution_id:
+            logging.getLogger(__name__).warning(f"[EXEC] Duplicate execution blocked: {execution_id}")
+            return False
+        
+        try:
+            async with asyncio.timeout(0.5):
+                async with self._trade_lock:
+                    if not await self._pre_execution_checks(signal, snapshot):
+                        return False
+                    
+                    self._last_execution_id = execution_id
+                    await self.audit_trail.log("EXECUTION_START", {"id": execution_id, "action": signal.action.value})
+                    
+                    try:
+                        async with asyncio.timeout(3.0):
+                            result = await asyncio.to_thread(execute_fn, signal, snapshot)
+                    except asyncio.TimeoutError:
+                        await self.circuit_breaker.record_failure("Broker timeout")
+                        return False
+                    
+                    if result:
+                        await state_update_fn(signal, snapshot, result)
+                        await self.rate_limiter.record_trade()
+                        await self.circuit_breaker.record_success()
+                        
+                        asyncio.create_task(self._send_notification_safe(notify_fn, signal, snapshot, result))
+                        
+                        await self.audit_trail.log("EXECUTION_COMPLETE", {"id": execution_id, "success": True})
+                        return True
+                    return False
+                    
+        except asyncio.TimeoutError:
+            logging.getLogger(__name__).error("[EXEC] Lock acquisition timeout")
+            return False
+        except Exception as e:
+            logging.getLogger(__name__).error(f"[EXEC] Error: {e}")
+            await self.circuit_breaker.record_failure(str(e))
+            return False
+    
+    async def _pre_execution_checks(self, signal: TradeSignal, snapshot: TradingSnapshot) -> bool:
+        """Phase 14: Pre-execution validation"""
+        if not await self.circuit_breaker.is_closed():
+            logging.getLogger(__name__).warning("[PRE_CHECK] Circuit breaker open")
+            return False
+        if not await self.rate_limiter.is_allowed():
+            logging.getLogger(__name__).warning("[PRE_CHECK] Rate limit exceeded")
+            return False
+        if not await self.state_guard.is_healthy():
+            logging.getLogger(__name__).warning("[PRE_CHECK] State guard unhealthy")
+            return False
+        if signal.action == TradeAction.BUY and snapshot.position_open:
+            logging.getLogger(__name__).warning("[PRE_CHECK] Cannot buy - position already open")
+            return False
+        if signal.action == TradeAction.SELL and not snapshot.position_open:
+            logging.getLogger(__name__).warning("[PRE_CHECK] Cannot sell - no position open")
+            return False
+        return True
+    
+    async def _send_notification_safe(self, notify_fn: Callable, signal: TradeSignal, snapshot: TradingSnapshot, result: Any):
+        """Phase 6: Single notification point - async, non-blocking"""
+        try:
+            await notify_fn(signal, snapshot, result)
+        except Exception as e:
+            logging.getLogger(__name__).error(f"[NOTIFY] Failed: {e}")
+    
+    async def safe_recovery(self, get_broker_position_fn: Callable, reconcile_fn: Callable) -> bool:
+        """Phase 13: Safe recovery protocol"""
+        if self.recovery_attempts >= self.max_recovery_attempts:
+            logging.getLogger(__name__).critical("[RECOVERY] Max attempts exceeded - escalating to human")
+            return False
+        
+        self.recovery_attempts += 1
+        logging.getLogger(__name__).info(f"[RECOVERY] Attempt {self.recovery_attempts}/{self.max_recovery_attempts}")
+        
+        try:
+            broker_position = await asyncio.wait_for(asyncio.to_thread(get_broker_position_fn), timeout=5.0)
+            await reconcile_fn(broker_position)
+            if await self.state_guard.is_healthy():
+                self.recovery_attempts = 0
+                logging.getLogger(__name__).info("[RECOVERY] Success - system restored")
+                return True
+        except Exception as e:
+            logging.getLogger(__name__).error(f"[RECOVERY] Failed: {e}")
+        
+        return False
+
+execution_engine = ExecutionEngine()
+
 def check_bounce_entry(analysis, candles, score):
     """شروط دخول الارتداد في السوق الهابط v3.7.5"""
     ema20 = analysis.get('ema20', 0)
@@ -4297,6 +4608,78 @@ def get_binance_ticker():
     except Exception as e:
         logger.error(f"Error fetching ticker: {e}")
     return None
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# v4.6.PRO SNAPSHOT AND SIGNAL HELPERS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def create_trading_snapshot(current_price: float, candles: list, analysis: dict) -> TradingSnapshot:
+    """Phase 2: Create immutable snapshot for current cycle"""
+    return TradingSnapshot(
+        timestamp=time.time(),
+        position_open=state.position_open,
+        price=current_price,
+        entry_price=state.entry_price,
+        indicators=dict(analysis) if analysis else {},
+        candles=tuple(candles) if candles else (),
+        mode=state.mode,
+        balance=paper_state.balance
+    )
+
+def generate_entry_signal(snapshot: TradingSnapshot) -> TradeSignal:
+    """Phase 4: Pure function - reads snapshot, returns signal, NO side effects"""
+    if snapshot.position_open:
+        return TradeSignal(action=TradeAction.NONE, confidence=0, reasons=["Position already open"], source="entry_check")
+    
+    analysis = snapshot.indicators
+    candles = list(snapshot.candles)
+    
+    if not analysis or not candles:
+        return TradeSignal(action=TradeAction.NONE, confidence=0, reasons=["No market data"], source="entry_check")
+    
+    score, reasons = calculate_signal_score(analysis, candles)
+    
+    if check_buy_signal(analysis, candles):
+        entry_price = snapshot.price
+        tp, sl = calculate_targets(entry_price, candles)
+        return TradeSignal(
+            action=TradeAction.BUY,
+            confidence=score / 10.0,
+            reasons=reasons,
+            suggested_tp=tp,
+            suggested_sl=sl,
+            source="entry_check"
+        )
+    
+    return TradeSignal(action=TradeAction.NONE, confidence=0, reasons=["No entry signal"], source="entry_check")
+
+def generate_exit_signal(snapshot: TradingSnapshot) -> TradeSignal:
+    """Phase 4: Pure function - reads snapshot, returns signal, NO side effects"""
+    if not snapshot.position_open:
+        return TradeSignal(action=TradeAction.NONE, confidence=0, reasons=["No position to exit"], source="exit_check")
+    
+    analysis = snapshot.indicators
+    candles = list(snapshot.candles)
+    
+    exit_reason = manage_trade_exits(analysis, candles)
+    if exit_reason:
+        return TradeSignal(
+            action=TradeAction.SELL,
+            confidence=1.0,
+            reasons=[exit_reason],
+            source="exit_check"
+        )
+    
+    if state.mode == "AGGRESSIVE" and check_sell_signal(analysis, candles):
+        return TradeSignal(
+            action=TradeAction.SELL,
+            confidence=0.8,
+            reasons=["aggressive_flip"],
+            source="exit_check"
+        )
+    
+    return TradeSignal(action=TradeAction.NONE, confidence=0, reasons=["Hold position"], source="exit_check")
 
 
 async def signal_loop(bot: Bot, chat_id: str) -> None:
