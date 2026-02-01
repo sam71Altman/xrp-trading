@@ -2945,8 +2945,11 @@ def execute_paper_buy(price: float, score: int, reasons: List[str], tp: float, s
         "", 0
     )
     # 🔓 DECOUPLED UI UPDATE (Non-blocking)
-    buy_msg = format_buy_message(price, tp, sl, state.timeframe, score, qty)
-    update_ui_async(buy_msg, "buy_signal")
+    if not state.position_open:
+        buy_msg = format_buy_message(price, tp, sl, state.timeframe, score, qty)
+        update_ui_async(buy_msg, "buy_signal")
+    else:
+        logger.info("[UI_SKIP] Buy message skipped - position already open")
 
     return qty
 
@@ -4497,8 +4500,11 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                 record_trade_executed(SYMBOL)
                 log_trade("BUY", "AI_EXECUTION", entry_price, None)
                 
-                msg = format_buy_message(entry_price, tp, sl, state.timeframe, score, qty)
-                await bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
+                if not state.position_open:
+                    msg = format_buy_message(entry_price, tp, sl, state.timeframe, score, qty)
+                    await bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
+                else:
+                    logger.info("[UI_SKIP] Buy message skipped in loop - position already open")
                 
                 # Update State for New Long
                 state.position_open = True
