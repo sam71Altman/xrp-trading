@@ -2163,7 +2163,6 @@ HARD_EXIT_REASONS = ["STOP_LOSS", "MANUAL_CLOSE", "FORCE_CLOSE", "MAINTENANCE"]
 class LegacyBotState:
     def __init__(self):
         self.mode: str = "AGGRESSIVE"  # Force Aggressive Mode
-        self.position_open: bool = False
         self.entry_price: Optional[float] = None
         self.entry_time: Optional[datetime] = None
         self.entry_timeframe: Optional[str] = None
@@ -2194,6 +2193,18 @@ class LegacyBotState:
         self.current_sl: Optional[float] = None
         self.entry_candles_snapshot: List[dict] = []
         self.entry_time_unix: float = 0.0
+
+    @property
+    def position_open(self) -> bool:
+        """SINGLE SOURCE OF TRUTH redirect"""
+        if 'engine' in globals():
+            return engine.get_position_state().get("position_open", False)
+        return False
+
+    @position_open.setter
+    def position_open(self, value):
+        """Forbidden to set directly but keeping for compatibility if engine handles it"""
+        pass
         
         # LPEM State (v3.7.2)
         self.lpem_active: bool = False
