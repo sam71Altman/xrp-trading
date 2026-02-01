@@ -246,6 +246,19 @@ class TradingEngine:
         except asyncio.TimeoutError:
             return False
 
+    def get_position_state(self) -> Dict[str, Any]:
+        """
+        SINGLE SOURCE OF TRUTH for position state.
+        All components must read from here.
+        """
+        return {
+            "position_open": self._position_open,
+            "symbol": self._position_symbol,
+            "entry_price": self._entry_price,
+            "version": self._position_version,
+            "closing": self._closing
+        }
+
     async def _execute_under_lock(self, signal):
         signal_type = signal.type if hasattr(signal, 'type') else signal.get("type")
         

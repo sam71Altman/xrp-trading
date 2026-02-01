@@ -2206,10 +2206,68 @@ class LegacyBotState:
         """Forbidden to set directly but keeping for compatibility if engine handles it"""
         pass
         
+    def __init__(self):
+        self.mode: str = "AGGRESSIVE"  # Force Aggressive Mode
+        self.entry_price: Optional[float] = None
+        self.entry_time: Optional[datetime] = None
+        self.entry_timeframe: Optional[str] = None
+        self.last_message_time: float = 0
+        self.signals_enabled: bool = True
+        self.timeframe: str = TIMEFRAME
+        self.last_close: Optional[float] = None
+        self.last_signal_type: Optional[str] = None
+        self.consecutive_errors: int = 0
+        self.error_alerted: bool = False
+        self.trailing_activated: bool = False
+        self.candles_below_ema: int = 0
+        self.last_exit_type: Optional[str] = None
+        self.current_cooldown: int = 0  # Disable cooldowns
+        self.consecutive_losses: int = 0
+        self.consecutive_wins: int = 0
+        self.pause_until: Optional[datetime] = None
+        self.pause_alerted: bool = False
+        self.backtest_warned: bool = False
+        self.last_signal_score: int = 10  # Bypass score
+        self.last_signal_reasons: List[str] = []
+        self.last_signal_reason: str = "Aggressive Entry"
+        self.backtest_stats: Dict = {}
+        self.pending_reset: bool = False
+        self.last_downtrend_alert_time: float = 0
+        self.tp_triggered: bool = False
+        self.risk_free_sl: Optional[float] = None
+        self.current_sl: Optional[float] = None
+        self.entry_candles_snapshot: List[dict] = []
+        self.entry_time_unix: float = 0.0
+        
         # LPEM State (v3.7.2)
         self.lpem_active: bool = False
         self.lpem_direction: str = "LONG"
         self.lpem_exit_price: float = 0.0
+        self.lpem_activation_time: float = 0.0
+        self.lpem_consecutive_count: int = 0
+        self.lpem_strict_mode: bool = False
+        self.last_exit_time: float = 0.0
+
+        # Diagnostic Counters (v3.7.7)
+        self.hold_active: bool = False
+        self.hold_activated_count: int = 0
+        self.valid_entries: int = 0
+        self.rejected_entries: int = 0
+        self.rejected_due_to_market: int = 0
+        self.rejected_due_to_rsi: int = 0
+        self.rejected_due_to_no_bounce: int = 0
+        self.hold_activations: int = 0
+        self.ema_overrides: int = 0
+        self.ema_exit_ignored_count: int = 0
+        self.last_rejection_reason: str = "None"
+        self.counters_last_reset: datetime = get_now()
+        
+        # Runner State (v4.5.PRO-FINAL)
+        self.runner_active: bool = False
+        self.runner_start_time: Optional[datetime] = None
+        self.runner_partial_closed: bool = False
+        self.runner_metrics = RUNNER_METRICS.copy()
+        self.runner_sl: Optional[float] = None
         self.lpem_activation_time: float = 0.0
         self.lpem_consecutive_count: int = 0
         self.lpem_strict_mode: bool = False
