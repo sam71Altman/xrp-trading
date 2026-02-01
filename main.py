@@ -3699,7 +3699,9 @@ def format_status_message() -> str:
     ks_status = "⚠️ معطل (Aggressive Mode)"
     
     pos_status = "❌ لا توجد صفقة"
-    if engine.get_position_state().get("position_open"):
+    # Safely get engine from globals
+    _engine = globals().get('execution_engine')
+    if _engine and _engine.get_position_state().get("position_open"):
         pnl = ((state.last_close - state.entry_price) / state.entry_price) * 100 if state.last_close and state.entry_price else 0
         pos_status = f"✅ صفقة مفتوحة ({pnl:+.2f}%)"
     
@@ -4503,7 +4505,9 @@ async def cmd_diagnostic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     closed_trades = get_closed_trades()
     msg += "🧾 *Paper Trading*\n"
     msg += f"• الرصيد: {paper_state.balance:.2f} USDT\n"
-    msg += f"• صفقة مفتوحة: {'نعم' if engine.get_position_state().get('position_open') else 'لا'}\n"
+    _engine = globals().get('execution_engine')
+    is_open = _engine.get_position_state().get('position_open') if _engine else False
+    msg += f"• صفقة مفتوحة: {'نعم' if is_open else 'لا'}\n"
     if paper_state.position_qty > 0 and state.entry_price is not None:
         entry_price_str = f"{state.entry_price:.4f}" if state.entry_price is not None else "None"
         msg += f"• سعر الدخول: {entry_price_str}\n"
