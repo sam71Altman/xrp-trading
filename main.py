@@ -1370,6 +1370,13 @@ def force_close_trade_legacy(reason):
 MAX_CONCURRENT_TRADES = {"1m": 2, "5m": 1}
 
 def check_backpressure(timeframe):
+    # [BACKPRESSURE] SINGLE SOURCE OF TRUTH
+    # Check if we already have a position open to prevent double entry
+    _engine = globals().get('execution_engine')
+    if _engine and getattr(_engine, 'get_position_state', None) and _engine.get_position_state().get("position_open"):
+        logger.warning(f"BACKPRESSURE: Position already open, blocking new entry for {timeframe}")
+        return True
+    
     # Allow more concurrent trades for aggressive/scalp modes
     max_trades = 5 if timeframe == "1m" else 2
     if safety_core.active_trades.get(timeframe, 0) >= max_trades:
