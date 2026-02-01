@@ -3699,7 +3699,7 @@ def format_status_message() -> str:
     ks_status = "⚠️ معطل (Aggressive Mode)"
     
     pos_status = "❌ لا توجد صفقة"
-    if state.position_open:
+    if engine.get_position_state().get("position_open"):
         pnl = ((state.last_close - state.entry_price) / state.entry_price) * 100 if state.last_close and state.entry_price else 0
         pos_status = f"✅ صفقة مفتوحة ({pnl:+.2f}%)"
     
