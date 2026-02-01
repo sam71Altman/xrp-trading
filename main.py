@@ -12,6 +12,8 @@ import logging
 import time
 import threading
 import json
+from threading import Lock
+from datetime import datetime, timezone
 def check_bounce_entry(analysis, candles, score):
     """شروط دخول الارتداد في السوق الهابط v3.7.5"""
     ema20 = analysis.get('ema20', 0)
@@ -68,7 +70,8 @@ ENABLE_TP_CONTINUATION = True      # تفعيل النظام
 PARTIAL_CLOSE_PERCENT = 0.60       # نسبة الإغلاق الجزئي عند TP
 MAX_RUNNER_TIME = 60               # أقصى مدة للـ Runner (دقائق)
 
-# ===== إعدادات Profit Lock =====
+# 🔒 Global Locks
+trade_lock = Lock()
 LOCK_PERCENTAGE = 0.70             # نسبة القفل من أعلى ربح
 MIN_PROFIT_TO_ACTIVATE = 0.50      # أدنى ربح لتفعيل النظام
 MIN_ABSOLUTE_LOCK = 0.40           # الحد الأدنى المطلق للقفل
@@ -448,8 +451,6 @@ async def quick_scalp_down_execute_trade(bot, chat_id, entry_price, candles):
     }
     quick_scalp_down_state["trade_count"] += 1
     logger.info(f"[DOWN_SCALP] Entry: {entry_price:.6f} TP: {tp_price:.6f} SL: {sl_price:.6f}")
-    msg = f"⚡ **Quick Scalp DOWN**\nEntry: {entry_price:.6f}\nTP: +{QUICK_SCALP_DOWN_TP_PERCENT*100:.2f}%\nSL: -{QUICK_SCALP_DOWN_SL_PERCENT*100:.2f}%"
-    await bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
     return True
 
 async def quick_scalp_down_manage_trade(bot, chat_id, current_price, candles):
@@ -2944,13 +2945,8 @@ def execute_paper_buy(price: float, score: int, reasons: List[str], tp: float, s
         paper_state.balance, score, paper_state.entry_reason,
         "", 0
     )
-    # 🔓 DECOUPLED UI UPDATE (Non-blocking)
-    if not state.position_open:
-        buy_msg = format_buy_message(price, tp, sl, state.timeframe, score, qty)
-        update_ui_async(buy_msg, "buy_signal")
-    else:
-        logger.info("[UI_SKIP] Buy message skipped - position already open")
-
+    
+    logger.info(f"[TRADE_EXEC] Buy executed at {price}, qty={qty}")
     return qty
 
 
@@ -3054,8 +3050,12 @@ def execute_paper_exit(entry_price: float, exit_price: float, reason: str,
 
 def update_ui_async(text: str, msg_type: str = "status"):
     """
-    تحديث الواجهة بشكل غير حاجز (Non-blocking status update)
+    تحديث الواجهة بشكل غير حاجز (Non-blocking status update) - DEPRECATED for signals
     """
+    if msg_type == "buy_signal":
+        logger.info(f"[UI_ASYNC_SKIP] Buy signal message suppressed in update_ui_async: {text[:50]}...")
+        return
+    
     try:
         from telegram import Bot
         from telegram.ext import Application
@@ -4478,46 +4478,54 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                 ai_status = ai_engine.get_status()
                 logger.info(f"🔍 [AI ENGINE] Mode: {ai_status.get('mode')}, Weight: {ai_status.get('weight')}")
 
-                ai_result = ai_engine.check_and_execute_trade(
-                    symbol=SYMBOL,
-                    direction="LONG",
-                    amount=round(paper_state.balance * 0.1, 2),
-                    original_conditions_met=True
-                )
-                
-                if not ai_result.executed:
-                    logger.info(f"🚫 [AI ENGINE] Trade blocked: {ai_result.decision.value} | score={ai_result.score}")
-                    return
-                
-                # Logic below only executes if trade was NOT already executed by AI engine
-                if ai_result.decision in [TradeDecision.ALLOWED_OFF_MODE, TradeDecision.ALLOWED_LEARN_MODE, TradeDecision.ALLOWED, TradeDecision.ALLOWED_LIMIT_FALLBACK]:
-                    # The AI engine already called execute_trade_fn
-                    # Just need to update the Telegram and state
-                    # score and reasons are already defined above for the callback
-                    qty = round(FIXED_TRADE_SIZE / entry_price, 2)
-                else:
-                    # Fallback for unexpected states
-                    return
-                
-                record_trade_executed(SYMBOL)
-                log_trade("BUY", "AI_EXECUTION", entry_price, None)
-                
-                if not state.position_open:
-                    msg = format_buy_message(entry_price, tp, sl, state.timeframe, score, qty)
-                    await bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
-                else:
-                    logger.info("[UI_SKIP] Buy message skipped in loop - position already open")
-                
-                # Update State for New Long
-                state.position_open = True
-                state.entry_price = entry_price
-                state.entry_time = get_now()
-                state.current_sl = sl
-                state.tp_triggered = False
-                state.risk_free_sl = None
-                state.trailing_activated = False
-                state.candles_below_ema = 0
-                state.entry_candles_snapshot = candles[-10:]
+                # 🔒 THREAD LOCK (Unified Entry)
+                with trade_lock:
+                    if state.position_open:
+                        logger.info("🚫 [LOCK_BLOCK] Position already opened by another thread")
+                        return
+                    
+                    # UPDATE STATE FIRST (position_open = True)
+                    state.position_open = True
+                    state.entry_price = entry_price
+                    state.entry_time = get_now()
+                    state.current_sl = sl
+                    state.tp_triggered = False
+                    state.risk_free_sl = None
+                    state.trailing_activated = False
+                    state.candles_below_ema = 0
+                    state.entry_candles_snapshot = candles[-10:]
+
+                    ai_result = ai_engine.check_and_execute_trade(
+                        symbol=SYMBOL,
+                        direction="LONG",
+                        amount=round(paper_state.balance * 0.1, 2),
+                        original_conditions_met=True
+                    )
+                    
+                    if not ai_result.executed:
+                        logger.info(f"🚫 [AI ENGINE] Trade blocked: {ai_result.decision.value} | score={ai_result.score}")
+                        # ROLLBACK STATE
+                        reset_position_state()
+                        return
+                    
+                    # Logic below only executes if trade was NOT already executed by AI engine
+                    if ai_result.decision in [TradeDecision.ALLOWED_OFF_MODE, TradeDecision.ALLOWED_LEARN_MODE, TradeDecision.ALLOWED, TradeDecision.ALLOWED_LIMIT_FALLBACK]:
+                        # The AI engine already called execute_trade_fn
+                        # Just need to update the Telegram and state
+                        # score and reasons are already defined above for the callback
+                        qty = round(FIXED_TRADE_SIZE / entry_price, 2)
+                        
+                        record_trade_executed(SYMBOL)
+                        log_trade("BUY", "AI_EXECUTION", entry_price, None)
+                        
+                        # 🔔 SINGLE SOURCE OF MESSAGING
+                        msg = format_buy_message(entry_price, tp, sl, state.timeframe, score, qty)
+                        await bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
+                        logger.info("[SIGNAL_SENT] Buy notification sent from signal_loop")
+                    else:
+                        # Fallback for unexpected states
+                        reset_position_state()
+                        return
 
     except Exception as e:
         if "WebSocketApp" in str(e):
