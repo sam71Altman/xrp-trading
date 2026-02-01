@@ -1,0 +1,307 @@
+TASK: Upgrade EXISTING trading engine to v4.2.PRO (Institutional Production Hardening)
+
+CRITICAL – READ CAREFULLY:
+
+This is NOT a rewrite.
+This is NOT a new engine.
+This is NOT wrapping the engine.
+
+We MUST:
+✔ Modify the CURRENT engine only
+✔ Refactor internally
+✔ Harden architecture
+✔ Keep same bot, same entry points
+
+STRICTLY FORBIDDEN:
+❌ Do NOT create new Engine class
+❌ Do NOT wrap engine inside another class
+❌ Do NOT duplicate logic
+❌ Do NOT add parallel systems
+❌ Do NOT create new architecture layer
+
+We are ONLY improving the CURRENT engine internally.
+
+
+====================================================
+GOAL
+====================================================
+
+After upgrade system MUST guarantee:
+
+✔ ZERO duplicate trades
+✔ ZERO duplicate telegram messages
+✔ ZERO race conditions
+✔ ZERO state mismatch (UI == Engine == DB)
+✔ ONE execution path only
+✔ ONE state source only
+✔ Production-grade reliability
+
+
+====================================================
+PHASE 1 — SINGLE WRITER (MANDATORY FIRST)
+====================================================
+
+Inside EXISTING TradingEngine:
+
+Add ONE global lock:
+
+    self._trade_lock = asyncio.Lock()
+
+RULE:
+ALL of these MUST happen ONLY inside this lock:
+
+- open_trade
+- close_trade
+- broker calls
+- state updates
+- telegram messages
+- score updates
+
+Example:
+
+    async with self._trade_lock:
+        await self._execute_trade_atomically()
+
+NO OTHER PLACE may modify state.
+
+
+====================================================
+PHASE 2 — PURE STRATEGIES ONLY (MANDATORY)
+====================================================
+
+ALL strategies must become PURE SIGNAL GENERATORS.
+
+STRICTLY FORBIDDEN inside strategies:
+
+❌ open_trade
+❌ broker
+❌ telegram
+❌ state writes
+❌ locks
+❌ score calculation
+
+Allowed ONLY:
+
+    async def generate_signal(snapshot) -> TradeSignal
+
+Strategies:
+- FAST
+- DOWN
+- RUNNER
+- AI
+- ALL modes
+
+must return signal ONLY.
+
+
+====================================================
+PHASE 3 — IMMUTABLE SNAPSHOT (REQUIRED)
+====================================================
+
+Create:
+
+@dataclass(frozen=True)
+class TradingSnapshot:
+    timestamp: float
+    position_open: bool
+    price: float
+    indicators: dict
+
+Rules:
+- created once per cycle
+- frozen
+- shared to ALL strategies
+- never modified
+- discarded after cycle
+
+
+====================================================
+PHASE 4 — PIPELINE ISOLATION (NO OVERLAP)
+====================================================
+
+Inside SAME engine:
+
+    self.queue = asyncio.Queue(maxsize=1)
+
+Guarantees:
+- no overlapping cycles
+- no concurrent execution
+- no race conditions
+
+
+====================================================
+PHASE 5 — SINGLE EXECUTION POINT
+====================================================
+
+ONLY ONE method may talk to broker:
+
+    execute_trade_atomically()
+
+ALL strategies must go through this only.
+
+
+====================================================
+PHASE 6 — SINGLE NOTIFICATION POINT
+====================================================
+
+ONLY engine sends telegram messages.
+
+Rule:
+
+1 trade → exactly 1 message → always
+
+
+====================================================
+PHASE 7 — TIMEOUT PROTECTION (REQUIRED)
+====================================================
+
+ALL awaits MUST use timeouts:
+
+queue.get → 1s
+lock.acquire → 0.5s
+broker.order → 3s
+telegram → async
+
+Never block.
+
+
+====================================================
+PHASE 8 — CIRCUIT BREAKER + RATE LIMITER
+====================================================
+
+Add inside SAME engine:
+
+    self.circuit_breaker
+    self.rate_limiter
+
+Before trade:
+- breaker closed
+- rate allowed
+
+
+====================================================
+PHASE 9 — CENTRAL SCORE SYSTEM
+====================================================
+
+Remove ALL per-strategy scoring.
+
+ONLY:
+
+    engine.calculate_score(signals)
+
+All modes use SAME score source.
+
+
+====================================================
+PHASE 10 — BUFFERED AUDIT TRAIL (NON-BLOCKING)
+====================================================
+
+Add:
+
+    self.audit_buffer = []
+
+Rules:
+- store logs in memory
+- async flush to disk
+- NEVER block trading
+
+
+====================================================
+PHASE 11 — REAL-TIME STATE GUARD
+====================================================
+
+Inside SAME engine add:
+
+StateGuard loop:
+
+Every 100ms verify:
+
+UI == Engine == DB
+
+If mismatch:
+
+EMERGENCY HALT:
+- cancel orders
+- open breaker
+- freeze engine
+- alert admin
+
+
+====================================================
+PHASE 12 — DUAL GUARD FAILSAFE
+====================================================
+
+If StateGuard crashes:
+Secondary guard auto-takes-over.
+
+System must NEVER run without monitoring.
+
+
+====================================================
+PHASE 13 — SAFE RECOVERY PROTOCOL
+====================================================
+
+On ANY failure:
+
+1 stop new signals
+2 finish current cycle
+3 query broker real position
+4 reconcile state
+5 validate health
+6 controlled restart
+
+Max 3 attempts → escalate
+
+
+====================================================
+PHASE 14 — PRE / POST CHECKS
+====================================================
+
+PRE:
+- breaker closed
+- rate allowed
+- broker connected
+- queue empty
+- state consistent
+- sufficient balance
+
+POST:
+- order acknowledged
+- id stored
+- state updated atomically
+- message sent once
+- DB updated
+
+
+====================================================
+VALIDATION TESTS (MUST PASS)
+====================================================
+
+1) 1000 concurrent signals → 1 trade only
+2) trades == telegram messages
+3) UI == Engine == DB always
+4) no strategy touches broker directly
+5) broker latency → safe timeout
+6) network failure → recovery works
+
+
+====================================================
+EXPECTED RESULT
+====================================================
+
+After upgrade:
+
+✔ no duplicate trades
+✔ no duplicate messages
+✔ no race conditions
+✔ no state mismatch
+✔ self-healing behavior
+✔ production reliability
+
+IMPORTANT:
+
+MODIFY CURRENT ENGINE ONLY.
+DO NOT ADD NEW ENGINE.
+DO NOT WRAP.
+DO NOT DUPLICATE.
+ONLY REFACTOR INTERNALLY.
