@@ -1,0 +1,142 @@
+TASK: v4.6.PRO – CRITICAL STATE UNIFICATION FIX (NO PATCHES)
+This is NOT a feature request.
+This is NOT a workaround.
+This is a ROOT ARCHITECTURE FIX.
+We detected STATE DIVERGENCE:
+Symptoms:
+UI shows: no open trade
+Diagnosis shows: trade open
+No close notification sent
+PnL appears immediately at entry
+New trades blocked
+This PROVES: ❌ Multiple state sources exist ❌ More than one position_open ❌ Some components use cached/local state ❌ Not all closes pass through atomic engine
+This is STRICTLY FORBIDDEN.
+We must enforce:
+👉 ONE SINGLE SOURCE OF TRUTH ONLY
+=====================================
+HARD REQUIREMENTS (MANDATORY)
+=====================================
+RULE 1 — ONLY ENGINE OWNS POSITION STATE
+There must be EXACTLY ONE:
+نسخ التعليمات البرمجية
+Python
+engine._position_state
+Allowed:
+نسخ التعليمات البرمجية
+
+read → engine.get_position()
+write → engine.execute_trade_atomically()
+write → engine.close_trade_atomically()
+Forbidden everywhere else:
+نسخ التعليمات البرمجية
+
+self.position_open
+paper_state
+safety_core.state
+local flags
+cached state
+copies
+mirrors
+If found → DELETE.
+RULE 2 — GLOBAL SEARCH & DESTROY
+Perform FULL project scan and REMOVE:
+نسخ التعليمات البرمجية
+
+position_open
+active_trade
+current_trade
+in_position
+paper_position
+safety_state
+trade_state
+cached_state
+If not inside engine core → REMOVE or redirect.
+Replace ALL reads with:
+نسخ التعليمات البرمجية
+Python
+engine.get_position_state()
+RULE 3 — SINGLE CLOSE PATH (CRITICAL)
+ALL closes MUST go through:
+نسخ التعليمات البرمجية
+Python
+close_trade_atomically()
+Forbidden:
+نسخ التعليمات البرمجية
+
+force_close_trade()
+paper_close()
+runner_exit()
+kill_switch_exit()
+direct state change
+They must ONLY call:
+نسخ التعليمات البرمجية
+Python
+await engine.close_trade_atomically(reason)
+No exceptions.
+RULE 4 — DIAGNOSIS & UI MUST READ ENGINE ONLY
+Diagnosis panel:
+نسخ التعليمات البرمجية
+
+MUST NOT read internal variables
+MUST NOT keep its own state
+Must use:
+نسخ التعليمات البرمجية
+Python
+engine.get_position_state()
+UI: Same rule.
+No local tracking allowed.
+RULE 5 — REMOVE ALL CACHING
+Forbidden:
+نسخ التعليمات البرمجية
+
+self.last_position
+self.cached_position
+self.paper_position
+copy.deepcopy(state)
+Everything must be live-read from engine.
+RULE 6 — ATOMIC STATE RESET
+Inside:
+نسخ التعليمات البرمجية
+Python
+close_trade_atomically()
+MANDATORY ORDER:
+broker close
+update engine state
+update DB/UI
+send telegram
+audit log
+Never change order.
+RULE 7 — REAL-TIME CONSISTENCY CHECK
+Inside engine:
+نسخ التعليمات البرمجية
+Python
+async def _state_guard_loop():
+    while True:
+        ui = get_ui_state()
+        engine_state = self.get_position_state()
+        db = get_db_state()
+
+        if not (ui == engine_state == db):
+            await self.emergency_halt("STATE DIVERGENCE")
+
+        await asyncio.sleep(0.1)
+If mismatch → STOP trading immediately.
+=====================================
+VALIDATION TESTS (MUST PASS)
+=====================================
+Test 1: 1000 signals → only 1 trade
+Test 2: every close → exactly 1 telegram message
+Test 3: UI == Diagnosis == Engine ALWAYS
+Test 4: search project: ZERO extra position variables
+Test 5: remove any secondary state containers
+=====================================
+EXPECTED RESULT
+=====================================
+After fix:
+✅ UI always matches diagnosis
+✅ close always sends message
+✅ no ghost trades
+✅ no stuck trades
+✅ no state drift
+✅ single truth only
+If more than ONE state exists → FAIL build.
