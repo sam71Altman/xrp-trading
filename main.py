@@ -4467,9 +4467,12 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                 # Pre-calculate targets for potential immediate execution in AI OFF/LEARN modes
                 entry_price = analysis["close"]
                 tp, sl = calculate_targets(entry_price, candles)
+                
+                # Dynamic Score Calculation (Fix 10/10 issue)
+                score, reasons = calculate_signal_score(analysis, candles)
 
                 # Update execution function to include targets
-                ai_engine.execute_trade_fn = lambda symbol, direction, amount: execute_paper_buy(entry_price, 10, ["AI_BYPASS"], tp, sl)
+                ai_engine.execute_trade_fn = lambda symbol, direction, amount: execute_paper_buy(entry_price, score, reasons, tp, sl)
                 
                 # Check mode BEFORE execution to ensure logs are clear
                 ai_status = ai_engine.get_status()
@@ -4490,8 +4493,7 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                 if ai_result.decision in [TradeDecision.ALLOWED_OFF_MODE, TradeDecision.ALLOWED_LEARN_MODE, TradeDecision.ALLOWED, TradeDecision.ALLOWED_LIMIT_FALLBACK]:
                     # The AI engine already called execute_trade_fn
                     # Just need to update the Telegram and state
-                    score = ai_result.score if ai_result.score else 10
-                    reasons = ["AI_BYPASS"]
+                    # score and reasons are already defined above for the callback
                     qty = round(FIXED_TRADE_SIZE / entry_price, 2)
                 else:
                     # Fallback for unexpected states
