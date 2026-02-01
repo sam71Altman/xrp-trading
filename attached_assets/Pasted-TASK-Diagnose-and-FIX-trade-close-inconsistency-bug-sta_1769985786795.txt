@@ -1,0 +1,197 @@
+TASK: Diagnose and FIX trade close inconsistency bug (state drift)
+
+CRITICAL:
+This is NOT a feature.
+This is NOT a refactor.
+This is a STRICT ARCHITECTURE CORRECTION.
+
+DO NOT add wrappers.
+DO NOT add new systems.
+DO NOT redesign engine.
+
+You MUST:
+1) inspect console logs
+2) find ALL places touching trade state
+3) centralize closing logic
+4) guarantee atomic close behavior
+5) guarantee exactly ONE close message
+6) guarantee engine state ALWAYS matches reality
+
+=====================================
+PROBLEM DESCRIPTION (READ CAREFULLY)
+=====================================
+
+Observed behavior:
+
+• sometimes trade closes but NO telegram close message
+• UI shows closed
+• but engine diagnostic shows still OPEN
+• new trades blocked
+• system stuck
+
+This means:
+
+UI ≠ Engine ≠ Broker
+
+This is STATE DRIFT.
+
+ROOT CAUSE IS ALWAYS ONE OF:
+
+A) position_open modified outside engine
+B) close executed outside atomic function
+C) telegram failure before state update
+D) multiple close paths
+E) state updated after notification (wrong order)
+
+=====================================
+PHASE 1 — CONSOLE DIAGNOSIS (MANDATORY FIRST)
+=====================================
+
+1) scan ALL logs for:
+   - close
+   - exit
+   - position
+   - state
+   - telegram
+   - trailing
+   - runner
+   - stoploss
+
+2) print a report:
+   - how many close events
+   - how many telegram messages
+   - mismatches count
+
+3) detect:
+   - close without notification
+   - notification without close
+   - duplicate closes
+   - missing state update
+
+OUTPUT diagnostic summary BEFORE editing code.
+
+=====================================
+PHASE 2 — CODE AUDIT (MANDATORY)
+=====================================
+
+Search entire project for:
+
+position_open =
+close_trade(
+send_message(
+bot.send
+broker.close
+update_ui
+
+List ALL files touching these.
+
+If ANY appear outside engine:
+MARK AS VIOLATION.
+
+=====================================
+ABSOLUTE RULES (HARD ENFORCED)
+=====================================
+
+ONLY TradingEngine may:
+
+✓ open trades
+✓ close trades
+✓ update position_open
+✓ send telegram
+✓ talk to broker
+
+STRICTLY FORBIDDEN everywhere else:
+
+❌ position_open writes
+❌ broker calls
+❌ telegram calls
+❌ close logic
+
+If found:
+MOVE to engine immediately.
+
+=====================================
+PHASE 3 — ATOMIC CLOSE IMPLEMENTATION (MANDATORY)
+=====================================
+
+Implement ONE function ONLY:
+
+async def close_trade_atomically(self, reason):
+
+    async with self._trade_lock:
+
+        # STEP 1 — close broker FIRST
+        result = await broker.close_position()
+
+        # STEP 2 — update state SECOND (ALWAYS)
+        self.position_open = False
+
+        # STEP 3 — update DB/UI
+
+        # STEP 4 — send telegram LAST (async, non-blocking)
+
+WHY:
+Telegram/network must NEVER control state.
+
+State MUST update even if notification fails.
+
+=====================================
+PHASE 4 — REMOVE ALL OTHER CLOSE PATHS
+=====================================
+
+If any strategy does:
+
+close_trade()
+send_message()
+position_open = False
+
+DELETE or redirect to:
+
+engine.close_trade_atomically()
+
+=====================================
+PHASE 5 — REALITY RECONCILIATION (SAFETY NET)
+=====================================
+
+Add inside engine:
+
+async def _reconcile_state_loop():
+
+    every 2 seconds:
+        real = await broker.get_position_open()
+        if real != self.position_open:
+            log "STATE DRIFT DETECTED → AUTO FIX"
+            self.position_open = real
+
+This prevents permanent stuck state.
+
+=====================================
+PHASE 6 — GUARANTEES TO IMPLEMENT
+=====================================
+
+Must guarantee:
+
+✓ 1 trade close → exactly 1 telegram message
+✓ state updated BEFORE message
+✓ no close outside engine
+✓ no duplicate messages
+✓ no stuck position
+✓ engine always matches broker
+
+=====================================
+OUTPUT REQUIREMENTS
+=====================================
+
+After patch:
+
+1) show diagnostic report
+2) show list of violations fixed
+3) show modified files
+4) explain each fix briefly
+5) confirm:
+   "Single close path enforced"
+   "Atomic close guaranteed"
+   "State cannot drift anymore"
+
+DO NOT add extra architecture.
+ONLY repair existing system safely.
