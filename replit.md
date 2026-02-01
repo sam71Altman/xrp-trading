@@ -59,6 +59,13 @@ A Python Telegram trading signals bot for XRP/USDT that runs paper trading simul
 - Emergency halt on state mismatch
 - Backup guard for failsafe
 
+**Atomic Close System** (State Drift Fix)
+- `close_trade_atomically()`: Single close path with guaranteed order
+- Order: broker close -> state update -> DB/UI -> telegram (non-blocking)
+- `force_close_trade()`: Now calls `reset_position_state()` to prevent drift
+- `reconcile_state()`: Runs every 2 seconds as safety net
+- Auto-detects and fixes state drift (Broker != Engine mismatch)
+
 **Multi-Strategy Architecture**
 - SCALP_FAST: 1m/5m frames with isolated state
 - SCALP_PULLBACK: 5m frame with isolated state
