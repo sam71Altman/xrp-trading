@@ -34,6 +34,17 @@ class TradeResult:
     details: str
 
 
+@dataclass(frozen=True)
+class TradingSnapshot:
+    """Immutable snapshot - created once per cycle, never modified"""
+    timestamp: float
+    position_open: bool
+    price: float
+    entry_price: Optional[float]
+    indicators: Dict[str, Any]
+    mode: str
+    balance: float
+
 class TradingEngine:
 
     QUICK_DOWN_TP = 0.10

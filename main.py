@@ -397,7 +397,7 @@ _CLOSE_NOTIFICATION_COOLDOWN = 2.0  # seconds
 
 execution_engine = ExecutionEngine()
 
-def check_bounce_entry(analysis, candles, score):
+def check_bounce_entry(analysis, candles, score, snapshot: Optional[TradingSnapshot] = None):
     """شروط دخول الارتداد في السوق الهابط v3.7.5"""
     ema20 = analysis.get('ema20', 0)
     ema50 = analysis.get('ema50', 0)
@@ -408,7 +408,7 @@ def check_bounce_entry(analysis, candles, score):
     if market_mode != "HARD_MARKET":
         return False
     
-    current_price = candles[-1]['close'] if candles else 0
+    current_price = snapshot.price if snapshot else (candles[-1]['close'] if candles else 0)
     
     # 1. القاع المحلي (Local Extreme)
     recent_lows = [c['low'] for c in candles[-15:]] if len(candles) >= 15 else []
