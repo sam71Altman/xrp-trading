@@ -622,14 +622,7 @@ async def quick_scalp_down_execute_trade(bot, chat_id, entry_price, candles):
     No local state modification allowed.
     """
     amount = round(FIXED_TRADE_SIZE / entry_price, 2) if entry_price > 0 else 0
-    await execution_engine.request_trade({ "type": "OPEN", "symbol": SYMBOL, "amount": amount })
-            return True
-        except Exception as e:
-            logger.error(f"TRAILING_UPDATE_FAILED: {e}")
-            time.sleep(0.05) # 50ms
-
-    # Failure → log only (no block)
-    logger.warning("TRAILING_SL_FAILED after max retries (no block)")
+    await execution_engine.request_trade({ "type": "OPEN", "symbol": SYMBOL, "amount": amount }) # "type": "OPEN", "symbol": SYMBOL, "amount": amount })
     return False
 
 def check_trailing_activation(entry_price: float, current_price: float, timeframe: str = "1m") -> bool:
@@ -4571,7 +4564,7 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                         return
                     
                     # Request trade via TradingEngine
-    await execution_engine.request_trade({ "type": "OPEN", "symbol": SYMBOL, "amount": amount })
+    await execution_engine.request_trade({ "type": "OPEN", "symbol": SYMBOL, "amount": amount }) # "type": "OPEN", "symbol": SYMBOL, "amount": amount })
                     
                     # Update non-position state for compatibility
                     state.entry_time = get_now()
