@@ -213,209 +213,6 @@ class StateGuard:
             self.mismatch_count = 0
             logging.getLogger(__name__).info("[STATE_GUARD] Resumed from halt")
 
-class TradingEngine:
-    """Phase 1, 5, 6: Single writer, single execution point, single notification point"""
-    def __init__(self):
-        self._trade_lock = asyncio.Lock()
-        self._pipeline_queue: asyncio.Queue = asyncio.Queue(maxsize=1)
-        self.circuit_breaker = CircuitBreaker()
-        self.rate_limiter = RateLimiter()
-        self.audit_trail = AuditTrail()
-        self.state_guard = StateGuard()
-        self.recovery_attempts: int = 0
-        self.max_recovery_attempts: int = 3
-        self._pending_notification: Optional[Dict] = None
-        self._last_execution_id: str = ""
-        self._position_open: bool = False
-        self._position_symbol: Optional[str] = None
-        self._entry_price: float = 0.0
-        self._position_version: int = 0
-    
-    def get_position_state(self) -> Dict[str, Any]:
-        """SINGLE SOURCE OF TRUTH for position state"""
-        return {
-            "position_open": self._position_open,
-            "symbol": self._position_symbol,
-            "entry_price": self._entry_price,
-            "version": self._position_version
-        }
-    
-    async def request_trade(
-        self,
-        signal: TradeSignal,
-        snapshot: TradingSnapshot,
-        execute_fn: Callable,
-        notify_fn: Callable,
-        state_update_fn: Callable
-    ) -> bool:
-        """Alias for execute_trade_atomically to match TradingEngine interface"""
-        return await self.execute_trade_atomically(signal, snapshot, execute_fn, notify_fn, state_update_fn)
-
-    async def execute_trade_atomically(
-        self,
-        signal: TradeSignal,
-        snapshot: TradingSnapshot,
-        execute_fn: Callable,
-        notify_fn: Callable,
-        state_update_fn: Callable
-    ) -> bool:
-        """Phase 5 & 6: ONLY method that may call broker, update state, send telegram"""
-        execution_id = f"{int(time.time() * 1000)}_{signal.action.value}"
-        
-        if execution_id == self._last_execution_id:
-            logging.getLogger(__name__).warning(f"[EXEC] Duplicate execution blocked: {execution_id}")
-            return False
-        
-        try:
-            async with asyncio.timeout(0.5):
-                async with self._trade_lock:
-                    if not await self._pre_execution_checks(signal, snapshot):
-                        return False
-                    
-                    self._last_execution_id = execution_id
-                    await self.audit_trail.log("EXECUTION_START", {"id": execution_id, "action": signal.action.value})
-                    
-                    try:
-                        async with asyncio.timeout(3.0):
-                            result = await asyncio.to_thread(execute_fn, signal, snapshot)
-                    except asyncio.TimeoutError:
-                        await self.circuit_breaker.record_failure("Broker timeout")
-                        return False
-                    
-                    if result:
-                        await state_update_fn(signal, snapshot, result)
-                        await self.rate_limiter.record_trade()
-                        await self.circuit_breaker.record_success()
-                        
-                        asyncio.create_task(self._send_notification_safe(notify_fn, signal, snapshot, result))
-                        
-                        await self.audit_trail.log("EXECUTION_COMPLETE", {"id": execution_id, "success": True})
-                        return True
-                    return False
-                    
-        except asyncio.TimeoutError:
-            logging.getLogger(__name__).error("[EXEC] Lock acquisition timeout")
-            return False
-        except Exception as e:
-            logging.getLogger(__name__).error(f"[EXEC] Error: {e}")
-            await self.circuit_breaker.record_failure(str(e))
-            return False
-    
-    async def _pre_execution_checks(self, signal: TradeSignal, snapshot: TradingSnapshot) -> bool:
-        """Phase 14: Pre-execution validation"""
-        if not await self.circuit_breaker.is_closed():
-            logging.getLogger(__name__).warning("[PRE_CHECK] Circuit breaker open")
-            return False
-        if not await self.rate_limiter.is_allowed():
-            logging.getLogger(__name__).warning("[PRE_CHECK] Rate limit exceeded")
-            return False
-        if not await self.state_guard.is_healthy():
-            logging.getLogger(__name__).warning("[PRE_CHECK] State guard unhealthy")
-            return False
-        if signal.action == TradeAction.BUY and snapshot.position_open:
-            logging.getLogger(__name__).warning("[PRE_CHECK] Cannot buy - position already open")
-            return False
-        if signal.action == TradeAction.SELL and not snapshot.position_open:
-            logging.getLogger(__name__).warning("[PRE_CHECK] Cannot sell - no position open")
-            return False
-        return True
-    
-    async def _send_notification_safe(self, notify_fn: Callable, signal: TradeSignal, snapshot: TradingSnapshot, result: Any):
-        """Phase 6: Single notification point - async, non-blocking"""
-        try:
-            await notify_fn(signal, snapshot, result)
-        except Exception as e:
-            logging.getLogger(__name__).error(f"[NOTIFY] Failed: {e}")
-    
-    async def safe_recovery(self, get_broker_position_fn: Callable, reconcile_fn: Callable) -> bool:
-        """Phase 13: Safe recovery protocol"""
-        if self.recovery_attempts >= self.max_recovery_attempts:
-            logging.getLogger(__name__).critical("[RECOVERY] Max attempts exceeded - escalating to human")
-            return False
-        
-        self.recovery_attempts += 1
-        logging.getLogger(__name__).info(f"[RECOVERY] Attempt {self.recovery_attempts}/{self.max_recovery_attempts}")
-        
-        try:
-            broker_position = await asyncio.wait_for(asyncio.to_thread(get_broker_position_fn), timeout=5.0)
-            await reconcile_fn(broker_position)
-            if await self.state_guard.is_healthy():
-                self.recovery_attempts = 0
-                logging.getLogger(__name__).info("[RECOVERY] Success - system restored")
-                return True
-        except Exception as e:
-            logging.getLogger(__name__).error(f"[RECOVERY] Failed: {e}")
-        
-        return False
-
-    async def close_trade_atomically(
-        self,
-        reason: str,
-        exit_price: float,
-        close_broker_fn: Callable,
-        update_state_fn: Callable,
-        notify_fn: Callable
-    ) -> bool:
-        """
-        SINGLE ATOMIC CLOSE PATH - Phase 3 of state drift fix
-        Order: broker close -> state update -> DB/UI -> telegram (non-blocking)
-        GUARANTEES:
-        - 1 trade close = exactly 1 telegram message
-        - State updated BEFORE message
-        - No duplicate closes
-        """
-        execution_id = f"CLOSE_{int(time.time() * 1000)}_{reason}"
-        logger = logging.getLogger(__name__)
-        
-        if execution_id == self._last_execution_id:
-            logger.warning(f"[ATOMIC_CLOSE] Duplicate close blocked: {execution_id}")
-            return False
-        
-        try:
-            async with asyncio.timeout(1.0):
-                async with self._trade_lock:
-                    self._last_execution_id = execution_id
-                    await self.audit_trail.log("CLOSE_START", {"id": execution_id, "reason": reason})
-                    
-                    # STEP 1 - Close broker FIRST (paper trading always succeeds)
-                    try:
-                        async with asyncio.timeout(3.0):
-                            broker_result = await asyncio.to_thread(close_broker_fn)
-                    except asyncio.TimeoutError:
-                        logger.error("[ATOMIC_CLOSE] Broker timeout - forcing state update anyway")
-                        broker_result = True  # Paper trading - force continue
-                    
-                    # STEP 2 - Update state SECOND (ALWAYS, even if broker failed)
-                    try:
-                        await asyncio.to_thread(update_state_fn, reason, exit_price)
-                        logger.info(f"[ATOMIC_CLOSE] State updated: reason={reason}, price={exit_price}")
-                    except Exception as e:
-                        logger.error(f"[ATOMIC_CLOSE] State update failed: {e}")
-                        return False
-                    
-                    await self.audit_trail.log("CLOSE_STATE_UPDATED", {"id": execution_id})
-                    
-                    # STEP 3 - Send telegram LAST (async, non-blocking)
-                    asyncio.create_task(self._send_close_notification_safe(notify_fn, reason, exit_price))
-                    
-                    await self.audit_trail.log("CLOSE_COMPLETE", {"id": execution_id, "success": True})
-                    logger.info(f"[ATOMIC_CLOSE] Complete: {reason}")
-                    return True
-                    
-        except asyncio.TimeoutError:
-            logger.error("[ATOMIC_CLOSE] Lock acquisition timeout")
-            return False
-        except Exception as e:
-            logger.error(f"[ATOMIC_CLOSE] Error: {e}")
-            return False
-    
-    async def _send_close_notification_safe(self, notify_fn: Callable, reason: str, exit_price: float):
-        """Send close notification - async, non-blocking, failure-safe"""
-        try:
-            await notify_fn(reason, exit_price)
-        except Exception as e:
-            logging.getLogger(__name__).error(f"[CLOSE_NOTIFY] Failed: {e} - trade still closed correctly")
-
 # Global close message tracker to prevent duplicates
 _close_notification_tracker: Dict[str, float] = {}
 _CLOSE_NOTIFICATION_COOLDOWN = 2.0  # seconds
@@ -825,229 +622,7 @@ async def quick_scalp_down_execute_trade(bot, chat_id, entry_price, candles):
     No local state modification allowed.
     """
     amount = round(FIXED_TRADE_SIZE / entry_price, 2) if entry_price > 0 else 0
-    await execution_engine.request_trade({
-        "type": "OPEN",
-        "symbol": SYMBOL,
-        "amount": amount
-    })
-    logger.info(f"[DOWN_SCALP] Entry requested via engine: {entry_price:.6f}")
-    return True
-
-async def quick_scalp_down_manage_trade(bot, chat_id, current_price, _):
-    """
-    FAST_SCALP_DOWN exit logic.
-    TradingEngine is the SINGLE SOURCE OF TRUTH.
-    TP = +0.10%, SL = -0.12%
-    """
-    pos = execution_engine.get_position_state()
-    if not pos["position_open"]:
-        return False
-
-    entry = pos["entry_price"]
-    
-    pnl = (current_price - entry) / entry * 100
-    
-    print(f"[FAST_DOWN] pnl={pnl:.4f}%")
-    
-    if pnl >= 0.10:
-        await execution_engine.close_trade_atomically("FAST_TP", current_price)
-        return True
-    
-    if pnl <= -0.12:
-        await execution_engine.close_trade_atomically("FAST_SL", current_price)
-        return True
-    
-    return False
-
-def check_ema_failure_confirmation(analysis: dict, candles: list, 
-                                    entry_price: float, current_price: float) -> bool:
-    """
-    🟨 FAILURE CONFIRMATION (ALL REQUIRED)
-    ema_failure = (
-        price_touched_ema and
-        rejection_candle and
-        RSI < 45 and
-        last_two_candles_red and
-        price < entry_price
-    )
-    """
-    if not candles or len(candles) < 2:
-        return False
-    
-    ema = analysis.get('ema20', 0)
-    rsi = analysis.get('rsi', 50)
-    current_candle = candles[-1]
-    prev_candle = candles[-2]
-    
-    # 1. Price touched EMA
-    price_touched_ema = abs(min(current_candle['low'], ema) - max(current_candle['high'], ema)) / ema <= 0.001 if ema > 0 else False
-    
-    # 2. Rejection candle
-    rejection_candle = (
-        current_candle['high'] > ema and 
-        current_candle['close'] < ema * 0.9995 and 
-        current_candle['close'] < current_candle['open']
-    ) if ema > 0 else False
-    
-    # 3. RSI < 45
-    rsi_bearish = rsi < 45
-    
-    # 4. Last two candles red
-    last_two_red = (
-        current_candle['close'] < current_candle['open'] and 
-        prev_candle['close'] < prev_candle['open']
-    )
-    
-    # 5. Price < entry
-    price_below_entry = current_price < entry_price
-    
-    # ALL conditions required
-    ema_failure = (
-        price_touched_ema and
-        rejection_candle and
-        rsi_bearish and
-        last_two_red and
-        price_below_entry
-    )
-    
-    return ema_failure
-
-def check_max_time_escape(candles_since_entry: int, current_price: float, 
-                          entry_price: float, sl_price: float, atr: float) -> bool:
-    """
-    🟨 MAX TIME ESCAPE (ATR-BASED)
-    small_range = ATR * 1.5
-    safe_zone = abs(price - entry) / abs(entry - SL) > 0.3
-    candles_required = 14 if safe_zone else 10
-    """
-    if abs(entry_price - sl_price) == 0:
-        return False
-    
-    small_range = atr * 1.5
-    safe_zone_ratio = abs(current_price - entry_price) / abs(entry_price - sl_price)
-    safe_zone = safe_zone_ratio > 0.3
-    
-    candles_required = 14 if safe_zone else 10
-    
-    if candles_since_entry >= candles_required and abs(current_price - entry_price) < small_range:
-        return True
-    
-    return False
-
-# --- Sessions & Circuit Breaker ---
-from version import SYSTEM_VERSION
-BOT_VERSION = SYSTEM_VERSION
-AI_VERSION = SYSTEM_VERSION
-SESSION_WINDOW_MINUTES = 60
-CIRCUIT_BREAKER = {
-    "max_trades_per_hour": 20,
-    "max_loss_per_session": -2.0,     # %
-    "cooldown_after_3_losses": 5,      # minutes
-    "auto_reset": True
-}
-
-class CircuitBreaker:
-    def __init__(self):
-        self.trade_history = [] # (timestamp, pnl_pct)
-        self.loss_streak = 0
-        self.cooldown_until = None
-        self.emergency_stop = False
-
-    def record_trade(self, pnl_pct):
-        now = time.time()
-        self.trade_history.append((now, pnl_pct))
-        if pnl_pct < 0:
-            self.loss_streak += 1
-        else:
-            self.loss_streak = 0
-        
-        if self.loss_streak >= 3:
-            self.cooldown_until = now + (CIRCUIT_BREAKER["cooldown_after_3_losses"] * 60)
-            logger.warning(f"🚨 Circuit Breaker: 3 consecutive losses. Cooldown for {CIRCUIT_BREAKER['cooldown_after_3_losses']} mins")
-
-    def is_blocked(self):
-        if self.emergency_stop:
-            return True, "EMERGENCY_STOP_ACTIVATED"
-            
-        now = time.time()
-        # Clean old history
-        self.trade_history = [t for t in self.trade_history if now - t[0] <= SESSION_WINDOW_MINUTES * 60]
-        
-        if self.cooldown_until and now < self.cooldown_until:
-            return True, f"COOLDOWN_ACTIVE ({int((self.cooldown_until - now)/60)}m left)"
-            
-        if len(self.trade_history) >= CIRCUIT_BREAKER["max_trades_per_hour"]:
-            return True, "MAX_TRADES_PER_HOUR_REACHED"
-            
-        session_pnl = sum(t[1] for t in self.trade_history)
-        if session_pnl <= CIRCUIT_BREAKER["max_loss_per_session"]:
-            return True, f"SESSION_LOSS_LIMIT_REACHED ({session_pnl:.2f}%)"
-            
-        return False, ""
-
-circuit_breaker_logic = CircuitBreaker()
-
-# --- System Health ---
-SYSTEM_HEALTH = {
-    "last_trade_timestamp": None,
-    "consecutive_failures": 0,
-    "connection_stable": True,
-    "avg_latency_ms": 0.0,
-    "last_health_check": None,
-    "tp_execution_latency_p99": 0.0
-}
-
-def check_system_health():
-    SYSTEM_HEALTH["last_health_check"] = time.time()
-    # Simple check for latency breach
-    if SYSTEM_HEALTH["avg_latency_ms"] > 200:
-        circuit_breaker_logic.emergency_stop = True
-        logger.error("🚨 EMERGENCY STOP: System Latency > 200ms")
-    return not circuit_breaker_logic.emergency_stop
-
-# --- Smart Trailing SL v4.5.PRO-FINAL (EXECUTION SAFE) ---
-MAX_RETRIES = 3
-MIN_SAFE_DISTANCE = 0.0001 # 0.01%
-
-# 🔁 SMART TRAILING CONFIG (PER TIMEFRAME)
-TRAILING_CONFIG = {
-    "1m": {
-        "activate_pct": 0.20,   # Activate @ +0.20%
-        "lock_pct": 0.10,       # Lock @ +0.10%
-        "step_pct": 0.05        # Step = 0.05%
-    },
-    "5m": {
-        "activate_pct": 0.35,   # Activate @ +0.35%
-        "lock_pct": 0.18,       # Lock @ +0.18%
-        "step_pct": 0.10        # Step = 0.10%
-    }
-}
-
-def high_volatility(candles):
-    if len(candles) < 5: return False
-    last_5 = candles[-5:]
-    ranges = [(c['high'] - c['low']) / c['low'] for c in last_5]
-    avg_range = sum(ranges) / 5
-    return ranges[-1] > avg_range * 2.5
-
-def safe_trailing_update(new_sl, current_price, candles, timeframe="1m"):
-    """
-    Smart Trailing SL with retry mechanism
-    Rules:
-    - Trailing NEVER cancels TP
-    - Retry SL update ×3
-    - Failure → log only (no block)
-    """
-    dist = abs(current_price - new_sl) / current_price
-    if high_volatility(candles) or dist < MIN_SAFE_DISTANCE:
-        logger.info("TRAILING_RETRY_SKIPPED_HIGH_RISK")
-        return False
-
-    for attempt in range(MAX_RETRIES):
-        try:
-            # In paper trading, we just update local state
-            state.current_sl = new_sl
-            logger.info(f"TRAILING_SL_MOVED to {new_sl} (Attempt {attempt+1})")
+    await execution_engine.request_trade({ "type": "OPEN", "symbol": SYMBOL, "amount": amount })
             return True
         except Exception as e:
             logger.error(f"TRAILING_UPDATE_FAILED: {e}")
@@ -1417,7 +992,7 @@ class TradeExecutionLock:
             "decision": decision,
             "reason": reason,
             "metrics": metrics
-        })
+    })
 
 trade_execution_lock = TradeExecutionLock()
 
@@ -2524,7 +2099,7 @@ def get_closed_trades() -> List[Dict]:
                         'pnl_usdt': float(row['pnl_usdt']),
                         'pnl_percent': float(row.get('pnl_percent', 0)),
                         'result': 'WIN' if float(row['pnl_usdt']) >= 0 else 'LOSS'
-                    })
+    })
                 except:
                     pass
     return trades
@@ -2555,7 +2130,7 @@ def get_paper_trades(limit: int = 5) -> List[Dict]:
                     'pnl_usdt': float(row['pnl_usdt']) if row.get('pnl_usdt') else 0,
                     'balance': float(row['balance_after']) if row.get('balance_after') else 0,
                     'exit_reason': row.get('exit_reason', '')
-                })
+    })
             except:
                 pass
     
@@ -2692,7 +2267,7 @@ def get_trade_stats() -> Dict:
                         'reason': row[2],
                         'price': row[3],
                         'result': result
-                    })
+    })
                     if result >= 0:
                         stats['wins'] += 1
                     else:
@@ -2727,7 +2302,7 @@ def get_klines(symbol: str, interval: str, limit: int = KLINE_LIMIT) -> Optional
                     "low": float(c[3]),
                     "close": float(c[4]),
                     "volume": float(c[5]),
-                })
+    })
             return candles
             
         except requests.RequestException as e:
@@ -3342,7 +2917,7 @@ def check_exit_signal(analysis: dict, candles: List[dict]) -> Optional[str]:
 
 def execute_paper_buy(price: float, score: int, reasons: List[str], tp: float, sl: float) -> float:
     """
-    DEPRECATED: All trade execution now goes through TradingEngine.request_trade()
+    DEPRECATED: All trade execution now goes through request_trade()
     This function is kept for compatibility with AI engine callback but delegates to engine.
     """
     logger.debug("[DEPRECATED] execute_paper_buy called - trades now go through TradingEngine")
@@ -4996,11 +4571,7 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                         return
                     
                     # Request trade via TradingEngine
-                    await execution_engine.request_trade({
-                        "type": "OPEN",
-                        "symbol": SYMBOL,
-                        "amount": round(paper_state.balance * 0.1, 2)
-                    })
+    await execution_engine.request_trade({ "type": "OPEN", "symbol": SYMBOL, "amount": amount })
                     
                     # Update non-position state for compatibility
                     state.entry_time = get_now()
