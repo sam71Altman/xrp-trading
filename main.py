@@ -831,13 +831,13 @@ async def quick_scalp_down_manage_trade(bot, chat_id):
     print(f"[FAST_SCALP_EXIT] pnl={pnl_pct:.4f}")
 
     # TP
-    if pnl_pct >= 0.10:  # Fixed 0.10% target
+    if pnl_pct >= 0.08:  # Adjusted from 0.10% to 0.08% for faster exit
         await execution_engine.close_trade_atomically(
             reason="FAST_SCALP_TP",
             exit_price=current_price,
             close_broker_fn=lambda: True, # Paper trading placeholder
-            update_state_fn=lambda: reset_position_state(),
-            notify_fn=lambda msg: bot.send_message(chat_id=chat_id, text=msg)
+            update_state_fn=lambda r, p: reset_position_state(),
+            notify_fn=lambda r, p: bot.send_message(chat_id=chat_id, text=f"✅ FAST_SCALP_TP: {p:.6f} ({r})")
         )
         return True
 
@@ -848,8 +848,8 @@ async def quick_scalp_down_manage_trade(bot, chat_id):
             reason="FAST_SCALP_SL",
             exit_price=current_price,
             close_broker_fn=lambda: True, # Paper trading placeholder
-            update_state_fn=lambda: reset_position_state(),
-            notify_fn=lambda msg: bot.send_message(chat_id=chat_id, text=msg)
+            update_state_fn=lambda r, p: reset_position_state(),
+            notify_fn=lambda r, p: bot.send_message(chat_id=chat_id, text=f"❌ FAST_SCALP_SL: {p:.6f} ({r})")
         )
         return True
 
