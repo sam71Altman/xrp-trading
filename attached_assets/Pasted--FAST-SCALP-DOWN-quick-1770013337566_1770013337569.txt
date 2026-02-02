@@ -1,0 +1,138 @@
+المهمة: إصلاح معماري جذري لوضع FAST_SCALP_DOWN
+
+المشكلة:
+وضع السكالب الهابط يستخدم حالة محلية (quick_scalp_down_state)
+بينما النظام المركزي يستخدم execution_engine.
+هذا يسبب انفصال حالة الصفقة → الصفقة تبقى مفتوحة ولا يتم إغلاقها.
+
+المطلوب:
+توحيد مصدر الحقيقة.
+execution_engine هو المصدر الوحيد للحالة والإغلاق.
+
+━━━━━━━━━━━━━━━━━━━━━
+قواعد إلزامية (ممنوع مخالفتها)
+━━━━━━━━━━━━━━━━━━━━━
+
+1) execution_engine هو الوحيد المسؤول عن:
+   - معرفة هل توجد صفقة مفتوحة
+   - سعر الدخول
+   - تنفيذ الإغلاق
+   - تحديث الرصيد
+
+2) ممنوع تماماً وجود أي حالة محلية للسكالب:
+   احذف بالكامل:
+   - quick_scalp_down_state["active_trade"]
+   - quick_scalp_down_state["entry_price"]
+   - أي trade dict أو نسخ بيانات الصفقة
+   - أي مزامنة بين state و quick_scalp_down_state
+   - أي finalize_trade() داخل FAST_SCALP_DOWN
+
+3) ممنوع استخدام:
+   finalize_trade()
+   execute_paper_exit()
+   reset_position_state()
+
+   داخل FAST_SCALP_DOWN
+
+   ويجب استبدالها فقط بـ:
+   execution_engine.close_trade_atomically()
+
+━━━━━━━━━━━━━━━━━━━━━
+التعديلات المطلوبة بدقة
+━━━━━━━━━━━━━━━━━━━━━
+
+أولاً — داخل quick_scalp_down_manage_trade:
+
+استبدل المنطق بالكامل بالهيكل التالي:
+
+--------------------------------
+
+pos = execution_engine.get_position()
+
+if not pos:
+    return False
+
+entry_price = pos.entry_price
+current_price = execution_engine.get_current_price()
+
+pnl_pct = ((current_price - entry_price) / entry_price) * 100
+
+print(f"[FAST_SCALP_EXIT] pnl={pnl_pct:.4f}")
+
+# TP
+if pnl_pct >= TARGET_PROFIT_AMOUNT:
+    await execution_engine.close_trade_atomically(
+        symbol=SYMBOL,
+        exit_price=current_price,
+        reason="FAST_SCALP_TP"
+    )
+    return True
+
+# SL (مع تأكيد 1 ثانية فقط)
+if pnl_pct <= -STOP_LOSS_AMOUNT:
+    if sl_confirmed_for_1_second():
+        await execution_engine.close_trade_atomically(
+            symbol=SYMBOL,
+            exit_price=current_price,
+            reason="FAST_SCALP_SL"
+        )
+        return True
+
+return False
+
+--------------------------------
+
+━━━━━━━━━━━━━━━━━━━━━
+
+ثانياً — داخل signal_loop:
+
+يجب أن يكون الاستدعاء في أول السطر قبل أي فلتر أو HOLD أو BACKPRESSURE:
+
+if state.mode == "FAST_SCALP_DOWN":
+    await quick_scalp_down_manage_trade(bot, chat_id)
+    return
+
+ولا يُسمح بأي return أو block قبلها.
+
+━━━━━━━━━━━━━━━━━━━━━
+
+ثالثاً — تنظيف المشروع:
+
+ابحث في المشروع بالكامل واحذف:
+
+quick_scalp_down_state
+active_trade
+entry_price المحلي
+finalize_trade في السكالب
+execute_paper_exit في السكالب
+
+━━━━━━━━━━━━━━━━━━━━━
+مهم جداً
+━━━━━━━━━━━━━━━━━━━━━
+
+لا تضف:
+- أنظمة جديدة
+- فلاتر إضافية
+- Hold
+- Bounce
+- Intel
+- Guards
+
+FAST_SCALP_DOWN يجب أن يكون:
+TP / SL فقط + execution_engine فقط
+
+بقية الأوضاع لا تلمسها.
+
+━━━━━━━━━━━━━━━━━━━━━
+النتيجة المطلوبة
+━━━━━━━━━━━━━━━━━━━━━
+
+- لا توجد صفقة تبقى معلقة
+- الإغلاق فوري
+- لا يوجد state mismatch
+- مصدر الحقيقة واحد فقط (execution_engine)
+
+نفّذ التعديلات مباشرة على الملفات الحالية.
+لا تقترح حلول.
+لا تضف طبقات.
+عدّل فقط.
