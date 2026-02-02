@@ -28,7 +28,7 @@ A Python Telegram trading signals bot for XRP/USDT that runs paper trading simul
 
 ### v4.6.PRO Infrastructure Components
 
-**ExecutionEngine** (Single Writer Principle)
+**TradingEngine** (Single Writer Principle)
 - `_trade_lock`: asyncio.Lock for atomic operations
 - `execute_trade_atomically()`: ONLY method that may call broker, update state, send telegram
 - Pipeline isolation via asyncio.Queue(maxsize=1)

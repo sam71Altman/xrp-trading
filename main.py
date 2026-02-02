@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any, Callable
 from enum import Enum
 from collections import deque
+from trading_engine import TradingEngine
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # v4.6.PRO INSTITUTIONAL PRODUCTION HARDENING INFRASTRUCTURE
@@ -212,7 +213,7 @@ class StateGuard:
             self.mismatch_count = 0
             logging.getLogger(__name__).info("[STATE_GUARD] Resumed from halt")
 
-class ExecutionEngine:
+class TradingEngine:
     """Phase 1, 5, 6: Single writer, single execution point, single notification point"""
     def __init__(self):
         self._trade_lock = asyncio.Lock()
@@ -239,6 +240,17 @@ class ExecutionEngine:
             "version": self._position_version
         }
     
+    async def request_trade(
+        self,
+        signal: TradeSignal,
+        snapshot: TradingSnapshot,
+        execute_fn: Callable,
+        notify_fn: Callable,
+        state_update_fn: Callable
+    ) -> bool:
+        """Alias for execute_trade_atomically to match TradingEngine interface"""
+        return await self.execute_trade_atomically(signal, snapshot, execute_fn, notify_fn, state_update_fn)
+
     async def execute_trade_atomically(
         self,
         signal: TradeSignal,
@@ -408,7 +420,8 @@ class ExecutionEngine:
 _close_notification_tracker: Dict[str, float] = {}
 _CLOSE_NOTIFICATION_COOLDOWN = 2.0  # seconds
 
-execution_engine = ExecutionEngine()
+# Global trading engine instance
+execution_engine = TradingEngine()
 
 def check_bounce_entry(analysis, candles, score, snapshot: Optional[TradingSnapshot] = None):
     """شروط دخول الارتداد في السوق الهابط v3.7.5"""
@@ -808,7 +821,7 @@ def quick_scalp_down_get_entry_signal(candles, analysis):
 
 async def quick_scalp_down_execute_trade(bot, chat_id, entry_price, candles):
     """
-    OPEN trade via ExecutionEngine ONLY.
+    OPEN trade via TradingEngine ONLY.
     No local state modification allowed.
     """
     amount = round(FIXED_TRADE_SIZE / entry_price, 2) if entry_price > 0 else 0
@@ -823,7 +836,7 @@ async def quick_scalp_down_execute_trade(bot, chat_id, entry_price, candles):
 async def quick_scalp_down_manage_trade(bot, chat_id, current_price, _):
     """
     FAST_SCALP_DOWN exit logic.
-    ExecutionEngine is the SINGLE SOURCE OF TRUTH.
+    TradingEngine is the SINGLE SOURCE OF TRUTH.
     TP = +0.10%, SL = -0.12%
     """
     pos = execution_engine.get_position_state()
@@ -3148,10 +3161,10 @@ def calculate_targets(entry_price: float, candles: List[dict]) -> tuple:
 
 def manage_trade_exits(analysis: dict, candles: List[dict]) -> Optional[str]:
     """
-    DEPRECATED: All exits now go through ExecutionEngine.close_trade_atomically()
+    DEPRECATED: All exits now go through TradingEngine.close_trade_atomically()
     This function is kept for compatibility but does nothing.
     """
-    logger.debug("[DEPRECATED] manage_trade_exits called - use ExecutionEngine instead")
+    logger.debug("[DEPRECATED] manage_trade_exits called - use TradingEngine instead")
     return None
 
 def check_exit_signal(analysis: dict, candles: List[dict]) -> Optional[str]:
@@ -3329,10 +3342,10 @@ def check_exit_signal(analysis: dict, candles: List[dict]) -> Optional[str]:
 
 def execute_paper_buy(price: float, score: int, reasons: List[str], tp: float, sl: float) -> float:
     """
-    DEPRECATED: All trade execution now goes through ExecutionEngine.request_trade()
+    DEPRECATED: All trade execution now goes through TradingEngine.request_trade()
     This function is kept for compatibility with AI engine callback but delegates to engine.
     """
-    logger.debug("[DEPRECATED] execute_paper_buy called - trades now go through ExecutionEngine")
+    logger.debug("[DEPRECATED] execute_paper_buy called - trades now go through TradingEngine")
     trade_size_usdt = 100.0
     if trade_size_usdt <= 0 or paper_state.balance < trade_size_usdt:
         return 0.0
@@ -3405,10 +3418,10 @@ def check_lpem_invalidation(current_price: float, analysis: dict):
 
 def finalize_trade(result, entry_price, exit_price, reason, score, duration_min):
     """
-    DEPRECATED: All trade closing now goes through ExecutionEngine.close_trade_atomically()
+    DEPRECATED: All trade closing now goes through TradingEngine.close_trade_atomically()
     This function is kept for compatibility but only logs - actual closing is via engine.
     """
-    logger.debug("[DEPRECATED] finalize_trade called - use ExecutionEngine.close_trade_atomically instead")
+    logger.debug("[DEPRECATED] finalize_trade called - use TradingEngine.close_trade_atomically instead")
     pnl_usdt = (exit_price - entry_price) * paper_state.position_qty if paper_state.position_qty > 0 else 0
     pnl_pct = ((exit_price - entry_price) / entry_price) * 100 if entry_price > 0 else 0
     paper_state.balance += pnl_usdt
@@ -3469,10 +3482,10 @@ def update_ui_async(text: str, msg_type: str = "status"):
 
 def reset_position_state():
     """
-    DEPRECATED: ExecutionEngine manages position state now.
+    DEPRECATED: TradingEngine manages position state now.
     This function only resets non-position related state for compatibility.
     """
-    logger.debug("[DEPRECATED] reset_position_state called - ExecutionEngine manages position state")
+    logger.debug("[DEPRECATED] reset_position_state called - TradingEngine manages position state")
     state.entry_time = None
     state.entry_timeframe = None
     state.trailing_activated = False
@@ -3509,7 +3522,7 @@ def reconcile_state():
     """
     PHASE 5: Reality reconciliation - detect and auto-fix state drift
     Runs every 2 seconds as safety net.
-    Now uses ExecutionEngine as the single source of truth.
+    Now uses TradingEngine as the single source of truth.
     """
     global _last_reconciliation_time
     
@@ -3525,7 +3538,7 @@ def reconcile_state():
     
     if broker_position != engine_position:
         logger.warning(f"[STATE_DRIFT] DETECTED! Broker={broker_position}, Engine={engine_position}")
-        logger.debug("[STATE_DRIFT] ExecutionEngine is the source of truth - no local state to fix")
+        logger.debug("[STATE_DRIFT] TradingEngine is the source of truth - no local state to fix")
 
 
 def get_trade_duration_minutes() -> int:
@@ -4729,7 +4742,7 @@ def get_binance_ticker():
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def create_trading_snapshot(current_price: float, candles: list, analysis: dict) -> TradingSnapshot:
-    """Phase 2: Create immutable snapshot for current cycle - uses ExecutionEngine"""
+    """Phase 2: Create immutable snapshot for current cycle - uses TradingEngine"""
     pos = execution_engine.get_position_state()
     return TradingSnapshot(
         timestamp=time.time(),
@@ -4975,14 +4988,14 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                 ai_status = ai_engine.get_status()
                 logger.info(f"🔍 [AI ENGINE] Mode: {ai_status.get('mode')}, Weight: {ai_status.get('weight')}")
 
-                # 🔒 THREAD LOCK (Unified Entry via ExecutionEngine)
+                # 🔒 THREAD LOCK (Unified Entry via TradingEngine)
                 with trade_lock:
                     pos = execution_engine.get_position_state()
                     if pos["position_open"]:
                         logger.info("🚫 [LOCK_BLOCK] Position already opened by another thread")
                         return
                     
-                    # Request trade via ExecutionEngine
+                    # Request trade via TradingEngine
                     await execution_engine.request_trade({
                         "type": "OPEN",
                         "symbol": SYMBOL,
