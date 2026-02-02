@@ -849,7 +849,7 @@ async def quick_scalp_down_manage_trade(bot, chat_id):
     print(f"[FAST_SCALP_EXIT] pnl={pnl_pct:.4f}")
 
     # TP
-    if pnl_pct >= TARGET_PROFIT_AMOUNT:
+    if pnl_pct >= QUICK_SCALP_DOWN_TP_PERCENT * 100:
         await execution_engine.close_trade_atomically(
             reason="FAST_SCALP_TP",
             exit_price=current_price,
@@ -860,8 +860,8 @@ async def quick_scalp_down_manage_trade(bot, chat_id):
         return True
 
     # SL
-    if pnl_pct <= -STOP_LOSS_AMOUNT:
-        # Simplification as requested: SL (مع تأكيد 1 ثانية فقط) -> implemented directly here for brevity
+    if pnl_pct <= -QUICK_SCALP_DOWN_SL_PERCENT * 100:
+        # SL (مع تأكيد 1 ثانية فقط) - implemented directly here for brevity
         await execution_engine.close_trade_atomically(
             reason="FAST_SCALP_SL",
             exit_price=current_price,
