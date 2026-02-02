@@ -1,0 +1,110 @@
+TASK: FULL TRADING MODES DIAGNOSTIC REPORT (NO CODE CHANGES)
+
+CRITICAL:
+This task is READ-ONLY diagnostic.
+
+❌ DO NOT modify any code
+❌ DO NOT refactor
+❌ DO NOT change logic
+❌ DO NOT optimize
+❌ DO NOT add features
+
+Only analyze and report.
+
+=====================================
+GOAL
+=====================================
+
+Audit ALL trading modes and generate a full technical report.
+
+Modes to inspect:
+
+1) DEFAULT_SMART (الافتراضي الذكي)
+2) FAST_SCALP_NORMAL (السكالب السريع العادي)
+3) FAST_SCALP_DOWN (السكالب الهابط السريع)
+4) BOUNCE_HUNTER (اصطياد الارتدادات)
+
+=====================================
+WHAT TO ANALYZE
+=====================================
+
+For EACH mode measure:
+
+1) Entry latency
+   time between signal detected → order executed
+
+2) Exit latency
+   time between TP/SL hit → order closed
+
+3) Execution path
+   does close happen instantly or wait for trading_cycle
+
+4) TP/SL accuracy
+   does trade close exactly at target or overshoot
+
+5) State consistency
+   UI == Engine == Diagnostics
+
+6) Message consistency
+   trades count == telegram messages count
+
+7) Blocking behavior
+   any backpressure / cooldown / blocked entry
+
+8) Strategy purity
+   does strategy call broker or engine directly (violation)
+
+9) Central engine impact
+   does centralized execution slow fast scalping modes
+
+10) Cycle time
+   how long one trading_cycle takes (ms)
+
+=====================================
+OUTPUT FORMAT (REQUIRED)
+=====================================
+
+Print clear report:
+
+=== TRADING MODE DIAGNOSTIC REPORT ===
+
+For each mode:
+
+MODE: FAST_SCALP_DOWN
+
+Entry latency: ___ ms
+Exit latency: ___ ms
+Cycle delay impact: LOW/MEDIUM/HIGH
+TP precision: EXACT / DELAYED / MISSED
+State mismatches: count
+Duplicate messages: count
+Blocking events: count
+Risk level: LOW/MEDIUM/HIGH
+Notes: explanation
+
+Repeat for all modes.
+
+=====================================
+FINAL SECTION
+=====================================
+
+Provide comparison table:
+
+Mode | Entry ms | Exit ms | Delay Risk | Scalping Safe?
+--------------------------------------------------------
+
+Then add:
+
+RECOMMENDATIONS:
+- which modes are safe
+- which are slowed by central engine
+- which need fast-path exits
+- which are unaffected
+
+=====================================
+REMINDER
+=====================================
+
+READ ONLY.
+DO NOT MODIFY ANY FILES.
+ONLY PRINT REPORT.
