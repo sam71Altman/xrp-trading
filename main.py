@@ -218,7 +218,18 @@ _close_notification_tracker: Dict[str, float] = {}
 _CLOSE_NOTIFICATION_COOLDOWN = 2.0  # seconds
 
 # Global trading engine instance
-execution_engine = TradingEngine()
+def execute_trade_wrapper(symbol, direction, amount):
+    # This will be replaced by the actual logic or callback
+    return True
+
+def get_market_data_wrapper(symbol):
+    # This will be replaced by the actual logic or callback
+    return None
+
+execution_engine = TradingEngine(
+    execute_trade_fn=execute_trade_wrapper,
+    get_market_data_fn=get_market_data_wrapper
+)
 
 def check_bounce_entry(analysis, candles, score, snapshot: Optional[TradingSnapshot] = None):
     """شروط دخول الارتداد في السوق الهابط v3.7.5"""
@@ -275,6 +286,7 @@ def detect_bearish_strength(candle):
 ENABLE_TP_CONTINUATION = True      # تفعيل النظام
 PARTIAL_CLOSE_PERCENT = 0.60       # نسبة الإغلاق الجزئي عند TP
 MAX_RUNNER_TIME = 60               # أقصى مدة للـ Runner (دقائق)
+MAX_RETRIES = 3                    # أقصى عدد للمحاولات
 
 # 🔒 Global Locks
 trade_lock = Lock()
@@ -4562,9 +4574,13 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                     if pos["position_open"]:
                         logger.info("🚫 [LOCK_BLOCK] Position already opened by another thread")
                         return
-                    
+
                     # Request trade via TradingEngine
-    await execution_engine.request_trade({ "type": "OPEN", "symbol": SYMBOL, "amount": amount }) # "type": "OPEN", "symbol": SYMBOL, "amount": amount })
+                    qty = round(FIXED_TRADE_SIZE / entry_price, 2)
+                    success = await execution_engine.request_trade({ "type": "OPEN", "symbol": SYMBOL, "amount": qty })
+                    if not success:
+                        logger.error("❌ [TRADING ENGINE] Trade request failed")
+                        return
                     
                     # Update non-position state for compatibility
                     state.entry_time = get_now()
