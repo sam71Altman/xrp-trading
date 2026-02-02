@@ -686,7 +686,7 @@ FAST_SCALP_GOVERNANCE = {
 }
 
 QUICK_SCALP_DOWN_TP_PERCENT = 0.0010
-QUICK_SCALP_DOWN_SL_PERCENT = 0.0012
+QUICK_SCALP_DOWN_SL_PERCENT = 0.0015
 QUICK_SCALP_DOWN_HIGH_ATR_THRESHOLD = 0.0015
 QUICK_SCALP_DOWN_MEDIUM_ATR_THRESHOLD = 0.0008
 QUICK_SCALP_DOWN_MAX_SPREAD = 0.0002
@@ -849,7 +849,7 @@ async def quick_scalp_down_manage_trade(bot, chat_id):
     print(f"[FAST_SCALP_EXIT] pnl={pnl_pct:.4f}")
 
     # TP
-    if pnl_pct >= QUICK_SCALP_DOWN_TP_PERCENT * 100:
+    if pnl_pct >= 0.10:  # Fixed 0.10% target
         await execution_engine.close_trade_atomically(
             reason="FAST_SCALP_TP",
             exit_price=current_price,
@@ -860,7 +860,7 @@ async def quick_scalp_down_manage_trade(bot, chat_id):
         return True
 
     # SL
-    if pnl_pct <= -QUICK_SCALP_DOWN_SL_PERCENT * 100:
+    if pnl_pct <= -0.15:  # Fixed 0.15% stop loss
         # SL (مع تأكيد 1 ثانية فقط) - implemented directly here for brevity
         await execution_engine.close_trade_atomically(
             reason="FAST_SCALP_SL",
