@@ -1763,7 +1763,55 @@ COOLDOWN_PAUSE_MINUTES = 0
 MIN_WIN_RATE = 0.0
 MIN_SIGNAL_SCORE = 1 # Relaxed
 
-POLL_INTERVAL = 5 # Faster polling
+POLL_INTERVAL_BASE = 1.0  # Base interval (fastest - for scalping)
+POLL_INTERVAL_DEFAULT = 5.0  # Default for non-scalping modes
+POLL_INTERVAL = 1  # Use fastest as scheduler base
+_signal_loop_cycle_counter = 0
+
+def get_mode_poll_interval() -> float:
+    """Get polling interval based on current mode"""
+    current_mode = get_current_mode()
+    fast_mode = get_fast_mode()
+    
+    if current_mode == "FAST_SCALP" or fast_mode == "FAST_DOWN":
+        return POLL_INTERVAL_BASE  # 1 second for scalping
+    else:
+        return POLL_INTERVAL_DEFAULT  # 5 seconds for DEFAULT/BOUNCE
+
+def should_skip_signal_cycle() -> bool:
+    """Determine if this cycle should be skipped based on mode timing"""
+    global _signal_loop_cycle_counter
+    _signal_loop_cycle_counter += 1
+    
+    current_mode = get_current_mode()
+    fast_mode = get_fast_mode()
+    
+    # Scalping modes: run every cycle (1s) for fast entry/exit
+    if current_mode == "FAST_SCALP" or fast_mode == "FAST_DOWN":
+        return False
+    
+    # CRITICAL: If position is open, never skip - need to check exits
+    # This ensures TP/SL checks happen every second even in non-scalp modes
+    # when transitioning from scalp mode with open position
+    _engine = globals().get('execution_engine')
+    if _engine and _engine.get_position_state():
+        return False
+    
+    # Non-scalping modes: run every 5th cycle (effectively 5s)
+    # This maintains 5s behavior while base interval is 1s
+    if _signal_loop_cycle_counter % 5 != 0:
+        return True
+    
+    return False
+
+def print_mode_timing_config():
+    """Print mode timing configuration at startup"""
+    logger.info("[MODE TIMING] Configuration:")
+    logger.info(f"  FAST_SCALP → {POLL_INTERVAL_BASE}s")
+    logger.info(f"  FAST_SCALP_DOWN → {POLL_INTERVAL_BASE}s")
+    logger.info(f"  DEFAULT → {POLL_INTERVAL_DEFAULT}s")
+    logger.info(f"  BOUNCE → {POLL_INTERVAL_DEFAULT}s")
+
 KLINE_LIMIT = 200
 BACKTEST_DAYS = 30
 
@@ -4896,6 +4944,11 @@ def generate_exit_signal(snapshot: TradingSnapshot) -> TradeSignal:
 
 
 async def signal_loop(bot: Bot, chat_id: str) -> None:
+    # MODE-SPECIFIC TIMING: Skip cycles for non-scalping modes
+    # Scalping modes run every 1s, others effectively every 5s
+    if should_skip_signal_cycle():
+        return  # Skip this cycle for non-scalping modes
+    
     if state.mode == "AGGRESSIVE":
         print("[AGG] checking entry conditions")
         
@@ -5261,6 +5314,9 @@ async def main() -> None:
     # Start polling
     logger.info("Starting polling...")
     await application.updater.start_polling(drop_pending_updates=True)
+    
+    # Print mode timing configuration
+    print_mode_timing_config()
     
     print(f"🚀 بوت إشارات {SYMBOL_DISPLAY} {BOT_VERSION} يعمل...")
     
