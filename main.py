@@ -830,27 +830,15 @@ async def quick_scalp_down_manage_trade(bot, chat_id):
     pnl_pct = ((current_price - entry_price) / entry_price) * 100
     print(f"[FAST_SCALP_EXIT] pnl={pnl_pct:.4f}")
 
-    # TP
-    if pnl_pct >= 0.08:  # Adjusted from 0.10% to 0.08% for faster exit
-        await execution_engine.close_trade_atomically(
-            reason="FAST_SCALP_TP",
-            exit_price=current_price,
-            close_broker_fn=lambda: True, # Paper trading placeholder
-            update_state_fn=lambda r, p: reset_position_state(),
-            notify_fn=lambda r, p: bot.send_message(chat_id=chat_id, text=f"✅ FAST_SCALP_TP: {p:.6f} ({r})")
-        )
+    TARGET_PROFIT_AMOUNT = 0.08
+    STOP_LOSS_AMOUNT = 0.15
+
+    if pnl_pct >= TARGET_PROFIT_AMOUNT:
+        await execution_engine.close_trade_atomically("FAST_SCALP_TP", current_price)
         return True
 
-    # SL
-    if pnl_pct <= -0.15:  # Fixed 0.15% stop loss
-        # SL (مع تأكيد 1 ثانية فقط) - implemented directly here for brevity
-        await execution_engine.close_trade_atomically(
-            reason="FAST_SCALP_SL",
-            exit_price=current_price,
-            close_broker_fn=lambda: True, # Paper trading placeholder
-            update_state_fn=lambda r, p: reset_position_state(),
-            notify_fn=lambda r, p: bot.send_message(chat_id=chat_id, text=f"❌ FAST_SCALP_SL: {p:.6f} ({r})")
-        )
+    if pnl_pct <= -STOP_LOSS_AMOUNT:
+        await execution_engine.close_trade_atomically("FAST_SCALP_SL", current_price)
         return True
 
     return False
