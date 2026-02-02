@@ -783,16 +783,9 @@ def quick_scalp_down_get_cooldown(atr):
     return random.randint(5, 8)
 
 def quick_scalp_down_check_performance_pause():
-    winrate = quick_scalp_down_state["stats"].winrate(QUICK_SCALP_DOWN_PERFORMANCE_WINDOW)
-    if winrate is not None and winrate < QUICK_SCALP_DOWN_MIN_WINRATE:
-        quick_scalp_down_state["paused_until"] = time.time() + QUICK_SCALP_DOWN_PAUSE_DURATION
-        logger.info(f"[DOWN_SCALP] PAUSED - winrate={winrate:.1%}")
+    pass
 
 def quick_scalp_down_should_use_mode(candles, analysis, current_spread):
-    if time.time() < quick_scalp_down_state["paused_until"]:
-        return False
-    if time.time() < quick_scalp_down_state["cooldown_until"]:
-        return False
     if not quick_scalp_down_is_safe(candles, analysis):
         return False
     return quick_scalp_down_is_downtrend_confirmed(candles, analysis, current_spread)
@@ -801,12 +794,7 @@ def quick_scalp_down_get_entry_signal(candles, analysis):
     if not candles or len(candles) < 5:
         return False
     
-    # 1. NO SAME-CANDLE RE-ENTRY
-    current_candle_time = candles[-1].get('time')
-    if current_candle_time == quick_scalp_down_state["last_entry_candle"]:
-        return False
-        
-    # 2. Reversal Confirmation (Already updated in has_reversal_signal via score >= 2)
+    # 1. Reversal Confirmation (Already updated in has_reversal_signal via score >= 2)
     if not quick_scalp_down_has_reversal_signal(candles, analysis):
         return False
         
@@ -819,16 +807,10 @@ def quick_scalp_down_get_entry_signal(candles, analysis):
     return bullish_candle and volume_increase and rsi_recovering
 
 async def quick_scalp_down_execute_trade(bot, chat_id, entry_price, candles):
-    # Record entry candle time
-    # quick_scalp_down_state["last_entry_candle"] = candles[-1].get('time')
-    
     # Sync with global state for UI visibility
     state.position_open = True
     state.entry_price = entry_price
     state.last_signal_score = 100 # Direct score for scalp
-    
-    tp_price = entry_price * (1 + QUICK_SCALP_DOWN_TP_PERCENT)
-    sl_price = entry_price * (1 - QUICK_SCALP_DOWN_SL_PERCENT)
     
     # Use execution_engine for entry as well to be consistent
     logger.info(f"[DOWN_SCALP] Entry requested: {entry_price:.6f}")
