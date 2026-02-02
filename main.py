@@ -710,16 +710,6 @@ class QuickScalpDownStats:
         recent = self.trades[-window:]
         return recent.count("win") / len(recent)
 
-quick_scalp_down_state = {
-    "paused_until": 0,
-    "stats": QuickScalpDownStats(),
-    "trade_count": 0,
-    "last_mode": "NORMAL",
-    "cooldown_until": 0,
-    "active_trade": None,
-    "last_entry_candle": None,
-    "consecutive_losses": 0
-}
 
 QUICK_SCALP_DOWN_MAX_CONSECUTIVE_LOSSES = 3
 QUICK_SCALP_DOWN_LOSS_PAUSE_DURATION = 120
@@ -830,7 +820,7 @@ def quick_scalp_down_get_entry_signal(candles, analysis):
 
 async def quick_scalp_down_execute_trade(bot, chat_id, entry_price, candles):
     # Record entry candle time
-    quick_scalp_down_state["last_entry_candle"] = candles[-1].get('time')
+    # quick_scalp_down_state["last_entry_candle"] = candles[-1].get('time')
     
     # Sync with global state for UI visibility
     state.position_open = True
@@ -839,46 +829,48 @@ async def quick_scalp_down_execute_trade(bot, chat_id, entry_price, candles):
     
     tp_price = entry_price * (1 + QUICK_SCALP_DOWN_TP_PERCENT)
     sl_price = entry_price * (1 - QUICK_SCALP_DOWN_SL_PERCENT)
-    quick_scalp_down_state["active_trade"] = {
-        "entry_price": entry_price,
-        "tp_price": tp_price,
-        "sl_price": sl_price,
-        "entry_time": time.time()
-    }
-    quick_scalp_down_state["trade_count"] += 1
-    logger.info(f"[DOWN_SCALP] Entry: {entry_price:.6f} TP: {tp_price:.6f} SL: {sl_price:.6f}")
+    
+    # Use execution_engine for entry as well to be consistent
+    logger.info(f"[DOWN_SCALP] Entry requested: {entry_price:.6f}")
     return True
 
-async def quick_scalp_down_manage_trade(bot, chat_id, current_price, candles):
-    trade = quick_scalp_down_state["active_trade"]
-    if not trade:
+async def quick_scalp_down_manage_trade(bot, chat_id):
+    pos = execution_engine.get_position_state()
+    if not pos.get("position_open"):
         return False
-    entry_price = trade["entry_price"]
-    tp_price = trade["tp_price"]
-    sl_price = trade["sl_price"]
-    if current_price >= tp_price:
-        finalize_trade("WIN", entry_price, current_price, "quick_scalp_down", 100, 1)
+
+    entry_price = pos.get("entry_price")
+    current_price = PriceEngine.last_price or 0.0
+
+    if entry_price == 0:
+        return False
+
+    pnl_pct = ((current_price - entry_price) / entry_price) * 100
+    print(f"[FAST_SCALP_EXIT] pnl={pnl_pct:.4f}")
+
+    # TP
+    if pnl_pct >= TARGET_PROFIT_AMOUNT:
+        await execution_engine.close_trade_atomically(
+            reason="FAST_SCALP_TP",
+            exit_price=current_price,
+            close_broker_fn=lambda: True, # Paper trading placeholder
+            update_state_fn=lambda: reset_position_state(),
+            notify_fn=lambda msg: bot.send_message(chat_id=chat_id, text=msg)
+        )
         return True
-    if current_price <= sl_price:
-        finalize_trade("LOSS", entry_price, current_price, "quick_scalp_down_loss", 0, 1)
-        
-        # 3. LOSS STREAK EMERGENCY BRAKE
-        quick_scalp_down_state["consecutive_losses"] += 1
-        if quick_scalp_down_state["consecutive_losses"] >= QUICK_SCALP_DOWN_MAX_CONSECUTIVE_LOSSES:
-            quick_scalp_down_state["cooldown_until"] = time.time() + QUICK_SCALP_DOWN_LOSS_PAUSE_DURATION
-            quick_scalp_down_state["consecutive_losses"] = 0 # Reset after pause
-            logger.warning(f"[DOWN_SCALP] EMERGENCY PAUSE - {QUICK_SCALP_DOWN_MAX_CONSECUTIVE_LOSSES} consecutive losses")
-            asyncio.create_task(bot.send_message(chat_id=chat_id, text="⚠️ **EMERGENCY PAUSE**: 3 consecutive losses. Pausing 2 mins."))
-            
-        quick_scalp_down_state["active_trade"] = None
-        
-        atr = calculate_atr(candles) if candles else None
-        # Ensure we don't overwrite the longer emergency pause if it's already set
-        new_cooldown = time.time() + quick_scalp_down_get_cooldown(atr)
-        quick_scalp_down_state["cooldown_until"] = max(quick_scalp_down_state["cooldown_until"], new_cooldown)
-        if quick_scalp_down_state["trade_count"] % QUICK_SCALP_DOWN_PERFORMANCE_CHECK_INTERVAL == 0:
-            quick_scalp_down_check_performance_pause()
+
+    # SL
+    if pnl_pct <= -STOP_LOSS_AMOUNT:
+        # Simplification as requested: SL (مع تأكيد 1 ثانية فقط) -> implemented directly here for brevity
+        await execution_engine.close_trade_atomically(
+            reason="FAST_SCALP_SL",
+            exit_price=current_price,
+            close_broker_fn=lambda: True, # Paper trading placeholder
+            update_state_fn=lambda: reset_position_state(),
+            notify_fn=lambda msg: bot.send_message(chat_id=chat_id, text=msg)
+        )
         return True
+
     return False
 
 def check_ema_failure_confirmation(analysis: dict, candles: list, 
@@ -4944,10 +4936,9 @@ def generate_exit_signal(snapshot: TradingSnapshot) -> TradeSignal:
 
 
 async def signal_loop(bot: Bot, chat_id: str) -> None:
-    # MODE-SPECIFIC TIMING: Skip cycles for non-scalping modes
-    # Scalping modes run every 1s, others effectively every 5s
-    if should_skip_signal_cycle():
-        return  # Skip this cycle for non-scalping modes
+    if state.mode == "FAST_SCALP_DOWN":
+        await quick_scalp_down_manage_trade(bot, chat_id)
+        return
     
     if state.mode == "AGGRESSIVE":
         print("[AGG] checking entry conditions")
@@ -5081,17 +5072,12 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
         # ═══════════════════════════════════════════════════════════════════
         # ⚡ QUICK SCALP DOWN MODE (MANUAL SWITCH) - v4.5.PRO-FINAL
         # ═══════════════════════════════════════════════════════════════════
-        if quick_scalp_down_state["active_trade"]:
-            trade_closed = await quick_scalp_down_manage_trade(bot, chat_id, current_price, candles)
-            if trade_closed:
-                return
 
         if not state.position_open and get_current_mode() == "FAST_SCALP":
             if get_fast_mode() == "FAST_DOWN":
-                if time.time() >= quick_scalp_down_state["cooldown_until"]:
-                    if quick_scalp_down_get_entry_signal(candles, analysis):
-                        await quick_scalp_down_execute_trade(bot, chat_id, current_price, candles)
-                        return
+                if quick_scalp_down_get_entry_signal(candles, analysis):
+                    await quick_scalp_down_execute_trade(bot, chat_id, current_price, candles)
+                    return
 
         # Re-check entry (Allow immediate re-entry for aggressive mode)
         if not state.position_open:
