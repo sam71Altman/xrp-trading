@@ -807,40 +807,43 @@ def quick_scalp_down_get_entry_signal(candles, analysis):
     return bullish_candle and volume_increase and rsi_recovering
 
 async def quick_scalp_down_execute_trade(bot, chat_id, entry_price, candles):
-    # Sync with global state for UI visibility
-    state.position_open = True
-    state.entry_price = entry_price
-    state.last_signal_score = 100 # Direct score for scalp
-    
-    # Use execution_engine for entry as well to be consistent
-    logger.info(f"[DOWN_SCALP] Entry requested: {entry_price:.6f}")
+    """
+    OPEN trade via ExecutionEngine ONLY.
+    No local state modification allowed.
+    """
+    amount = round(FIXED_TRADE_SIZE / entry_price, 2) if entry_price > 0 else 0
+    await execution_engine.request_trade({
+        "type": "OPEN",
+        "symbol": SYMBOL,
+        "amount": amount
+    })
+    logger.info(f"[DOWN_SCALP] Entry requested via engine: {entry_price:.6f}")
     return True
 
-async def quick_scalp_down_manage_trade(bot, chat_id):
+async def quick_scalp_down_manage_trade(bot, chat_id, current_price, _):
+    """
+    FAST_SCALP_DOWN exit logic.
+    ExecutionEngine is the SINGLE SOURCE OF TRUTH.
+    TP = +0.10%, SL = -0.12%
+    """
     pos = execution_engine.get_position_state()
-    if not pos.get("position_open"):
+    if not pos["position_open"]:
         return False
 
-    entry_price = pos.get("entry_price")
-    current_price = PriceEngine.last_price or 0.0
-
-    if entry_price == 0:
-        return False
-
-    pnl_pct = ((current_price - entry_price) / entry_price) * 100
-    print(f"[FAST_SCALP_EXIT] pnl={pnl_pct:.4f}")
-
-    TARGET_PROFIT_AMOUNT = 0.08
-    STOP_LOSS_AMOUNT = 0.15
-
-    if pnl_pct >= TARGET_PROFIT_AMOUNT:
-        await execution_engine.close_trade_atomically("FAST_SCALP_TP", current_price)
+    entry = pos["entry_price"]
+    
+    pnl = (current_price - entry) / entry * 100
+    
+    print(f"[FAST_DOWN] pnl={pnl:.4f}%")
+    
+    if pnl >= 0.10:
+        await execution_engine.close_trade_atomically("FAST_TP", current_price)
         return True
-
-    if pnl_pct <= -STOP_LOSS_AMOUNT:
-        await execution_engine.close_trade_atomically("FAST_SCALP_SL", current_price)
+    
+    if pnl <= -0.12:
+        await execution_engine.close_trade_atomically("FAST_SL", current_price)
         return True
-
+    
     return False
 
 def check_ema_failure_confirmation(analysis: dict, candles: list, 
@@ -3145,67 +3148,19 @@ def calculate_targets(entry_price: float, candles: List[dict]) -> tuple:
 
 def manage_trade_exits(analysis: dict, candles: List[dict]) -> Optional[str]:
     """
-    🧯 RUNNER GUARD — إصلاح التعارض (CRITICAL)
-    القاعدة:
-    RUNNER_ACTIVE = True
-    ⇒ Runner owns the trade
-    ⇒ ALL other exit systems are DISABLED
+    DEPRECATED: All exits now go through ExecutionEngine.close_trade_atomically()
+    This function is kept for compatibility but does nothing.
     """
-    if state.runner_active:
-        logger.info("[RUNNER_GUARD] All external exits skipped (runner active)")
-        
-        current_price = analysis["close"]
-        entry_price = state.entry_price
-        pnl_pct = ((current_price - entry_price) / entry_price) * 100
-        
-        # ⏱️ 1. Timeout (MAX 60 minutes)
-        runner_elapsed = (get_now() - state.runner_start_time).total_seconds() / 60 if state.runner_start_time else 0
-        if runner_elapsed >= MAX_RUNNER_TIME:
-            logger.info(f"[RUNNER_EXIT] reason=TIMEOUT profit={pnl_pct:.4f}%")
-            update_runner_metrics(pnl_pct, "RUNNER_TIMEOUT")
-            RUNNER_METRICS["runner_timeouts"] += 1
-            finalize_trade("TIMEOUT", entry_price, current_price, "RUNNER_TIMEOUT", state.last_signal_score or 100, int(runner_elapsed))
-            return "runner_timeout"
-            
-        # 🛡️ 2. SL Hit
-        if state.runner_sl is not None and current_price <= state.runner_sl:
-            logger.info(f"[RUNNER_EXIT] reason=SL_HIT profit={pnl_pct:.4f}%")
-            update_runner_metrics(pnl_pct, "RUNNER_SL_HIT")
-            RUNNER_METRICS["runner_sl_hits"] += 1
-            finalize_trade("LOSS", entry_price, current_price, "RUNNER_SL_HIT", state.last_signal_score or 100, int(runner_elapsed))
-            return "runner_sl_hit"
-            
-        # 📈 3. Trailing Update
-        new_trail_sl = calculate_runner_trailing_sl(entry_price, current_price)
-        if new_trail_sl > (state.runner_sl or entry_price):
-            state.runner_sl = new_trail_sl
-            logger.info(f"[TP_CONTINUATION] Trail SL raised to {new_trail_sl:.4f}")
-
-        # 🚪 4. Momentum Fade
-        if check_runner_momentum_fade(analysis, candles):
-            logger.info(f"[RUNNER_EXIT] reason=MOMENTUM_FADE profit={pnl_pct:.4f}%")
-            update_runner_metrics(pnl_pct, "MOMENTUM_FADE")
-            finalize_trade("WIN", entry_price, current_price, "MOMENTUM_FADE", state.last_signal_score or 100, int(runner_elapsed))
-            return "runner_momentum_fade"
-
-        # 🧲 5. Conditions Failure
-        if not check_runner_continuation_conditions(analysis, candles):
-            logger.info(f"[RUNNER_EXIT] reason=CONDITIONS_FAILED profit={pnl_pct:.4f}%")
-            update_runner_metrics(pnl_pct, "CONDITIONS_FAILED")
-            finalize_trade("WIN", entry_price, current_price, "RUNNER_CONDITIONS_FAILED", state.last_signal_score or 100, int(runner_elapsed))
-            return "runner_conditions_failed"
-
-        return None
-
-    # Legacy behavior (only if NOT runner)
-    return check_exit_signal(analysis, candles)
+    logger.debug("[DEPRECATED] manage_trade_exits called - use ExecutionEngine instead")
+    return None
 
 def check_exit_signal(analysis: dict, candles: List[dict]) -> Optional[str]:
-    if not state.position_open or state.entry_price is None:
+    pos = execution_engine.get_position_state()
+    if not pos["position_open"] or pos["entry_price"] is None:
         return None
     
     current_price = analysis["close"]
-    entry_price = state.entry_price
+    entry_price = pos["entry_price"]
     pnl_pct = ((current_price - entry_price) / entry_price) * 100
     tp_price = entry_price * (1 + TAKE_PROFIT_PCT / 100)
     
@@ -3219,7 +3174,7 @@ def check_exit_signal(analysis: dict, candles: List[dict]) -> Optional[str]:
         
         # v4.4: Dynamic TP Margin Check
         tp_margin = get_dynamic_tp_margin(analysis)
-        if current_price < (state.entry_price * (1 + TAKE_PROFIT_PCT/100) - tp_margin):
+        if current_price < (entry_price * (1 + TAKE_PROFIT_PCT/100) - tp_margin):
              return None
 
         state.tp_triggered = True
@@ -3283,7 +3238,7 @@ def check_exit_signal(analysis: dict, candles: List[dict]) -> Optional[str]:
             # FAST SCALP EMA EXIT GOVERNANCE SYSTEM v3.1 (Post-TP Check)
             if get_current_mode() == "FAST_SCALP":
                 trade_data = {
-                    'entry_price': state.entry_price,
+                    'entry_price': entry_price,
                     'entry_time': getattr(state, 'entry_time_unix', time.time()),
                     'candles_since_entry': state.candles_below_ema + 1,
                     'stop_loss': state.current_sl
@@ -3336,9 +3291,9 @@ def check_exit_signal(analysis: dict, candles: List[dict]) -> Optional[str]:
         # FAST SCALP EMA EXIT GOVERNANCE SYSTEM v3.1
         if get_current_mode() == "FAST_SCALP":
             trade_data = {
-                'entry_price': state.entry_price,
-                'entry_time': getattr(state, 'entry_time_unix', time.time()), # Assuming we might need to track this
-                'candles_since_entry': state.candles_below_ema + 1, # approximation or we should track it better
+                'entry_price': entry_price,
+                'entry_time': getattr(state, 'entry_time_unix', time.time()),
+                'candles_since_entry': state.candles_below_ema + 1,
                 'stop_loss': state.current_sl
             }
             if not guarded_ema_exit_fast_scalp(analysis, candles, trade_data):
@@ -3373,48 +3328,20 @@ def check_exit_signal(analysis: dict, candles: List[dict]) -> Optional[str]:
 
 
 def execute_paper_buy(price: float, score: int, reasons: List[str], tp: float, sl: float) -> float:
-    # Use fixed trade size: 100 USDT from 1000 USDT starting balance (based on replit.md)
+    """
+    DEPRECATED: All trade execution now goes through ExecutionEngine.request_trade()
+    This function is kept for compatibility with AI engine callback but delegates to engine.
+    """
+    logger.debug("[DEPRECATED] execute_paper_buy called - trades now go through ExecutionEngine")
     trade_size_usdt = 100.0
-    
-    # Enforce Valid Position Size (MANDATORY FIX 1)
     if trade_size_usdt <= 0 or paper_state.balance < trade_size_usdt:
-        logger.warning(f"Abort trade execution: Invalid position size or insufficient balance. Size: {trade_size_usdt}, Balance: {paper_state.balance}")
         return 0.0
-        
     qty = trade_size_usdt / price
-    
-    # Enforce Valid Quantity (MANDATORY FIX 1)
     if qty <= 0:
-        logger.warning(f"Abort trade execution: Quantity is zero. Price: {price}, Size: {trade_size_usdt}")
         return 0.0
-        
-    # Freeze Quantity at Entry (CRITICAL - 3.6.2)
     paper_state.position_qty = qty
-    state.entry_time_unix = time.time() # Added for Governance System
     paper_state.entry_reason = ", ".join(reasons)
-    
-    # v3.7.5: Activate Hold Logic if it's a bounce entry in hard market
-    klines = get_klines(SYMBOL, state.timeframe)
-    analysis = analyze_market(klines) if klines else {}
-    if analysis and check_bounce_entry(analysis, klines, score):
-        state.hold_active = True
-        state.hold_candles = 0
-        state.hold_start_price = price
-        logger.info("[HOLD ACTIVATED] Bounce trade in bear market")
-    else:
-        state.hold_active = False
-    
-    # Start Exit Intelligence Monitoring (v3.7)
-    ema20_vals = calculate_ema([c['close'] for c in get_klines(SYMBOL, state.timeframe)], EMA_SHORT)
-    current_slope = calculate_slope(ema20_vals) if ema20_vals else 0.0
-    exit_intel.start_monitoring(price, current_slope)
-    
-    log_paper_trade(
-        "BUY", price, None, None, None,
-        paper_state.balance, score, paper_state.entry_reason,
-        "", 0
-    )
-    
+    log_paper_trade("BUY", price, None, None, None, paper_state.balance, score, paper_state.entry_reason, "", 0)
     logger.info(f"[TRADE_EXEC] Buy executed at {price}, qty={qty}")
     return qty
 
@@ -3478,36 +3405,17 @@ def check_lpem_invalidation(current_price: float, analysis: dict):
 
 def finalize_trade(result, entry_price, exit_price, reason, score, duration_min):
     """
-    نظام التوثيق الموحد لإغلاق الصفقات (Trade Lifecycle Sync)
-    SINGLE SOURCE OF TRUTH: state.position_open
-    Order: close_position -> record_trade -> update_balance -> reset_state -> refresh_ui
+    DEPRECATED: All trade closing now goes through ExecutionEngine.close_trade_atomically()
+    This function is kept for compatibility but only logs - actual closing is via engine.
     """
-    # 1. تحديث الرصيد وتسجيل في التاريخ الدائم (Paper Trades)
+    logger.debug("[DEPRECATED] finalize_trade called - use ExecutionEngine.close_trade_atomically instead")
     pnl_usdt = (exit_price - entry_price) * paper_state.position_qty if paper_state.position_qty > 0 else 0
     pnl_pct = ((exit_price - entry_price) / entry_price) * 100 if entry_price > 0 else 0
-    
     paper_state.balance += pnl_usdt
     paper_state.update_peak()
-    
-    log_paper_trade(
-        "EXIT", entry_price, exit_price, pnl_pct, pnl_usdt,
-        paper_state.balance, score, paper_state.entry_reason,
-        reason, duration_min
-    )
-    
-    # 2. تسجيل في سجل التليجرام
+    log_paper_trade("EXIT", entry_price, exit_price, pnl_pct, pnl_usdt, paper_state.balance, score, paper_state.entry_reason, reason, duration_min)
     log_trade("EXIT", reason, exit_price, pnl_pct)
-    
-    # 3. تصفير عدادات الحماية
     safety_core.active_trades = {"1m": 0, "5m": 0}
-    
-    # 4. تصفير حالة الصفقة (AFTER all trade finalization)
-    reset_position_state()
-    
-    # 5. إرسال التحديث للواجهة (AFTER state reset for sync)
-    exit_msg = format_exit_message(entry_price, exit_price, pnl_pct, pnl_usdt, reason, duration_min, paper_state.balance)
-    update_ui_async(exit_msg, "exit_signal")
-    
     logger.info(f"[LIFECYCLE] Trade finalized: {reason} | PnL: {pnl_pct:.2f}%")
     return pnl_pct, pnl_usdt, paper_state.balance
 
@@ -3561,10 +3469,10 @@ def update_ui_async(text: str, msg_type: str = "status"):
 
 def reset_position_state():
     """
-    إعادة تعيين حالة الصفقة بعد الخروج
+    DEPRECATED: ExecutionEngine manages position state now.
+    This function only resets non-position related state for compatibility.
     """
-    state.position_open = False
-    state.entry_price = None
+    logger.debug("[DEPRECATED] reset_position_state called - ExecutionEngine manages position state")
     state.entry_time = None
     state.entry_timeframe = None
     state.trailing_activated = False
@@ -3573,14 +3481,11 @@ def reset_position_state():
     state.risk_free_sl = None
     state.current_sl = None
     state.entry_candles_snapshot = []
-    
-    # Reset Runner State (v4.5.PRO-FINAL)
     state.runner_active = False
     state.runner_start_time = None
     state.runner_partial_closed = False
     state.runner_sl = None
-    
-    logger.info("🔄 Position state reset")
+    logger.debug("🔄 Non-position state reset")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -3603,7 +3508,8 @@ def get_broker_position_status() -> bool:
 def reconcile_state():
     """
     PHASE 5: Reality reconciliation - detect and auto-fix state drift
-    Runs every 2 seconds as safety net
+    Runs every 2 seconds as safety net.
+    Now uses ExecutionEngine as the single source of truth.
     """
     global _last_reconciliation_time
     
@@ -3614,32 +3520,12 @@ def reconcile_state():
     _last_reconciliation_time = now
     
     broker_position = get_broker_position_status()
-    engine_position = state.position_open
+    pos = execution_engine.get_position_state()
+    engine_position = pos["position_open"]
     
     if broker_position != engine_position:
         logger.warning(f"[STATE_DRIFT] DETECTED! Broker={broker_position}, Engine={engine_position}")
-        
-        # Auto-fix: Engine state should match broker
-        if not broker_position and engine_position:
-            # Broker says closed, but engine thinks open - FIX
-            logger.error("[STATE_DRIFT] AUTO-FIX: Resetting engine state to CLOSED")
-            reset_position_state()
-        elif broker_position and not engine_position:
-            # Broker says open, but engine thinks closed - ALERT (don't auto-open)
-            logger.error("[STATE_DRIFT] ALERT: Broker has open position but engine shows closed!")
-            # Don't auto-open, just log - this is safer
-        
-        # Log to audit trail
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                loop.create_task(execution_engine.audit_trail.log("STATE_DRIFT_FIXED", {
-                    "broker": broker_position,
-                    "engine": engine_position,
-                    "action": "auto_fix"
-                }))
-        except Exception:
-            pass
+        logger.debug("[STATE_DRIFT] ExecutionEngine is the source of truth - no local state to fix")
 
 
 def get_trade_duration_minutes() -> int:
@@ -3747,7 +3633,9 @@ def format_status_message() -> str:
     # Safely get engine from globals
     _engine = globals().get('execution_engine')
     if _engine and getattr(_engine, 'get_position_state', None) and _engine.get_position_state().get("position_open"):
-        pnl = ((state.last_close - state.entry_price) / state.entry_price) * 100 if state.last_close and state.entry_price else 0
+        _pos = _engine.get_position_state()
+        _entry = _pos.get("entry_price", 0)
+        pnl = ((state.last_close - _entry) / _entry) * 100 if state.last_close and _entry else 0
         pos_status = f"✅ صفقة مفتوحة ({pnl:+.2f}%)"
     
     # Smart Trading Mode Info
@@ -4555,8 +4443,10 @@ async def cmd_diagnostic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if _engine and getattr(_engine, 'get_position_state', None):
         is_open = _engine.get_position_state().get('position_open', False)
     msg += f"• صفقة مفتوحة: {'نعم' if is_open else 'لا'}\n"
-    if paper_state.position_qty > 0 and state.entry_price is not None:
-        entry_price_str = f"{state.entry_price:.4f}" if state.entry_price is not None else "None"
+    if paper_state.position_qty > 0 and is_open:
+        _pos = _engine.get_position_state() if _engine else {}
+        _entry = _pos.get("entry_price", 0)
+        entry_price_str = f"{_entry:.4f}" if _entry else "None"
         msg += f"• سعر الدخول: {entry_price_str}\n"
     msg += f"• عدد الصفقات: {len(closed_trades)}\n\n"
     
@@ -4649,7 +4539,8 @@ async def check_downtrend_alerts(bot: Bot, chat_id: str, analysis: dict, candles
     """
     إرسال تنبيهات الهبوط (للمراقبة فقط)
     """
-    if state.position_open or kill_switch.active:
+    pos = execution_engine.get_position_state()
+    if pos["position_open"] or kill_switch.active:
         return
 
     now = get_now().timestamp()
@@ -4838,12 +4729,13 @@ def get_binance_ticker():
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def create_trading_snapshot(current_price: float, candles: list, analysis: dict) -> TradingSnapshot:
-    """Phase 2: Create immutable snapshot for current cycle"""
+    """Phase 2: Create immutable snapshot for current cycle - uses ExecutionEngine"""
+    pos = execution_engine.get_position_state()
     return TradingSnapshot(
         timestamp=time.time(),
-        position_open=state.position_open,
+        position_open=pos["position_open"],
         price=current_price,
-        entry_price=state.entry_price,
+        entry_price=pos["entry_price"],
         indicators=dict(analysis) if analysis else {},
         candles=tuple(candles) if candles else (),
         mode=state.mode,
@@ -4945,9 +4837,9 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
             return
             
         # --- Exit Intelligence Layer (v3.7) ---
-        if state.position_open:
+        pos = execution_engine.get_position_state()
+        if pos["position_open"]:
             start_intel = time.time()
-            # We need EMA20 slope
             ema20_vals = calculate_ema([c['close'] for c in candles], EMA_SHORT)
             current_slope = calculate_slope(ema20_vals) if ema20_vals else 0.0
             intel_action = exit_intel.monitor(current_price, current_slope)
@@ -4956,20 +4848,15 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                 logger.warning(f"[INTEL] Execution exceeded 100ms: {(time.time() - start_intel)*1000:.2f}ms")
             
             if intel_action == ACTION_3_FLAGS:
-                entry_price = state.entry_price  # Save before reset
-                exit_reason = "TREND_REVERSAL_PREVENTED" # {BOT_VERSION}
-                exit_result = execute_paper_exit(entry_price, current_price, exit_reason, 10, 0)
-                if exit_result:
-                    pnl_pct, pnl_usdt, balance = exit_result
-                    update_cooldown_after_exit(exit_reason)
-                    msg = f"🛡️ **Intel Early Exit**\nPrice: {current_price}\nPnL: {pnl_usdt:.2f} ({pnl_pct:.2f}%)"
-                    await bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
+                await execution_engine.close_trade_atomically("TREND_REVERSAL_PREVENTED", current_price)
                 return
             elif intel_action == ACTION_2_FLAGS:
-                tight_sl = state.entry_price * 1.0005
-                if not state.current_sl or tight_sl > state.current_sl:
-                    state.current_sl = tight_sl
-                    logger.info(f"[INTEL] Tightened SL to {tight_sl}")
+                entry_price = pos["entry_price"]
+                if entry_price and entry_price > 0:
+                    tight_sl = entry_price * 1.0005
+                    if not state.current_sl or tight_sl > state.current_sl:
+                        state.current_sl = tight_sl
+                        logger.info(f"[INTEL] Tightened SL to {tight_sl}")
 
         analysis = analyze_market(candles)
         if "error" in analysis:
@@ -5006,16 +4893,17 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
         check_lpem_invalidation(current_price, analysis)
         
         # Disable Kill Switch evaluation for Aggressive Mode
+        pos = execution_engine.get_position_state()
         if state.mode != "AGGRESSIVE":
             ks_reason = evaluate_kill_switch()
-            if ks_reason and not state.position_open:
+            if ks_reason and not pos["position_open"]:
                 kill_switch.activate(ks_reason)
                 return
         
-        if state.position_open and state.entry_price is not None:
+        if pos["position_open"] and pos["entry_price"] is not None:
             exit_reason = manage_trade_exits(analysis, candles)
             if exit_reason:
-                entry_price = state.entry_price  # Save before reset
+                entry_price = pos["entry_price"]
                 exit_price = analysis["close"]
                 duration = get_trade_duration_minutes()
                 # Pass consistent score ({BOT_VERSION})
@@ -5029,7 +4917,7 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
             
             # Additional Aggressive Flip check
             elif state.mode == "AGGRESSIVE" and check_sell_signal(analysis, candles):
-                entry_price = state.entry_price  # Save before reset
+                entry_price = pos["entry_price"]
                 exit_price = analysis["close"]
                 duration = get_trade_duration_minutes()
                 # Pass consistent score ({BOT_VERSION})
@@ -5043,14 +4931,15 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
         # ⚡ QUICK SCALP DOWN MODE (MANUAL SWITCH) - v4.5.PRO-FINAL
         # ═══════════════════════════════════════════════════════════════════
 
-        if not state.position_open and get_current_mode() == "FAST_SCALP":
+        pos = execution_engine.get_position_state()
+        if not pos["position_open"] and get_current_mode() == "FAST_SCALP":
             if get_fast_mode() == "FAST_DOWN":
                 if quick_scalp_down_get_entry_signal(candles, analysis):
                     await quick_scalp_down_execute_trade(bot, chat_id, current_price, candles)
                     return
 
         # Re-check entry (Allow immediate re-entry for aggressive mode)
-        if not state.position_open:
+        if not pos["position_open"]:
             if check_buy_signal(analysis, candles):
                 entry_price = analysis["close"]
                 
@@ -5086,15 +4975,21 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                 ai_status = ai_engine.get_status()
                 logger.info(f"🔍 [AI ENGINE] Mode: {ai_status.get('mode')}, Weight: {ai_status.get('weight')}")
 
-                # 🔒 THREAD LOCK (Unified Entry)
+                # 🔒 THREAD LOCK (Unified Entry via ExecutionEngine)
                 with trade_lock:
-                    if state.position_open:
+                    pos = execution_engine.get_position_state()
+                    if pos["position_open"]:
                         logger.info("🚫 [LOCK_BLOCK] Position already opened by another thread")
                         return
                     
-                    # UPDATE STATE FIRST (position_open = True)
-                    state.position_open = True
-                    state.entry_price = entry_price
+                    # Request trade via ExecutionEngine
+                    await execution_engine.request_trade({
+                        "type": "OPEN",
+                        "symbol": SYMBOL,
+                        "amount": round(paper_state.balance * 0.1, 2)
+                    })
+                    
+                    # Update non-position state for compatibility
                     state.entry_time = get_now()
                     state.current_sl = sl
                     state.tp_triggered = False
@@ -5112,8 +5007,6 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                     
                     if not ai_result.executed:
                         logger.info(f"🚫 [AI ENGINE] Trade blocked: {ai_result.decision.value} | score={ai_result.score}")
-                        # ROLLBACK STATE only if NOT blocked by cooldown
-                        # COOLDOWN means a trade was recently executed, don't reset that position!
                         if ai_result.decision != TradeDecision.BLOCKED_COOLDOWN:
                             reset_position_state()
                         return
