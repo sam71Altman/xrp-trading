@@ -225,6 +225,19 @@ class ExecutionEngine:
         self.max_recovery_attempts: int = 3
         self._pending_notification: Optional[Dict] = None
         self._last_execution_id: str = ""
+        self._position_open: bool = False
+        self._position_symbol: Optional[str] = None
+        self._entry_price: float = 0.0
+        self._position_version: int = 0
+    
+    def get_position_state(self) -> Dict[str, Any]:
+        """SINGLE SOURCE OF TRUTH for position state"""
+        return {
+            "position_open": self._position_open,
+            "symbol": self._position_symbol,
+            "entry_price": self._entry_price,
+            "version": self._position_version
+        }
     
     async def execute_trade_atomically(
         self,
@@ -2176,14 +2189,21 @@ class LegacyBotState:
     @property
     def position_open(self) -> bool:
         """SINGLE SOURCE OF TRUTH redirect"""
-        if 'engine' in globals() and engine:
-            return engine.get_position_state().get("position_open", False)
+        _engine = globals().get('execution_engine')
+        if _engine:
+            return _engine.get_position_state().get("position_open", False)
         return False
 
     @position_open.setter
     def position_open(self, value):
-        """Forbidden to set directly but keeping for compatibility if engine handles it"""
-        pass
+        """Set position state in execution engine"""
+        _engine = globals().get('execution_engine')
+        if _engine:
+            _engine._position_open = value
+            if not value:
+                _engine._position_symbol = None
+                _engine._entry_price = 0.0
+            _engine._position_version += 1
         
     def __init__(self):
         self.mode: str = "AGGRESSIVE"  # Force Aggressive Mode
@@ -3563,9 +3583,10 @@ _RECONCILIATION_INTERVAL = 2.0  # seconds
 def get_broker_position_status() -> bool:
     """Get actual broker position status (paper trading = based on safety_core)"""
     # In paper trading, safety_core is the "broker"
+    # Check for both ENTERED and OPEN states as both indicate an active position
     for strategy_id in ["SCALP_FAST", "SCALP_PULLBACK", "BREAKOUT"]:
         strategy = safety_core.strategies.get(strategy_id)
-        if strategy and strategy.state == TradeState.OPEN:
+        if strategy and strategy.state in [TradeState.OPEN, BotState.ENTERED]:
             return True
     return False
 
@@ -5082,8 +5103,10 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                     
                     if not ai_result.executed:
                         logger.info(f"🚫 [AI ENGINE] Trade blocked: {ai_result.decision.value} | score={ai_result.score}")
-                        # ROLLBACK STATE
-                        reset_position_state()
+                        # ROLLBACK STATE only if NOT blocked by cooldown
+                        # COOLDOWN means a trade was recently executed, don't reset that position!
+                        if ai_result.decision != TradeDecision.BLOCKED_COOLDOWN:
+                            reset_position_state()
                         return
                     
                     # Logic below only executes if trade was NOT already executed by AI engine
