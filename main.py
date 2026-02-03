@@ -166,6 +166,16 @@ class AuditTrail:
                 await self.flush()
         self._flush_task = asyncio.create_task(flush_loop())
 
+class CircuitBreakerLogic:
+    def __init__(self):
+        self.emergency_stop = False
+    def is_blocked(self):
+        return self.emergency_stop, "Emergency Stop" if self.emergency_stop else ""
+    def record_trade(self, pnl):
+        pass
+
+circuit_breaker_logic = CircuitBreakerLogic()
+
 class StateGuard:
     """Phase 11 & 12: Real-time state guard with dual failsafe"""
     def __init__(self):
