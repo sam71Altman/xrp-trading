@@ -4401,7 +4401,7 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
     # ═══════════════════════════════════════════════
     # ✅ FAST_SCALP_DOWN — ENGINE ATOMIC EXIT (FIX)
     # ═══════════════════════════════════════════════
-    if state.mode == "FAST_SCALP_DOWN":
+    if state.mode == "FAST_SCALP" and "DOWN" in str(get_fast_mode()):
 
         engine = execution_engine
         pos = engine.get_position_state()
