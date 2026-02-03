@@ -4787,6 +4787,7 @@ if __name__ == "__main__":
         logger.info(f"🚀 {BOT_VERSION} Startup")
         
         # Version Integrity Check
+        SYSTEM_VERSION = BOT_VERSION
         if BOT_VERSION != SYSTEM_VERSION:
             logger.error(f"FATAL: Version mismatch! Expected {SYSTEM_VERSION}, found {BOT_VERSION}")
             exit(1)
