@@ -2723,26 +2723,22 @@ def check_sell_signal(analysis: dict, candles: List[dict]) -> bool:
     prev_close = analysis["prev_close"]
     ema20 = analysis["ema_short"]
     
-    # 1. Price touches/moves above EMA20 and rejects downward
-    high_hit = any(c["high"] >= ema20 for c in candles[-2:])
-    if high_hit and current_close < ema20:
-        state.last_signal_reason = "EMA bounce"
-        return True
-        
-    # 2. Momentum: -0.05% to -0.10% within short window
+    # 🛡️ الحماية من الإغلاق الفوري (Fixed v4.6.PRO)
+    # لا يسمح بالإغلاق إلا إذا مر وقت كافٍ أو تحرك السعر بشكل ملحوظ
+    # لمنع التذبذب السعري من إغلاق الصفقة فور فتحها
+    
+    # 1. Momentum: شروط أقوى للبيع لمنع الضجيج
     price_change = (current_close - prev_close) / prev_close * 100
-    if price_change <= -0.05:
-        state.last_signal_reason = "Momentum"
+    if price_change < -0.15: # زيادة الحساسية لمنع الإغلاق العشوائي
+        state.last_signal_reason = "Strong Momentum Drop"
         return True
         
-    # 3. Micro breakdown of recent low (last 3 candles)
-    recent_low = min([c["low"] for c in candles[-4:-1]])
-    if current_close < recent_low:
-        state.last_signal_reason = "Micro breakdown"
+    # 2. Price below EMA with buffer
+    if current_close < ema20 * 0.998: # 0.2% buffer
+        state.last_signal_reason = "EMA breakdown"
         return True
         
     return False
-
 
 def calculate_targets(entry_price: float, candles: List[dict]) -> tuple:
     tp = entry_price * (1 + TAKE_PROFIT_PCT / 100)
@@ -4560,6 +4556,9 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                 if not ai_engine:
                     logger.error("❌ [AI ENGINE] Engine not initialized in signal_loop")
                     return
+                
+                # Initialize engine if not started
+                await execution_engine.start_trading_core()
                 
                 # Update the market data provider with a closure to ensure fresh data
                 ai_engine.get_market_data_fn = lambda symbol: create_market_data_from_analysis(analysis, candles)
