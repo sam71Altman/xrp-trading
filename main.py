@@ -4557,6 +4557,26 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                     logger.error("❌ [AI ENGINE] Engine not initialized in signal_loop")
                     return
                 
+                # Paper Broker Simulation & State Sync (Fixed v4.6.PRO)
+                if not hasattr(execution_engine, 'broker') or execution_engine.broker is None:
+                    class PaperBroker:
+                        async def order(self, symbol, side, amount):
+                            class Order:
+                                def __init__(self, s, sd, p):
+                                    self.id = time.time()
+                                    self.symbol = s
+                                    self.side = sd
+                                    self.price = p
+                            # Ensure amount is reflected in global paper_state if needed
+                            return Order(symbol, side, analysis["close"])
+                    execution_engine.broker = PaperBroker()
+                
+                # Direct position sync for Paper Trading
+                pos = execution_engine.get_position_state()
+                if pos["position_open"]:
+                    paper_state.position_open = True
+                    paper_state.entry_price = pos["entry_price"]
+                
                 # Initialize engine if not started
                 await execution_engine.start_trading_core()
                 
@@ -4600,7 +4620,7 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                     state.candles_below_ema = 0
                     state.entry_candles_snapshot = candles[-10:]
 
-                    ai_result = ai_engine.check_and_execute_trade(
+                    ai_result = await ai_engine.check_and_execute_trade(
                         symbol=SYMBOL,
                         direction="LONG",
                         amount=round(paper_state.balance * 0.1, 2),

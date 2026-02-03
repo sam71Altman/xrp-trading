@@ -78,7 +78,7 @@ class TradingEngine:
         self.fast_submode = None
         self._closing = False
     
-    def check_and_execute_trade(
+    async def check_and_execute_trade(
         self,
         symbol: str,
         direction: str,
@@ -108,7 +108,7 @@ class TradingEngine:
         
         if self.ai_state.mode == AIMode.OFF:
             self._log_decision(symbol, None, TradeDecision.ALLOWED_OFF_MODE)
-            return self._execute_with_result(
+            return await self._execute_with_result(
                 symbol, direction, amount,
                 TradeDecision.ALLOWED_OFF_MODE, None, "AI OFF"
             )
@@ -138,7 +138,7 @@ class TradingEngine:
         
         if self.ai_state.mode == AIMode.LEARN:
             self._log_decision(symbol, score, TradeDecision.ALLOWED_LEARN_MODE)
-            return self._execute_with_result(
+            return await self._execute_with_result(
                 symbol, direction, amount,
                 TradeDecision.ALLOWED_LEARN_MODE, score, "LEARN mode - analysis only"
             )
@@ -147,14 +147,14 @@ class TradingEngine:
         
         if self.ai_state.is_limit_reached():
             self._log_decision(symbol, score, TradeDecision.ALLOWED_LIMIT_FALLBACK)
-            return self._execute_with_result(
+            return await self._execute_with_result(
                 symbol, direction, amount,
                 TradeDecision.ALLOWED_LIMIT_FALLBACK, score, "Daily limit reached - fallback"
             )
         
         if score >= weight:
             self._log_decision(symbol, score, TradeDecision.ALLOWED)
-            return self._execute_with_result(
+            return await self._execute_with_result(
                 symbol, direction, amount,
                 TradeDecision.ALLOWED, score, f"Score {score} >= Weight {weight}"
             )
@@ -169,7 +169,7 @@ class TradingEngine:
                 details=f"Score {score} < Weight {weight}"
             )
     
-    def _execute_with_result(
+    async def _execute_with_result(
         self,
         symbol: str,
         direction: str,
@@ -179,7 +179,18 @@ class TradingEngine:
         details: str
     ) -> TradeResult:
         try:
-            executed = self.execute_trade_fn(symbol, direction, amount)
+            if self.broker is None:
+                logger.error("[TRADE] No broker configured")
+                return TradeResult(
+                    decision=TradeDecision.BLOCKED_SYSTEM_ERROR,
+                    score=score,
+                    weight=self.ai_state.weight.value,
+                    executed=False,
+                    details="No broker configured"
+                )
+            # Use await because broker.order is async
+            executed_order = await self.broker.order(symbol, direction, amount)
+            executed = True if executed_order else False
             if executed:
                 self.ai_state.record_trade(symbol)
             return TradeResult(
@@ -251,10 +262,11 @@ class TradingEngine:
 
     async def _execute_trade_atomically(self, signal):
         try:
-            async with asyncio.timeout(0.5):
+            async with asyncio.timeout(2.0): # Increased timeout for broker
                 async with self._trade_lock:
                     return await self._execute_under_lock(signal)
         except asyncio.TimeoutError:
+            logger.error("[ATOMIC] Trade execution timed out")
             return False
 
     def get_position_state(self) -> Dict[str, Any]:
