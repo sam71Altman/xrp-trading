@@ -4397,6 +4397,8 @@ def generate_exit_signal(snapshot: TradingSnapshot) -> TradeSignal:
 
 
 async def signal_loop(bot: Bot, chat_id: str) -> None:
+    print(">>> SIGNAL LOOP TICK <<<")
+    print(">>> FAST CHECK BLOCK ENTERED <<<")
 
     # ═══════════════════════════════════════════════
     # ✅ FAST_SCALP_DOWN — ENGINE ATOMIC EXIT (FIX)
