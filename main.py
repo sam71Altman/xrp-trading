@@ -4397,8 +4397,34 @@ def generate_exit_signal(snapshot: TradingSnapshot) -> TradeSignal:
 
 
 async def signal_loop(bot: Bot, chat_id: str) -> None:
+
+    # ═══════════════════════════════════════════════
+    # ✅ FAST_SCALP_DOWN — ENGINE ATOMIC EXIT (FIX)
+    # ═══════════════════════════════════════════════
     if state.mode == "FAST_SCALP_DOWN":
-        await quick_scalp_down_manage_trade(bot, chat_id)
+
+        engine = execution_engine
+        pos = engine.get_position_state()
+
+        if pos["position_open"] and pos["entry_price"]:
+
+            current_price = PriceEngine.last_price or 0
+            if current_price <= 0:
+                return
+
+            entry = pos["entry_price"]
+            pnl = ((current_price - entry) / entry) * 100
+
+            # TP
+            if pnl >= 0.10:
+                await engine.close_trade_atomically("FAST_DOWN_TP", current_price)
+                return
+
+            # SL
+            if pnl <= -0.12:
+                await engine.close_trade_atomically("FAST_DOWN_SL", current_price)
+                return
+
         return
     
     if state.mode == "AGGRESSIVE":
