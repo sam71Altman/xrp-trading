@@ -4400,6 +4400,26 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
     print(">>> SIGNAL LOOP TICK <<<")
     print(">>> FAST CHECK BLOCK ENTERED <<<")
 
+    engine = execution_engine
+    pos = engine.get_position_state()
+
+    if pos.get("position_open") and pos.get("entry_price") and 'candles' in globals():
+        entry = pos["entry_price"]
+        current = candles[-1]['close']
+        pnl = ((current - entry) / entry) * 100
+
+        print(f"[MANAGE] PNL={pnl:.4f}%")
+
+        if pnl >= 0.10:
+            print("[MANAGE] TP HIT → closing")
+            await engine.close_trade_atomically("TP", current)
+            return
+
+        if pnl <= -0.12:
+            print("[MANAGE] SL HIT → closing")
+            await engine.close_trade_atomically("SL", current)
+            return
+
     # ═══════════════════════════════════════════════
     # ✅ FAST_SCALP_DOWN — ENGINE ATOMIC EXIT (FIX)
     # ═══════════════════════════════════════════════

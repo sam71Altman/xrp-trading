@@ -1,10 +1,5 @@
 [
   {
-    "timestamp": "2026-01-31T04:15:18.518014",
-    "from": "DEFAULT",
-    "to": "FAST_SCALP"
-  },
-  {
     "timestamp": "2026-01-31T04:18:38.028131",
     "from": "DEFAULT",
     "to": "FAST_SCALP"
@@ -246,6 +241,11 @@
   },
   {
     "timestamp": "2026-02-03T07:07:34.662584",
+    "from": "DEFAULT",
+    "to": "FAST_SCALP"
+  },
+  {
+    "timestamp": "2026-02-03T07:29:25.892122",
     "from": "DEFAULT",
     "to": "FAST_SCALP"
   }
