@@ -244,9 +244,46 @@ class TradingEngine:
         except asyncio.TimeoutError:
             return False
 
+    async def manage_open_position(self):
+        """
+        Centralized exit manager.
+        Engine is the ONLY source of truth for closing.
+        Runs every tick.
+        """
+        if not self._position_open:
+            return
+
+        try:
+            # Getting current price from market data function
+            market_data = self.get_market_data_fn(self._position_symbol)
+            if not market_data:
+                return
+            
+            price = market_data.price
+            entry = self._entry_price
+            
+            # Simple PNL calculation (assuming LONG for now based on previous context, 
+            # but since side isn't explicitly tracked as a variable in the engine class yet, 
+            # we'll use a standard calculation or infer from broker)
+            pnl_pct = (price - entry) / entry * 100
+            
+            logger.info(f"[MANAGE] pnl={pnl_pct:.4f}% price={price}")
+
+            TP = 0.10
+
+            if pnl_pct >= TP:
+                logger.info("[TP HIT] closing via atomic engine")
+                await self.close_trade_atomically("TP", price)
+
+        except Exception as e:
+            logger.error(f"[MANAGE ERROR] {e}")
+
     async def _trade_pipeline(self):
         while True:
             try:
+                # Run management every tick
+                await self.manage_open_position()
+
                 try:
                     async with asyncio.timeout(1.0):
                         signal = await self._trade_queue.get()
