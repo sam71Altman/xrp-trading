@@ -1154,15 +1154,26 @@ def check_buy_signal(analysis, candles):
             return False
             
         # Fast scalp: minimal filtering, enter quickly
-        min_score = mode_params.get('min_signal_score', 0)
-        if score >= min_score:
+        min_score = mode_params.get('min_signal_score', 1)
+        if score >= min_score and current_price > ema20:
             state.valid_entries += 1
             logger.info(f"[FAST_SCALP] Entry allowed: score={score}, price={current_price}")
+            
+            # Send notification for entry
+            msg = (
+                "🔵 *دخول صفقة سكالب (FAST_SCALP)*\n\n"
+                f"الزوج: {SYMBOL_DISPLAY}\n"
+                f"السعر: {current_price:.4f}\n"
+                f"السكور: {score}/10\n"
+                f"RSI: {rsi:.1f}"
+            )
+            asyncio.create_task(execution_engine.telegram.send(msg))
+            
             safety_core.set_state(BotState.ENTERED, strategy_id="SCALP_FAST", reason="FAST_SCALP_SIGNAL")
             safety_core.active_trades[state.timeframe] += 1
             return True
         state.rejected_entries += 1
-        state.last_rejection_reason = "FAST_SCALP (Score too low)"
+        state.last_rejection_reason = "FAST_SCALP (Score too low or Price < EMA20)"
         return False
     
     # 🧲 BOUNCE Mode: Only enter on bounces in oversold conditions
@@ -4490,11 +4501,17 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
             state.last_alert_price = current_price
         
         price_diff_pct = (current_price - state.last_alert_price) / state.last_alert_price * 100
-        if abs(price_diff_pct) >= 0.5:
-            direction = "🚀 صعود" if price_diff_pct > 0 else "🔻 هبوط"
-            alert_msg = f"{direction} مفاجئ في السعر!\nالسعر الحالي: {current_price:.4f}\nالتغير: {price_diff_pct:.2f}%"
+        if abs(price_diff_pct) >= 0.3: # Reduced threshold for more notifications
+            direction = "🚀 فرصة صعود" if price_diff_pct > 0 else "🔻 تنبيه هبوط"
+            alert_msg = (
+                f"{direction}\n"
+                f"الزوج: {SYMBOL_DISPLAY}\n"
+                f"السعر الحالي: {current_price:.4f}\n"
+                f"التغير: {price_diff_pct:.2f}%\n"
+                f"السكور: {analysis.get('score', 0)}/10"
+            )
             if execution_engine.telegram:
-                await execution_engine.telegram.send(alert_msg)
+                asyncio.create_task(execution_engine.telegram.send(alert_msg))
             state.last_alert_price = current_price
 
         candles = get_klines(SYMBOL, state.timeframe)

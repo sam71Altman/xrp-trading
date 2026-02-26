@@ -269,10 +269,11 @@ class TradingEngine:
             
             logger.info(f"[MANAGE] pnl={pnl_pct:.4f}% price={price}")
 
-            TP = 0.10
+            # TP threshold from params or default
+            TP = self.QUICK_DOWN_TP if self.fast_submode == "DOWN" else 0.10
 
             if pnl_pct >= TP:
-                logger.info("[TP HIT] closing via atomic engine")
+                logger.info(f"[TP HIT] closing via atomic engine: {pnl_pct:.4f}% >= {TP}%")
                 await self.close_trade_atomically("TP", price)
 
         except Exception as e:
