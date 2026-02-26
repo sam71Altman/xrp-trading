@@ -623,9 +623,15 @@ def quick_scalp_down_should_use_mode(candles, analysis, current_spread):
     return quick_scalp_down_is_downtrend_confirmed(candles, analysis, current_spread)
 
 def quick_scalp_down_get_entry_signal(candles, analysis):
-    if not candles or len(candles) < 5:
+    if not candles or len(candles) < 50:
         return False
     
+    # Check if EMA20 < EMA50 (Confirm downtrend)
+    ema20 = analysis.get('ema20', 0)
+    ema50 = analysis.get('ema50', 0)
+    if not (ema20 < ema50):
+        return False
+
     # 1. Reversal Confirmation (Already updated in has_reversal_signal via score >= 2)
     if not quick_scalp_down_has_reversal_signal(candles, analysis):
         return False
