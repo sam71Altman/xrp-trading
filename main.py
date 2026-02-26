@@ -1167,7 +1167,8 @@ def check_buy_signal(analysis, candles):
                 f"السكور: {score}/10\n"
                 f"RSI: {rsi:.1f}"
             )
-            asyncio.create_task(execution_engine.telegram.send(msg))
+            if execution_engine.telegram:
+                asyncio.create_task(execution_engine.telegram.send(msg))
             
             safety_core.set_state(BotState.ENTERED, strategy_id="SCALP_FAST", reason="FAST_SCALP_SIGNAL")
             safety_core.active_trades[state.timeframe] += 1
