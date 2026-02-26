@@ -4479,6 +4479,18 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
             else:
                 return
 
+        # Price Alerts ( صعود / هبوط )
+        if not hasattr(state, 'last_alert_price'):
+            state.last_alert_price = current_price
+        
+        price_diff_pct = (current_price - state.last_alert_price) / state.last_alert_price * 100
+        if abs(price_diff_pct) >= 0.5:
+            direction = "🚀 صعود" if price_diff_pct > 0 else "🔻 هبوط"
+            alert_msg = f"{direction} مفاجئ في السعر!\nالسعر الحالي: {current_price:.4f}\nالتغير: {price_diff_pct:.2f}%"
+            if execution_engine.telegram:
+                await execution_engine.telegram.send(alert_msg)
+            state.last_alert_price = current_price
+
         candles = get_klines(SYMBOL, state.timeframe)
         if candles is None:
             return

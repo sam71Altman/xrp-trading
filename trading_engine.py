@@ -349,7 +349,18 @@ class TradingEngine:
 
                 # 3. Notification
                 if self.telegram:
-                    await self.telegram.send(f"🔴 CLOSE: {reason} @ {exit_price}")
+                    # Determine emoji and message based on reason
+                    if "TP" in reason.upper():
+                        emoji = "🟢"
+                        action_text = "إغلاق على ربح (TP)"
+                    elif "SL" in reason.upper():
+                        emoji = "🔴"
+                        action_text = "إغلاق على خسارة (SL)"
+                    else:
+                        emoji = "⚪"
+                        action_text = f"إغلاق صفقة ({reason})"
+                    
+                    await self.telegram.send(f"{emoji} {action_text}\nالسعر: {exit_price}")
 
                 logger.info(f"[CLOSE] Success: {reason}")
                 return True
@@ -383,6 +394,9 @@ class TradingEngine:
             self._position_symbol = symbol
             self._entry_price = order.price
             self._position_version += 1
+
+            if self.telegram:
+                await self.telegram.send(f"🔵 دخول صفقة جديدة\nالزوج: {symbol}\nالسعر: {order.price}\nالكمية: {amount}")
 
             await self._notify_trade_once(order)
 
