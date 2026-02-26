@@ -6,3 +6,7 @@ python-telegram-bot[job-queue]
 requests
 telegram
 websocket-client
+python-telegram-bot[job-queue]
+requests
+telegram
+websocket-client
