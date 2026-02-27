@@ -5,3 +5,8 @@ telegram
 websocket
 websocket-client==1.8.0
 websocket-client==1.8.0
+python-telegram-bot[job-queue]
+requests
+telegram
+websocket
+websocket-client
