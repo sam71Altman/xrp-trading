@@ -446,8 +446,9 @@ class TradingEngine:
         message = f"{order.side} {order.symbol} @ {order.price}"
 
         try:
-            await self.telegram.send(message)
-            self._last_trade_id = order.id
+            if self.telegram:
+                await self.telegram.send(message)
+                self._last_trade_id = order.id
         except Exception:
             logger.exception("Telegram send failed")
 

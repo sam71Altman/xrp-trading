@@ -1155,7 +1155,9 @@ def check_buy_signal(analysis, candles):
             
         # Fast scalp: minimal filtering, enter quickly
         min_score = mode_params.get('min_signal_score', 1)
-        # Requirement: Price > EMA20 and Score >= 1 for FAST_SCALP
+        if min_score < 1: min_score = 1 # Force minimum score of 1
+        
+        # STRICT REQUIREMENT: Score must be >= 1 AND Price > EMA20
         if score >= min_score and current_price > ema20:
             state.valid_entries += 1
             logger.info(f"[FAST_SCALP] Entry allowed: score={score}, price={current_price}")
