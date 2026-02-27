@@ -4007,6 +4007,18 @@ async def cmd_diagnostic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # حالة التداول
     signals = "✅ مفعّلة" if state.signals_enabled else "🛑 موقوفة"
     ks_status = "⚠️ مفعل" if kill_switch.active else "✅ غير مفعل"
+    
+    # AI Status (Real & Dynamic)
+    ai_info = get_ai_status()
+    ai_mode_val = ai_info.get("mode", "OFF")
+    ai_weight_val = ai_info.get("weight", 0.6)
+    
+    ai_status_text = "🛑 متوقف"
+    if ai_mode_val == "FULL":
+        ai_status_text = "✅ يعمل بكامل القوة"
+    elif ai_mode_val == "LEARN":
+        ai_status_text = "📚 وضع التعلم فقط"
+    
     cooldown = 0
     if state.pause_until:
         rem = (state.pause_until - get_now()).total_seconds()
@@ -4014,6 +4026,8 @@ async def cmd_diagnostic(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     msg += "⚙️ *حالة التداول*\n"
     msg += f"• الإشارات: {signals}\n"
+    msg += f"• الذكاء الاصطناعي: {ai_status_text}\n"
+    msg += f"• قوة الفلترة: {ai_weight_val}\n"
     msg += f"• Paper Trading: ✅ مفعّل\n"
     msg += f"• Kill Switch: {ks_status}\n"
     if kill_switch.active:
