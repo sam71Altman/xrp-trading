@@ -173,6 +173,7 @@ class TradingLogicController:
                 "entry_conditions": self._get_bounce_conditions(market_data),
             })
         
+        logger.info(f"[MODE PARAMS] mode={trade_mode} min_score={params['min_signal_score']}")
         return params
     
     def _get_bounce_conditions(self, market_data: Optional[Dict]) -> Dict:

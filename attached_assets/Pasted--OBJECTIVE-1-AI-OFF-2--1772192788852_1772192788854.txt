@@ -1,0 +1,215 @@
+🎯 OBJECTIVE
+
+إصلاح نظام التداول بالكامل بحيث:
+
+1. يعمل التداول بالاستراتيجية حتى لو AI = OFF
+2. منع score = 0 إلا إذا البيانات فعلاً صفر
+3. إصلاح إنشاء MarketData
+4. إصلاح منطق min_signal_score
+5. إصلاح الإشعارات
+6. منع الدخول الفوري بدون تحليل
+7. جعل Trade Modes تطبق فعلياً
+
+⚠️ ممنوع كسر أي بنية حالية
+⚠️ ممنوع حذف ميزات
+⚠️ فقط إصلاح
+
+═══════════════════════════════════
+
+🔧 FIX 1 — CRITICAL — TradingEngine AI OFF bug
+
+FILE:
+trading_engine.py
+
+FIND:
+
+if self.ai_state.mode == AIMode.OFF:
+
+REPLACE WITH:
+
+✅ FIX: allow strategy trading when AI OFF
+
+if self.ai_state.mode == AIMode.OFF:
+
+logger.info("[AI OFF] Strategy trading allowed")
+
+return await self._execute_with_result(
+    symbol,
+    direction,
+    amount,
+    TradeDecision.ALLOWED_OFF_MODE,
+    score=1.0,
+    details="AI OFF - Strategy execution allowed"
+)
+
+═══════════════════════════════════
+
+🔧 FIX 2 — CRITICAL — MarketData missing values
+
+FILE:
+ai_filter.py
+
+FIND:
+
+class MarketData:
+
+REPLACE WITH:
+
+class MarketData:
+
+volume: float = 1
+avg_volume: float = 1
+
+atr: float = 1
+avg_atr: float = 1
+
+trend_strength: float = 0.5
+
+rsi: float = 50
+
+spread: float = 1
+avg_spread: float = 1
+
+═══════════════════════════════════
+
+🔧 FIX 3 — CRITICAL — Prevent score = 0
+
+FILE:
+ai_filter.py
+
+FIND:
+
+final_score = max(0.0, min(1.0, total))
+
+REPLACE WITH:
+
+final_score = max(0.35, min(1.0, total))
+
+═══════════════════════════════════
+
+🔧 FIX 4 — CRITICAL — enforce TradeMode min_signal_score
+
+FILE:
+main.py
+
+FIND location where signal score is checked
+
+REPLACE LOGIC WITH:
+
+mode_params = get_mode_params()
+
+min_score_required = mode_params.get("min_signal_score", 0.4)
+
+if score < min_score_required:
+
+logger.info(f"Blocked by TradeMode score: {score} < {min_score_required}")
+
+return
+
+═══════════════════════════════════
+
+🔧 FIX 5 — CRITICAL — prevent instant entry without analysis
+
+FILE:
+main.py
+
+BEFORE calling request_trade
+
+ADD:
+
+if score is None:
+
+logger.warning("Signal rejected — score None")
+
+return
+
+═══════════════════════════════════
+
+🔧 FIX 6 — CRITICAL — restore notifications
+
+FILE:
+trading_engine.py
+
+FIND:
+
+await self._send_trade_notification(order)
+
+REPLACE WITH:
+
+if order:
+await self._send_trade_notification(order)
+logger.info("Notification sent")
+
+═══════════════════════════════════
+
+🔧 FIX 7 — CRITICAL — ensure AI does not override strategy
+
+FILE:
+main.py
+
+FIND:
+
+engine.check_and_execute_trade
+
+ENSURE original_conditions_met=True only when strategy valid:
+
+example:
+
+result = await engine.check_and_execute_trade(
+
+symbol,
+direction,
+amount,
+
+original_conditions_met = strategy_signal_valid
+
+)
+
+═══════════════════════════════════
+
+🔧 FIX 8 — DEBUG LOGGING
+
+FILE:
+ai_filter.py
+
+ADD inside calculate_score BEFORE return:
+
+logger.info(f"[AI SCORE] calculated score={final_score}")
+
+═══════════════════════════════════
+
+🔧 FIX 9 — DEBUG TradeMode
+
+FILE:
+trade_modes.py
+
+ADD inside get_trading_params:
+
+logger.info(f"[MODE PARAMS] mode={trade_mode} min_score={params['min_signal_score']}")
+
+═══════════════════════════════════
+
+🎯 EXPECTED RESULT
+
+بعد الإصلاح:
+
+✅ السكالب يعمل طبيعي
+✅ لا يوجد score = 0
+✅ AI OFF لا يمنع التداول
+✅ الإشعارات تعمل
+✅ لا دخول بدون تحليل
+✅ TradeModes تعمل فعلياً
+
+═══════════════════════════════════
+
+🎯 SUCCESS CONDITION
+
+Console example:
+
+[MODE PARAMS] mode=FAST_SCALP min_score=0.35
+[AI SCORE] calculated score=0.47
+ENTRY EXECUTED
+
+═══════════════════════════════════
+
+END OF TASK

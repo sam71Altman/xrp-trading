@@ -118,15 +118,15 @@ class TradingEngine:
             )
         
         if self.ai_state.mode == AIMode.OFF:
-            self._log_decision(symbol, None, TradeDecision.ALLOWED_OFF_MODE)
+            logger.info("[AI OFF] Strategy trading allowed")
             
             return await self._execute_with_result(
                 symbol,
                 direction,
                 amount,
                 TradeDecision.ALLOWED_OFF_MODE,
-                None,
-                "AI OFF - Executed without AI filtering"
+                1.0,
+                "AI OFF - Strategy execution allowed"
             )
         
         market_data = self.get_market_data_fn(symbol)
@@ -369,8 +369,9 @@ class TradingEngine:
                 self._position_version += 1
 
                 # 3. Notification
-                order = type('Order', (), {'symbol': self._position_symbol, 'price': exit_price, 'amount': 0, 'side': 'SELL'})()
-                await self._send_trade_notification(order)
+                if order:
+                    await self._send_trade_notification(order)
+                    logger.info("Notification sent")
 
                 logger.info(f"[CLOSE] Success: {reason}")
                 return True

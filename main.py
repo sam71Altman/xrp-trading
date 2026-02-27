@@ -4717,13 +4717,24 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                         logger.info("🚫 [LOCK_BLOCK] Position already opened by another thread")
                         return
 
+                    if score is None:
+                        logger.warning("Signal rejected — score None")
+                        return
+
+                    mode_params = get_mode_params()
+                    min_score_required = mode_params.get("min_signal_score", 0.4)
+                    if score < min_score_required:
+                        logger.info(f"Blocked by TradeMode score: {score} < {min_score_required}")
+                        return
+
                     # Request trade via TradingEngine
                     qty = round(FIXED_TRADE_SIZE / entry_price, 2)
+                    strategy_signal_valid = True # Strategy logic already passed to reach here
                     result = await execution_engine.check_and_execute_trade(
                         symbol=SYMBOL,
                         direction="BUY",
                         amount=qty,
-                        original_conditions_met=True
+                        original_conditions_met=strategy_signal_valid
                     )
                     if result.executed:
                         success = await execution_engine.request_trade({ "type": "OPEN", "symbol": SYMBOL, "amount": qty })
@@ -4744,7 +4755,7 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                         symbol=SYMBOL,
                         direction="LONG",
                         amount=round(paper_state.balance * 0.1, 2),
-                        original_conditions_met=True
+                        original_conditions_met=strategy_signal_valid
                     )
                     
                     if not ai_result.executed:

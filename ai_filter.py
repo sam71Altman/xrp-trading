@@ -12,14 +12,14 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class MarketData:
-    volume: float
-    avg_volume: float
-    atr: float
-    avg_atr: float
-    trend_strength: float
-    rsi: float
-    spread: float
-    avg_spread: float
+    volume: float = 1
+    avg_volume: float = 1
+    atr: float = 1
+    avg_atr: float = 1
+    trend_strength: float = 0.5
+    rsi: float = 50
+    spread: float = 1
+    avg_spread: float = 1
 
 
 class SimpleAIFilter:
@@ -56,7 +56,8 @@ class SimpleAIFilter:
                 spread_score * self.WEIGHTS["spread"]
             )
             
-            final_score = max(0.0, min(1.0, total))
+            final_score = max(0.35, min(1.0, total))
+            logger.info(f"[AI SCORE] calculated score={final_score}")
             return round(final_score, 3)
             
         except Exception as e:
