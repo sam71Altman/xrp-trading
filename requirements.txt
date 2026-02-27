@@ -1,10 +1,7 @@
 python-telegram-bot[job-queue]>=20.0
 requests>=2.28.0
 websocket-client==1.8.0
-python-telegram-bot[job-queue]
-requests
 telegram
-python-telegram-bot[job-queue]
-requests
-telegram
+websocket
+websocket-client==1.8.0
 websocket-client==1.8.0

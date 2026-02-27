@@ -2,7 +2,7 @@ import json
 import time
 import threading
 import logging
-from websocket import WebSocketApp
+import websocket
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -31,7 +31,7 @@ class PriceEngine:
         while cls._running:
             try:
                 # Binance WebSocket for XRP/USDT ticker
-                cls._ws = WebSocketApp(
+                cls._ws = websocket.WebSocketApp(
                     "wss://stream.binance.com:9443/ws/xrpusdt@ticker",
                     on_message=cls._on_message,
                     on_error=cls._on_error,

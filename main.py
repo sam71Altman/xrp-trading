@@ -4924,10 +4924,6 @@ if __name__ == "__main__":
         # WebSocket Safety Check
         try:
             import websocket
-            if not hasattr(websocket, 'WebSocketApp'):
-                print("❌ FATAL: WebSocket conflict detected (websocket vs websocket-client).")
-                print("❌ Please run: pip uninstall websocket && pip install websocket-client")
-                exit(1)
         except ImportError:
             print("❌ FATAL: websocket-client is not installed.")
             exit(1)
