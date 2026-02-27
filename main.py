@@ -12,18 +12,8 @@ import logging
 import time
 import threading
 import json
-import pkg_resources
 import sys
 import subprocess
-
-try:
-    pkg_resources.get_distribution("websocket")
-    print("❌ Removing conflicting websocket package...")
-    subprocess.run([sys.executable, "-m", "pip", "uninstall", "-y", "websocket"])
-except:
-    pass
-
-subprocess.run([sys.executable, "-m", "pip", "install", "--upgrade", "websocket-client"])
 
 from threading import Lock
 from datetime import datetime, timezone
