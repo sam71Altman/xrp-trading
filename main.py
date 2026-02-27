@@ -1155,17 +1155,19 @@ def check_buy_signal(analysis, candles):
             
         # Fast scalp: minimal filtering, enter quickly
         min_score = mode_params.get('min_signal_score', 1)
+        # Requirement: Price > EMA20 and Score >= 1 for FAST_SCALP
         if score >= min_score and current_price > ema20:
             state.valid_entries += 1
             logger.info(f"[FAST_SCALP] Entry allowed: score={score}, price={current_price}")
             
-            # Send notification for entry
+            # Send notification for entry (Arabic format)
             msg = (
                 "🔵 *دخول صفقة سكالب (FAST_SCALP)*\n\n"
                 f"الزوج: {SYMBOL_DISPLAY}\n"
                 f"السعر: {current_price:.4f}\n"
                 f"السكور: {score}/10\n"
-                f"RSI: {rsi:.1f}"
+                f"RSI: {rsi:.1f}\n\n"
+                f"⏱ الوقت (مكة): {get_now().strftime('%H:%M:%S')}"
             )
             if execution_engine.telegram:
                 asyncio.create_task(execution_engine.telegram.send(msg))
@@ -4505,11 +4507,12 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
         if abs(price_diff_pct) >= 0.3: # Reduced threshold for more notifications
             direction = "🚀 فرصة صعود" if price_diff_pct > 0 else "🔻 تنبيه هبوط"
             alert_msg = (
-                f"{direction}\n"
+                f"{'⚠️' if price_diff_pct < 0 else '🚀'} *{direction}*\n\n"
                 f"الزوج: {SYMBOL_DISPLAY}\n"
                 f"السعر الحالي: {current_price:.4f}\n"
                 f"التغير: {price_diff_pct:.2f}%\n"
-                f"السكور: {analysis.get('score', 0)}/10"
+                f"السكور: {analysis.get('score', 0)}/10\n\n"
+                f"⏱ الوقت (مكة): {get_now().strftime('%H:%M:%S')}"
             )
             if execution_engine.telegram:
                 asyncio.create_task(execution_engine.telegram.send(alert_msg))

@@ -361,7 +361,14 @@ class TradingEngine:
                         emoji = "⚪"
                         action_text = f"إغلاق صفقة ({reason})"
                     
-                    await self.telegram.send(f"{emoji} {action_text}\nالسعر: {exit_price}")
+                    msg = (
+                        f"{emoji} *{action_text}*\n\n"
+                        f"الزوج: {self._position_symbol}\n"
+                        f"سعر الخروج: {exit_price:.4f}\n"
+                        f"سعر الدخول: {self._entry_price:.4f}\n"
+                        f"الربح/الخسارة: {((exit_price - self._entry_price) / self._entry_price * 100):.2f}%"
+                    )
+                    await self.telegram.send(msg)
 
                 logger.info(f"[CLOSE] Success: {reason}")
                 return True

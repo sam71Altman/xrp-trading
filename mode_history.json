@@ -1,25 +1,5 @@
 [
   {
-    "timestamp": "2026-01-31T09:19:57.569980",
-    "from": "DEFAULT",
-    "to": "FAST_SCALP"
-  },
-  {
-    "timestamp": "2026-01-31T09:23:47.794170",
-    "from": "DEFAULT",
-    "to": "FAST_SCALP"
-  },
-  {
-    "timestamp": "2026-01-31T09:26:13.644227",
-    "from": "DEFAULT",
-    "to": "FAST_SCALP"
-  },
-  {
-    "timestamp": "2026-02-01T05:17:40.680729",
-    "from": "DEFAULT",
-    "to": "FAST_SCALP"
-  },
-  {
     "timestamp": "2026-02-01T05:21:19.290277",
     "from": "DEFAULT",
     "to": "FAST_SCALP"
@@ -246,6 +226,26 @@
   },
   {
     "timestamp": "2026-02-26T03:18:08.273318",
+    "from": "DEFAULT",
+    "to": "FAST_SCALP"
+  },
+  {
+    "timestamp": "2026-02-26T21:37:05.113805",
+    "from": "DEFAULT",
+    "to": "BOUNCE"
+  },
+  {
+    "timestamp": "2026-02-26T21:49:34.070628",
+    "from": "BOUNCE",
+    "to": "DEFAULT"
+  },
+  {
+    "timestamp": "2026-02-26T22:14:13.085981",
+    "from": "DEFAULT",
+    "to": "FAST_SCALP"
+  },
+  {
+    "timestamp": "2026-02-27T03:38:32.820207",
     "from": "DEFAULT",
     "to": "FAST_SCALP"
   }
