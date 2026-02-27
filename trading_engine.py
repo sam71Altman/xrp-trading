@@ -118,12 +118,15 @@ class TradingEngine:
             )
         
         if self.ai_state.mode == AIMode.OFF:
-            return TradeResult(
-                decision=TradeDecision.BLOCKED_SYSTEM_ERROR,
-                score=None,
-                weight=self.ai_state.weight.value,
-                executed=False,
-                details="AI OFF - Trading blocked"
+            self._log_decision(symbol, None, TradeDecision.ALLOWED_OFF_MODE)
+            
+            return await self._execute_with_result(
+                symbol,
+                direction,
+                amount,
+                TradeDecision.ALLOWED_OFF_MODE,
+                None,
+                "AI OFF - Executed without AI filtering"
             )
         
         market_data = self.get_market_data_fn(symbol)
