@@ -20,48 +20,24 @@ def create_market_data_from_analysis(analysis: Dict, candles: list) -> Optional[
         if not analysis or not candles or len(candles) < 20:
             return None
         
-        closes = [c['close'] for c in candles]
-        volumes = [c['volume'] for c in candles]
-        
-        current_volume = volumes[-1] if volumes else 0
-        avg_volume = sum(volumes[-20:]) / 20 if len(volumes) >= 20 else sum(volumes) / len(volumes)
-        
-        highs = [c['high'] for c in candles[-20:]]
-        lows = [c['low'] for c in candles[-20:]]
-        tr_values = [h - l for h, l in zip(highs, lows)]
-        current_atr = sum(tr_values) / len(tr_values) if tr_values else 0.001
-        avg_atr = current_atr  # Since we're using 20 candles for both
+        volume = analysis.get('volume', 0)
+        avg_volume = analysis.get('avg_volume', 0)
+        atr = analysis.get('atr', 0)
+        avg_atr = analysis.get('avg_atr', 0)
+        trend_strength = analysis.get('trend_strength', 0.5)
+        rsi = analysis.get('rsi', 50)
+        spread = analysis.get('spread', 0.01)
+        avg_spread = analysis.get('avg_spread', 0.01)
 
-        high = candles[-1]['high']
-        low = candles[-1]['low']
-        mid = (high + low) / 2 if (high + low) > 0 else 1
-        spread = (high - l) if (high - l) > 0 else 0.001
-        
-        spreads = []
-        for c in candles[-20:]:
-            spreads.append(c['high'] - c['low'])
-        avg_spread = sum(spreads) / len(spreads) if spreads else spread
-        
-        if avg_volume <= 0:
-            avg_volume = current_volume if current_volume > 0 else 1
-        if avg_atr <= 0:
-            avg_atr = current_atr if current_atr > 0 else 0.001
-        if avg_spread <= 0:
-            avg_spread = spread if spread > 0 else 0.001
-        
-        logger.info(
-            f"[MARKET DATA] vol={current_volume} avg_vol={avg_volume} atr={current_atr} avg_atr={avg_atr} spread={spread} avg_spread={avg_spread}"
-        )
-        
         return MarketData(
-            volume=current_volume,
-            avg_volume=avg_volume,
-            atr=current_atr,
-            avg_atr=avg_atr,
-            trend_strength=trend_strength,
-            rsi=rsi,
-            spread=spread,
-            avg_spread=avg_spread
+            volume = volume if volume and volume > 0 else 1.0,
+            avg_volume = avg_volume if avg_volume and avg_volume > 0 else 1.0,
+            atr = atr if atr and atr > 0 else 1.0,
+            avg_atr = avg_atr if avg_atr and avg_atr > 0 else 1.0,
+            trend_strength = trend_strength if trend_strength is not None else 0.5,
+            rsi = rsi if rsi and rsi > 0 else 50.0,
+            spread = spread if spread and spread > 0 else 0.01,
+            avg_spread = avg_spread if avg_spread and avg_spread > 0 else 0.01
         )
     except Exception as e:
         logger.error(f"[AI INTEGRATION] Error creating market data: {e}")
@@ -108,7 +84,7 @@ def check_ai_filter(
     if _global_engine.ai_state.mode == AIMode.OFF:
         return TradeResult(
             decision=TradeDecision.ALLOWED_OFF_MODE,
-            score=None,
+            score=1.0,
             weight=_global_engine.ai_state.weight.value,
             executed=False,
             details="AI OFF"

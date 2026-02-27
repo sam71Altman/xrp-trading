@@ -144,7 +144,7 @@ class TradingLogicController:
             "sl_target": 0.25,
             "max_trade_duration": 3600,
             "cooldown_between_trades": 60,
-            "min_signal_score": 1,
+            "min_signal_score": 0.4,
         }
         
         if trade_mode == TradeMode.FAST_SCALP_AGGRESSIVE:
