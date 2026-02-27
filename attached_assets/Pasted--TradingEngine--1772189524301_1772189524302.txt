@@ -1,0 +1,250 @@
+إصلاح معماري شامل لنظام التداول بالكامل – TradingEngine هو المصدر الوحيد للحقيقة
+
+====================================================
+الهدف
+
+إصلاح المشاكل التالية جذرياً:
+
+1) دخول صفقات بدون تحليل
+2) دخول مباشر بدون انتظار
+3) عدم ظهور إشعارات الدخول والخروج
+4) كسر قاعدة Single Entry Path
+5) تعارض بين TradingEngine و main.py و trade_modes.py
+6) تنفيذ broker.order خارج TradingEngine
+7) عدم احترام AI filter
+8) عدم احترام cooldown
+9) عدم احترام score
+10) FAST_SCALP يعطل الفلترة بالكامل
+
+====================================================
+القاعدة الذهبية الجديدة (إلزامية)
+
+TradingEngine.check_and_execute_trade()
+
+هو المكان الوحيد في النظام المسموح له اتخاذ قرار تنفيذ الصفقة.
+
+ممنوع منعاً باتاً تنفيذ:
+
+broker.order()
+
+في أي ملف آخر.
+
+====================================================
+التعديلات المطلوبة
+
+====================================================
+
+1) إصلاح main.py
+   ====================================================
+
+ابحث عن أي مكان يحتوي:
+
+broker.order(
+
+أو
+
+request_trade(
+
+أو
+
+execute_trade_fn(
+
+واستبدله بالكامل بـ:
+
+result = await engine.check_and_execute_trade(
+symbol=symbol,
+direction="BUY",
+amount=amount,
+original_conditions_met=signal_detected
+)
+
+if result.executed:
+
+await engine.request_trade({
+    "type": "OPEN",
+    "symbol": symbol,
+    "amount": amount
+})
+
+ممنوع أي تنفيذ مباشر آخر.
+
+====================================================
+2) إصلاح FAST_SCALP mode
+
+في trade_modes.py
+
+غيّر:
+
+"min_signal_score": 0
+
+إلى:
+
+"min_signal_score": 0.4
+
+وممنوع استخدام score = 0
+
+====================================================
+3) منع تنفيذ الصفقة إذا AI OFF
+
+في TradingEngine.check_and_execute_trade
+
+استبدل:
+
+if self.ai_state.mode == AIMode.OFF:
+
+بـ:
+
+if self.ai_state.mode == AIMode.OFF:
+
+return TradeResult(
+    decision=TradeDecision.BLOCKED_SYSTEM_ERROR,
+    score=None,
+    weight=self.ai_state.weight.value,
+    executed=False,
+    details="AI OFF - Trading blocked"
+)
+
+====================================================
+4) ربط PriceEngine بمنطق التداول
+
+في TradingEngine
+
+أضف:
+
+from price_engine import PriceEngine, TradingGuard
+
+قبل تنفيذ الصفقة أضف:
+
+if not TradingGuard.enforce_guard("TRADE"):
+
+return TradeResult(
+    decision=TradeDecision.BLOCKED_SYSTEM_ERROR,
+    score=None,
+    weight=self.ai_state.weight.value,
+    executed=False,
+    details="Price Guard Blocked"
+)
+
+====================================================
+5) توحيد مسار الإشعارات
+
+في:
+
+_execute_under_lock
+
+استبدل:
+
+await self.telegram.send(...)
+
+بـ:
+
+await self._send_trade_notification(order)
+
+وأضف دالة:
+
+async def _send_trade_notification(self, order):
+
+if not self.telegram:
+    return
+
+msg = f"""
+
+🔵 دخول صفقة
+
+الزوج: {order.symbol}
+السعر: {order.price}
+الكمية: {order.amount}
+"""
+
+await self.telegram.send(msg)
+
+====================================================
+6) منع فتح صفقة بدون تحليل
+
+في request_trade
+
+أضف:
+
+if not self.ai_state.record_trade:
+
+return False
+
+====================================================
+7) إضافة logging إجباري
+
+قبل تنفيذ أي صفقة:
+
+logger.info(f"[ENTRY CHECK PASSED] {symbol}")
+
+====================================================
+8) إضافة Trade ID tracking
+
+داخل TradingEngine:
+
+self.current_trade_id = uuid.uuid4()
+
+====================================================
+9) إضافة FailSafe integration
+
+إذا:
+
+TradingGuard.BLOCK_ALL_TRADING
+
+لا تسمح بأي صفقة إطلاقاً.
+
+====================================================
+10) تأكيد Single Entry Path
+
+ممنوع وجود:
+
+broker.order(
+
+خارج TradingEngine
+
+إذا وجد
+
+احذفه فوراً.
+
+====================================================
+النتيجة المطلوبة
+
+بعد الإصلاح:
+
+لن يتم تنفيذ أي صفقة إلا إذا:
+
+✔ signal_detected
+✔ score >= weight
+✔ cooldown انتهى
+✔ AI enabled
+✔ PriceEngine healthy
+✔ TradingGuard يسمح
+✔ TradingEngine وافق
+
+====================================================
+ممنوعات
+
+لا تستخدم broker.order خارج TradingEngine
+
+لا تستخدم request_trade مباشرة
+
+لا تنفذ الصفقة من main.py
+
+لا تتجاوز TradingEngine
+
+====================================================
+اختبار النجاح
+
+يجب أن يظهر في log:
+
+[ENTRY CHECK PASSED]
+
+قبل كل صفقة
+
+و
+
+🔵 دخول صفقة
+
+في Telegram
+
+====================================================
+نهاية البرومبت

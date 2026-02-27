@@ -8,6 +8,8 @@ from enum import Enum
 from dataclasses import dataclass
 import logging
 import asyncio
+import uuid
+from price_engine import PriceEngine, TradingGuard
 
 from ai_state import AIState, AIMode, AIWeight
 from ai_filter import SimpleAIFilter, MarketData
@@ -64,6 +66,7 @@ class TradingEngine:
         self.broker = broker
         self.telegram = telegram
 
+        self.current_trade_id = uuid.uuid4()
         self._trade_lock = asyncio.Lock()
         self._trade_queue = asyncio.Queue(maxsize=1)
 
@@ -85,7 +88,15 @@ class TradingEngine:
         amount: float,
         original_conditions_met: bool
     ) -> TradeResult:
-        
+        if TradingGuard.BLOCK_ALL_TRADING or not TradingGuard.enforce_guard("TRADE"):
+            return TradeResult(
+                decision=TradeDecision.BLOCKED_SYSTEM_ERROR,
+                score=None,
+                weight=self.ai_state.weight.value,
+                executed=False,
+                details="Price Guard Blocked or FailSafe active"
+            )
+
         if not original_conditions_met:
             return TradeResult(
                 decision=TradeDecision.BLOCKED_LOW_SCORE,
@@ -107,10 +118,12 @@ class TradingEngine:
             )
         
         if self.ai_state.mode == AIMode.OFF:
-            self._log_decision(symbol, None, TradeDecision.ALLOWED_OFF_MODE)
-            return await self._execute_with_result(
-                symbol, direction, amount,
-                TradeDecision.ALLOWED_OFF_MODE, None, "AI OFF"
+            return TradeResult(
+                decision=TradeDecision.BLOCKED_SYSTEM_ERROR,
+                score=None,
+                weight=self.ai_state.weight.value,
+                executed=False,
+                details="AI OFF - Trading blocked"
             )
         
         market_data = self.get_market_data_fn(symbol)
@@ -153,6 +166,7 @@ class TradingEngine:
             )
         
         if score >= weight:
+            logger.info(f"[ENTRY CHECK PASSED] {symbol}")
             self._log_decision(symbol, score, TradeDecision.ALLOWED)
             return await self._execute_with_result(
                 symbol, direction, amount,
@@ -237,6 +251,9 @@ class TradingEngine:
         Wait briefly instead of dropping immediately.
         Prevents silent signal loss.
         """
+        if not self.ai_state.record_trade:
+            return False
+
         try:
             async with asyncio.timeout(1.0):
                 await self._trade_queue.put(signal)
@@ -349,26 +366,8 @@ class TradingEngine:
                 self._position_version += 1
 
                 # 3. Notification
-                if self.telegram:
-                    # Determine emoji and message based on reason
-                    if "TP" in reason.upper():
-                        emoji = "🟢"
-                        action_text = "إغلاق على ربح (TP)"
-                    elif "SL" in reason.upper():
-                        emoji = "🔴"
-                        action_text = "إغلاق على خسارة (SL)"
-                    else:
-                        emoji = "⚪"
-                        action_text = f"إغلاق صفقة ({reason})"
-                    
-                    msg = (
-                        f"{emoji} *{action_text}*\n\n"
-                        f"الزوج: {self._position_symbol}\n"
-                        f"سعر الخروج: {exit_price:.4f}\n"
-                        f"سعر الدخول: {self._entry_price:.4f}\n"
-                        f"الربح/الخسارة: {((exit_price - self._entry_price) / self._entry_price * 100):.2f}%"
-                    )
-                    await self.telegram.send(msg)
+                order = type('Order', (), {'symbol': self._position_symbol, 'price': exit_price, 'amount': 0, 'side': 'SELL'})()
+                await self._send_trade_notification(order)
 
                 logger.info(f"[CLOSE] Success: {reason}")
                 return True
@@ -403,10 +402,8 @@ class TradingEngine:
             self._entry_price = order.price
             self._position_version += 1
 
-            if self.telegram:
-                await self.telegram.send(f"🔵 دخول صفقة جديدة\nالزوج: {symbol}\nالسعر: {order.price}\nالكمية: {amount}")
-
-            await self._notify_trade_once(order)
+            await self._send_trade_notification(order)
+            self._last_trade_id = order.id
 
             return True
 
@@ -438,6 +435,19 @@ class TradingEngine:
                 self._closing = False
 
         return False
+
+    async def _send_trade_notification(self, order):
+        if not self.telegram:
+            return
+
+        msg = f"""
+🔵 دخول صفقة
+
+الزوج: {order.symbol}
+السعر: {order.price}
+الكمية: {order.amount}
+"""
+        await self.telegram.send(msg)
 
     async def _notify_trade_once(self, order):
         if order.id == self._last_trade_id:

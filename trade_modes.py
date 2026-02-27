@@ -157,7 +157,7 @@ class TradingLogicController:
                 "sl_target": 0.05,
                 "max_trade_duration": 900,
                 "cooldown_between_trades": 30,
-                "min_signal_score": 0,
+                "min_signal_score": 0.4,
             })
         
         elif trade_mode == TradeMode.BOUNCE_FOCUS_MODE:

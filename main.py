@@ -650,7 +650,14 @@ async def quick_scalp_down_execute_trade(bot, chat_id, entry_price, candles):
     No local state modification allowed.
     """
     amount = round(FIXED_TRADE_SIZE / entry_price, 2) if entry_price > 0 else 0
-    await execution_engine.request_trade({ "type": "OPEN", "symbol": SYMBOL, "amount": amount }) # "type": "OPEN", "symbol": SYMBOL, "amount": amount })
+    result = await execution_engine.check_and_execute_trade(
+        symbol=SYMBOL,
+        direction="BUY",
+        amount=amount,
+        original_conditions_met=True
+    )
+    if result.executed:
+        await execution_engine.request_trade({ "type": "OPEN", "symbol": SYMBOL, "amount": amount })
     return False
 
 def check_trailing_activation(entry_price: float, current_price: float, timeframe: str = "1m") -> bool:
@@ -4709,7 +4716,14 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
 
                     # Request trade via TradingEngine
                     qty = round(FIXED_TRADE_SIZE / entry_price, 2)
-                    success = await execution_engine.request_trade({ "type": "OPEN", "symbol": SYMBOL, "amount": qty })
+                    result = await execution_engine.check_and_execute_trade(
+                        symbol=SYMBOL,
+                        direction="BUY",
+                        amount=qty,
+                        original_conditions_met=True
+                    )
+                    if result.executed:
+                        success = await execution_engine.request_trade({ "type": "OPEN", "symbol": SYMBOL, "amount": qty })
                     if not success:
                         logger.error("❌ [TRADING ENGINE] Trade request failed")
                         return
