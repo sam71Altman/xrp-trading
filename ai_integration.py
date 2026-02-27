@@ -26,47 +26,32 @@ def create_market_data_from_analysis(analysis: Dict, candles: list) -> Optional[
         current_volume = volumes[-1] if volumes else 0
         avg_volume = sum(volumes[-20:]) / 20 if len(volumes) >= 20 else sum(volumes) / len(volumes)
         
-        highs = [c['high'] for c in candles[-14:]]
-        lows = [c['low'] for c in candles[-14:]]
+        highs = [c['high'] for c in candles[-20:]]
+        lows = [c['low'] for c in candles[-20:]]
         tr_values = [h - l for h, l in zip(highs, lows)]
         current_atr = sum(tr_values) / len(tr_values) if tr_values else 0.001
-        
-        all_highs = [c['high'] for c in candles[-28:]]
-        all_lows = [c['low'] for c in candles[-28:]]
-        all_tr = [h - l for h, l in zip(all_highs, all_lows)]
-        avg_atr = sum(all_tr) / len(all_tr) if all_tr else current_atr
-        
-        ema20 = analysis.get('ema20', closes[-1])
-        ema50 = analysis.get('ema50', closes[-1])
-        
-        if ema50 != 0:
-            trend_diff = abs(ema20 - ema50) / ema50
-            trend_strength = min(1.0, trend_diff * 100)
-        else:
-            trend_strength = 0.5
-        
-        rsi = analysis.get('rsi', 50)
-        if rsi is None or rsi < 0 or rsi > 100:
-            rsi = 50
-        
+        avg_atr = current_atr  # Since we're using 20 candles for both
+
         high = candles[-1]['high']
         low = candles[-1]['low']
         mid = (high + low) / 2 if (high + low) > 0 else 1
-        spread = (high - low) / mid if mid > 0 else 0.001
+        spread = (high - l) if (high - l) > 0 else 0.001
         
         spreads = []
         for c in candles[-20:]:
-            h, l = c['high'], c['low']
-            m = (h + l) / 2 if (h + l) > 0 else 1
-            spreads.append((h - l) / m if m > 0 else 0)
+            spreads.append(c['high'] - c['low'])
         avg_spread = sum(spreads) / len(spreads) if spreads else spread
         
         if avg_volume <= 0:
-            avg_volume = 1
+            avg_volume = current_volume if current_volume > 0 else 1
         if avg_atr <= 0:
-            avg_atr = 0.001
+            avg_atr = current_atr if current_atr > 0 else 0.001
         if avg_spread <= 0:
-            avg_spread = 0.001
+            avg_spread = spread if spread > 0 else 0.001
+        
+        logger.info(
+            f"[MARKET DATA] vol={current_volume} avg_vol={avg_volume} atr={current_atr} avg_atr={avg_atr} spread={spread} avg_spread={avg_spread}"
+        )
         
         return MarketData(
             volume=current_volume,
