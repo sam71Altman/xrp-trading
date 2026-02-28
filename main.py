@@ -1361,11 +1361,10 @@ COOLDOWN_STREAK_WIN = 0
 COOLDOWN_PAUSE_MINUTES = 0
 
 MIN_WIN_RATE = 0.0
-MIN_SIGNAL_SCORE = 1 # Relaxed
-
 POLL_INTERVAL_BASE = 1.0  # Base interval (fastest - for scalping)
 POLL_INTERVAL_DEFAULT = 5.0  # Default for non-scalping modes
 POLL_INTERVAL = 3  # Reduced frequency to prevent overload
+MIN_SIGNAL_SCORE = 0.4 # Relaxed from 1 to allow trades
 _signal_loop_cycle_counter = 0
 
 def get_mode_poll_interval() -> float:
@@ -4901,7 +4900,7 @@ async def main() -> None:
     if application.job_queue:
         application.job_queue.run_repeating(
             lambda context: asyncio.create_task(signal_loop(application.bot, chat_id)),
-            interval=POLL_INTERVAL,
+            interval=3,
             first=1,
             name="signal_loop"
         )
