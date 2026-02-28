@@ -1365,7 +1365,7 @@ MIN_SIGNAL_SCORE = 1 # Relaxed
 
 POLL_INTERVAL_BASE = 1.0  # Base interval (fastest - for scalping)
 POLL_INTERVAL_DEFAULT = 5.0  # Default for non-scalping modes
-POLL_INTERVAL = 1  # Use fastest as scheduler base
+POLL_INTERVAL = 3  # Reduced frequency to prevent overload
 _signal_loop_cycle_counter = 0
 
 def get_mode_poll_interval() -> float:

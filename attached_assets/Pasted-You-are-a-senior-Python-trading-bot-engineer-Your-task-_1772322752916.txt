@@ -1,0 +1,156 @@
+You are a senior Python trading bot engineer.
+
+Your task is to FIX specific logic bugs in an existing live trading bot WITHOUT breaking any existing architecture, scheduling, Telegram integration, or trading execution.
+
+STRICT RULES:
+
+- DO NOT remove any existing features
+- DO NOT change trading strategy logic itself
+- DO NOT modify Telegram handlers
+- DO NOT modify scheduler structure
+- DO NOT change trade execution logic
+- ONLY fix the bugs listed below safely
+- Maintain full backward compatibility
+
+========================
+BUG 1 — AI Filter returns score=0 always
+
+Problem:
+
+Logs show:
+
+score=0
+min_score=1
+
+This blocks all trades.
+
+Root cause:
+
+MarketData fields sometimes contain None or 0 which breaks score calculation logic or produces unusable score.
+
+SAFE FIX:
+
+Inside the section where MarketData is constructed, ensure safe defaults.
+
+Replace the MarketData creation block with:
+
+market_data = MarketData(
+    volume = volume if volume and volume > 0 else 1.0,
+    avg_volume = avg_volume if avg_volume and avg_volume > 0 else 1.0,
+    atr = atr if atr and atr > 0 else 1.0,
+    avg_atr = avg_atr if avg_atr and avg_atr > 0 else 1.0,
+    trend_strength = trend_strength if trend_strength is not None else 0.5,
+    rsi = rsi if rsi and rsi > 0 else 50.0,
+    spread = spread if spread and spread > 0 else 0.01,
+    avg_spread = avg_spread if avg_spread and avg_spread > 0 else 0.01
+)
+
+DO NOT change anything else in AI filter.
+
+========================
+BUG 2 — min_signal_score blocks scalping
+
+Problem:
+
+Default mode uses:
+
+min_signal_score = 1
+
+But AI score range is:
+
+0.0 to 1.0
+
+This blocks trades.
+
+SAFE FIX:
+
+Inside TradingLogicController:
+
+Find:
+
+"min_signal_score": 1,
+
+Change ONLY this line to:
+
+"min_signal_score": 0.4,
+
+DO NOT change other params.
+
+========================
+BUG 3 — signal_loop overload
+
+Problem:
+
+Scheduler warning:
+
+maximum number of running instances reached
+
+Root cause:
+
+signal_loop interval too fast.
+
+SAFE FIX:
+
+Find scheduler job creation:
+
+Example:
+
+scheduler.add_job(signal_loop, 'interval', seconds=1)
+
+Change ONLY seconds value to:
+
+seconds=3
+
+DO NOT modify scheduler structure.
+
+========================
+BUG 4 — AI OFF must completely disable AI filter
+
+Requirement:
+
+When AI mode is OFF:
+
+AI must NOT:
+
+- block trades
+- modify score
+- override signals
+
+SAFE FIX:
+
+Find where AI score is used.
+
+Add condition BEFORE using AI score:
+
+if ai_system.mode == "OFF" or not ai_system.enabled:
+    ai_score = 1.0
+
+This ensures strategy works independently.
+
+========================
+EXPECTED RESULT AFTER FIX
+
+Logs should show:
+
+score=0.45
+score=0.62
+score=0.78
+
+NOT score=0
+
+Scheduler warning disappears
+
+Scalping trades allowed again
+
+========================
+FINAL INSTRUCTION
+
+Apply fixes exactly.
+
+Do NOT refactor.
+
+Do NOT redesign.
+
+Do NOT optimize.
+
+ONLY fix listed bugs safely.
