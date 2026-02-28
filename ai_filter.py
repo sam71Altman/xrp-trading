@@ -34,20 +34,29 @@ class SimpleAIFilter:
     
     def calculate_score(self, data: MarketData) -> Optional[float]:
         try:
+
+            logger.info(f"[AI INPUT] vol={data.volume} avg_vol={data.avg_volume} atr={data.atr} avg_atr={data.avg_atr} trend={data.trend_strength} rsi={data.rsi} spread={data.spread} avg_spread={data.avg_spread}")
+
             if not self._validate_data(data):
-                logger.error("[AI FILTER] Invalid market data")
-                return None
-            
+                logger.warning("[AI FILTER] validation failed — using fallback score")
+                return 0.5
+
             volume_score = self._score_volume(data.volume, data.avg_volume)
             atr_score = self._score_atr(data.atr, data.avg_atr)
-            trend_score = self._score_trend(data.trend_strength)
+            trend_score = self._score_trend(max(0.01, data.trend_strength))
             rsi_score = self._score_rsi(data.rsi)
             spread_score = self._score_spread(data.spread, data.avg_spread)
-            
-            if None in [volume_score, atr_score, trend_score, rsi_score, spread_score]:
-                logger.error("[AI FILTER] Score calculation failed")
-                return None
-            
+
+            logger.info(f"[AI PARTS] vol={volume_score} atr={atr_score} trend={trend_score} rsi={rsi_score} spread={spread_score}")
+
+            scores = [volume_score, atr_score, trend_score, rsi_score, spread_score]
+
+            if any(s is None for s in scores):
+
+                logger.warning("[AI FILTER] partial None score — using fallback")
+
+                return 0.5
+
             total = (
                 volume_score * self.WEIGHTS["volume"] +
                 atr_score * self.WEIGHTS["atr"] +
@@ -55,14 +64,18 @@ class SimpleAIFilter:
                 rsi_score * self.WEIGHTS["rsi"] +
                 spread_score * self.WEIGHTS["spread"]
             )
-            
-            final_score = max(0.35, min(1.0, total))
-            logger.info(f"[AI SCORE] calculated score={final_score}")
+
+            final_score = max(0.05, min(1.0, total))
+
+            logger.info(f"[AI FINAL SCORE] {final_score}")
+
             return round(final_score, 3)
-            
+
         except Exception as e:
-            logger.error(f"[AI FILTER] Error calculating score: {e}")
-            return None
+
+            logger.error(f"[AI FILTER ERROR] {e}")
+
+            return 0.5
     
     def _validate_data(self, data: MarketData) -> bool:
         try:
