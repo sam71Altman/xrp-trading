@@ -1,15 +1,5 @@
 [
   {
-    "timestamp": "2026-02-01T23:28:17.845959",
-    "from": "DEFAULT",
-    "to": "FAST_SCALP"
-  },
-  {
-    "timestamp": "2026-02-01T23:32:03.899029",
-    "from": "DEFAULT",
-    "to": "FAST_SCALP"
-  },
-  {
     "timestamp": "2026-02-01T23:32:56.038986",
     "from": "DEFAULT",
     "to": "FAST_SCALP"
@@ -246,6 +236,16 @@
   },
   {
     "timestamp": "2026-03-01T00:10:02.094291",
+    "from": "DEFAULT",
+    "to": "FAST_SCALP"
+  },
+  {
+    "timestamp": "2026-03-01T00:11:04.894173",
+    "from": "DEFAULT",
+    "to": "BOUNCE"
+  },
+  {
+    "timestamp": "2026-03-01T00:11:17.034716",
     "from": "DEFAULT",
     "to": "FAST_SCALP"
   }
