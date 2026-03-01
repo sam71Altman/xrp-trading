@@ -173,7 +173,15 @@ class TradingLogicController:
                 "entry_conditions": self._get_bounce_conditions(market_data),
             })
         
-        logger.info(f"[MODE PARAMS] mode={trade_mode} min_score={params['min_signal_score']}")
+        # 🧠 AI SCORE INTEGRATION (v4.2.PRO-AI)
+        # Score is forced to 0.5 if AI is not ready, to prevent blocking
+        score = params.get("min_signal_score", 0.5)
+        
+        # 🛡️ FINAL SAFETY PATCH
+        if score <= 0:
+            score = 0.5
+            
+        logger.info(f"[HOLD PROBE] mode={trade_mode} score={score}")
         return params
     
     def _get_bounce_conditions(self, market_data: Optional[Dict]) -> Dict:

@@ -2572,13 +2572,19 @@ def check_bounce_entry(analysis: dict, candles: List[dict], score: int) -> bool:
     
     # [HOLD PROBE] - Mandatory runtime probe log
     current_rsi_probe = calculate_rsi([c["close"] for c in candles])
+    
+    # 🛡️ SCORE SAFETY PATCH (v4.2.PRO-AI)
+    effective_score = score if score is not None else 0.5
+    if effective_score <= 0:
+        effective_score = 0.5
+        
     is_bounce_probing = (
-        score <= 5 and
+        effective_score <= 5 and
         is_local_extreme(analysis["close"], candles) and
         current_rsi_probe <= 35 and
         volume_spike_detected(candles)
     )
-    logger.info(f"[HOLD PROBE] mode={market_mode} score={score} rsi={current_rsi_probe:.2f} bounce={is_bounce_probing} hold_active={state.hold_active}")
+    logger.info(f"[HOLD PROBE] mode={market_mode} score={effective_score} rsi={current_rsi_probe:.2f} bounce={is_bounce_probing} hold_active={state.hold_active}")
     
     if market_mode != "HARD_MARKET":
         return False
@@ -4582,7 +4588,27 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
         ema50 = analysis.get('ema50', 0)
         ema200 = analysis.get('ema200', 0)
         market_mode = "EASY_MARKET" if (ema20 > ema50 and ema50 > ema200) else "HARD_MARKET"
-        score = analysis.get('score', 0)
+        
+        # 🧠 AI SCORE INJECTION (v4.2.PRO-AI)
+        ai_score = None
+        try:
+            from ai_integration import get_ai_status, create_market_data_from_analysis, get_ai_engine
+            engine = get_ai_engine()
+            if engine:
+                market_data = create_market_data_from_analysis(analysis, candles)
+                if market_data:
+                    ai_score = engine.ai_filter.calculate_score(market_data)
+            logger.info(f"[DEBUG AI SCORE] {ai_score}")
+        except Exception as e:
+            logger.error(f"[AI_ERROR] Failed to fetch AI score: {e}")
+
+        # score = ai_score if ai_score is not None else 0.5
+        score = ai_score if ai_score is not None else 0.5
+        
+        # 🛡️ FINAL SAFETY PATCH (v4.2.PRO-AI)
+        if score <= 0:
+            score = 0.5
+            
         rsi = analysis.get('rsi', 50)
 
         # --- PRIORITY ORDER ENFORCEMENT (v4.5.PRO-FIX) ---
