@@ -174,14 +174,24 @@ class TradingLogicController:
             })
         
         # 🧠 AI SCORE INTEGRATION (v4.2.PRO-AI)
-        # Score is forced to 0.5 if AI is not ready, to prevent blocking
-        score = params.get("min_signal_score", 0.5)
+        # FAST_SCALP must use the real AI score if available, otherwise default to 0.5
+        # We fetch it from market_data if provided
+        real_score = market_data.get("ai_score") if market_data else None
         
-        # 🛡️ FINAL SAFETY PATCH
-        if score <= 0:
-            score = 0.5
+        if real_score is None:
+            # Fallback to neutral 0.5 if ai_score not provided
+            real_score = 0.5
             
-        logger.info(f"[HOLD PROBE] mode={trade_mode} score={score}")
+        # 🛡️ FINAL SAFETY PATCH
+        if real_score <= 0:
+            real_score = 0.5
+            
+        min_score = params.get("min_signal_score", 0.4)
+        logger.info(f"[HOLD PROBE] mode={trade_mode} score={real_score} min_required={min_score}")
+        
+        if trade_mode == TradeMode.FAST_SCALP_AGGRESSIVE:
+            logger.info(f"[FAST_SCALP CHECK] real_score={real_score} min_score={min_score}")
+            
         return params
     
     def _get_bounce_conditions(self, market_data: Optional[Dict]) -> Dict:

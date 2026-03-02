@@ -4610,11 +4610,18 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
             score = 0.5
             
         rsi = analysis.get('rsi', 50)
-
+        
+        # Pass real ai_score to trading params if in FAST_SCALP
+        market_data_with_score = dict(analysis)
+        market_data_with_score["ai_score"] = ai_score
+        
         # --- PRIORITY ORDER ENFORCEMENT (v4.5.PRO-FIX) ---
         if check_backpressure(state.timeframe):
             logger.warning(f"[ENTRY_BLOCKED] reason=BACKPRESSURE remaining=WAIT")
             return
+
+        params = logic_controller.get_trading_params(state.mode, market_data_with_score)
+        min_score = params.get("min_signal_score", 0.4)
 
         logger.warning(
             f"[HOLD PROBE] mode={market_mode}, "
