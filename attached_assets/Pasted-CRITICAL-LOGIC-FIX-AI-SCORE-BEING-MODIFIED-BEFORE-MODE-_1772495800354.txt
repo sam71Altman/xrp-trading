@@ -1,0 +1,100 @@
+CRITICAL LOGIC FIX – AI SCORE BEING MODIFIED BEFORE MODE EXECUTION
+
+Problem description:
+
+AI correctly calculates score (example: 0.74).
+Logs confirm:
+
+[AI FINAL SCORE] 0.74
+[DEBUG AI SCORE] 0.74
+
+However, when passing through trade_modes, the score is reduced (example: becomes 0.5).
+
+This means the AI score is being modified, capped, multiplied, or overwritten before execution.
+
+This is incorrect behavior.
+
+The AI score must remain unchanged across the entire decision pipeline.
+
+------------------------------------------------------------
+
+Required actions:
+
+1) Open trade_modes.py
+
+2) Search for any of the following patterns:
+
+- score = ...
+- adjusted_score = ...
+- score *= ...
+- score = min(...)
+- score = max(...)
+- mode_score = ...
+- any multiplication factor
+- any clamping logic
+- any reassignment of score variable
+
+3) Remove any logic that modifies the original AI score.
+
+4) Ensure this structure:
+
+ai_score = value_from_ai_filter
+
+real_score = ai_score   # no modification
+
+Entry condition must be:
+
+if real_score >= min_required and not hold_active:
+    allow_entry = True
+else:
+    allow_entry = False
+
+5) Do NOT:
+
+- Multiply score
+- Cap score
+- Replace score with min_required
+- Normalize score again
+- Apply per-mode reduction
+- Recalculate score inside modes
+
+Modes may ONLY change min_required threshold, not the score itself.
+
+------------------------------------------------------------
+
+Add debug verification log:
+
+logger.info(
+    f"[MODE VERIFY] mode={mode_name} "
+    f"ai_score={ai_score} "
+    f"used_score={real_score} "
+    f"min_required={min_required}"
+)
+
+------------------------------------------------------------
+
+Expected result after fix:
+
+If AI score is 0.74:
+
+ALL modes must display:
+
+ai_score=0.74
+used_score=0.74
+
+Never:
+
+used_score=0.5
+
+------------------------------------------------------------
+
+Important:
+
+Do NOT modify:
+- AI filter
+- Risk management
+- Scheduler
+- Order execution logic
+- Direction logic
+
+Fix ONLY score mutation inside trade_modes pipeline.

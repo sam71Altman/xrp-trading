@@ -174,24 +174,23 @@ class TradingLogicController:
             })
         
         # 🧠 AI SCORE INTEGRATION (v4.2.PRO-AI)
-        # FAST_SCALP must use the real AI score if available, otherwise default to 0.5
-        # We fetch it from market_data if provided
-        real_score = market_data.get("ai_score") if market_data else None
+        # AI score must remain unchanged across the entire decision pipeline.
+        ai_score = market_data.get("ai_score") if market_data else 0.5
+        real_score = ai_score  # CRITICAL: No modification, no clamping, no overrides.
         
-        if real_score is None:
-            # Fallback to neutral 0.5 if ai_score not provided
-            real_score = 0.5
-            
-        # 🛡️ FINAL SAFETY PATCH
-        if real_score <= 0:
-            real_score = 0.5
-            
-        min_score = params.get("min_signal_score", 0.4)
-        logger.info(f"[HOLD PROBE] mode={trade_mode} score={real_score} min_required={min_score}")
+        min_required = params.get("min_signal_score", 0.4)
         
-        if trade_mode == TradeMode.FAST_SCALP_AGGRESSIVE:
-            logger.info(f"[FAST_SCALP CHECK] real_score={real_score} min_score={min_score}")
-            
+        # [MODE VERIFY] - Debug verification log
+        logger.info(
+            f"[MODE VERIFY] mode={trade_mode} "
+            f"ai_score={ai_score} "
+            f"used_score={real_score} "
+            f"min_required={min_required}"
+        )
+        
+        # Log for backward compatibility with monitoring
+        logger.info(f"[HOLD PROBE] mode={trade_mode} score={real_score} min_required={min_required}")
+        
         return params
     
     def _get_bounce_conditions(self, market_data: Optional[Dict]) -> Dict:
