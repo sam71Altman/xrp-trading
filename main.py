@@ -2048,9 +2048,15 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         
     elif query.data == "CONFIRM_CLEAR_HISTORY":
         if clear_trade_history():
-            await query.edit_message_text("✅ تم تصفير سجل الصفقات بنجاح.\nابدأ فترة اختبار جديدة.")
+            try:
+                await query.edit_message_text("✅ تم تصفير سجل الصفقات بنجاح.\nابدأ فترة اختبار جديدة.")
+            except Exception as e:
+                if "Message is not modified" not in str(e): raise
         else:
-            await query.edit_message_text("❌ فشل تصفير السجل. تحقق من السجلات.")
+            try:
+                await query.edit_message_text("❌ فشل تصفير السجل. تحقق من السجلات.")
+            except Exception as e:
+                if "Message is not modified" not in str(e): raise
             
     elif query.data == "CANCEL_CLEAR":
         # Return to the single clear button
@@ -2064,12 +2070,18 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         ai_status = get_ai_status()
         new_mode = "OFF" if ai_status.get('mode') != "OFF" else "FULL"
         result = set_ai_mode(new_mode)
-        await query.edit_message_text(f"🧠 {result}")
+        try:
+            await query.edit_message_text(f"🧠 {result}")
+        except Exception as e:
+            if "Message is not modified" not in str(e): raise
     
     elif query.data.startswith("AI_MODE_"):
         new_mode = query.data.replace("AI_MODE_", "")
         result = set_ai_mode(new_mode)
-        await query.edit_message_text(f"🧠 {result}")
+        try:
+            await query.edit_message_text(f"🧠 {result}")
+        except Exception as e:
+            if "Message is not modified" not in str(e): raise
     
     elif query.data.startswith("AI_LEVEL_"):
         new_level = query.data.replace("AI_LEVEL_", "")
@@ -2077,20 +2089,32 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         limit_map = {"LOW": 20, "MEDIUM": 50, "HIGH": 100}
         new_limit = limit_map.get(new_level.upper(), 50)
         result = set_ai_limit(new_limit)
-        await query.edit_message_text(f"📊 تم تغيير سقف التدخلات إلى: {new_limit}")
+        try:
+            await query.edit_message_text(f"📊 تم تغيير سقف التدخلات إلى: {new_limit}")
+        except Exception as e:
+            if "Message is not modified" not in str(e): raise
     
     elif query.data.startswith("NEW_AI_MODE_"):
         new_mode = query.data.replace("NEW_AI_MODE_", "")
         result = set_ai_mode(new_mode)
-        await query.edit_message_text(f"🧠 {result}")
+        try:
+            await query.edit_message_text(f"🧠 {result}")
+        except Exception as e:
+            if "Message is not modified" not in str(e): raise
     
     elif query.data.startswith("NEW_AI_WEIGHT_"):
         weight_name = query.data.replace("NEW_AI_WEIGHT_", "")
         result = set_ai_weight(weight_name)
-        await query.edit_message_text(f"⚖️ {result}")
+        try:
+            await query.edit_message_text(f"⚖️ {result}")
+        except Exception as e:
+            if "Message is not modified" not in str(e): raise
     
     elif query.data == "MAIN_MENU":
-        await query.edit_message_text("🏠 القائمة الرئيسية\n\nاستخدم الأوامر للتنقل.")
+        try:
+            await query.edit_message_text("🏠 القائمة الرئيسية\n\nاستخدم الأوامر للتنقل.")
+        except Exception as e:
+            if "Message is not modified" not in str(e): raise
 
 
 def init_paper_trades_file():
@@ -3805,8 +3829,14 @@ async def handle_mode_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     await query.answer()
     
     if data == "MODE_STATS":
-        await query.edit_message_text(
-            format_mode_stats_message(),
+        try:
+            await query.edit_message_text(
+        except Exception as e:
+            if "Message is not modified" not in str(e): raise
+            format_mode_stats_message()
+          except telegram.error.BadRequest as e:
+              if "Message is not modified" not in str(e):
+                  raise,
             parse_mode="Markdown"
         )
         return
@@ -3824,19 +3854,34 @@ async def handle_mode_callback(update: Update, context: ContextTypes.DEFAULT_TYP
                     "rsi": analysis.get("rsi", 50),
                     "ema_bullish": analysis.get("ema_bullish", True)
                 }
-                await query.edit_message_text(
-                    format_recommendation_message(market_data),
+                try:
+                    await query.edit_message_text(
+                except Exception as e:
+                    if "Message is not modified" not in str(e): raise
+                    format_recommendation_message(market_data)
+          except telegram.error.BadRequest as e:
+              if "Message is not modified" not in str(e):
+                  raise,
                     reply_markup=get_mode_keyboard(),
                     parse_mode="Markdown"
                 )
                 return
-        await query.edit_message_text("❌ لا توجد بيانات كافية")
+                try:
+                    await query.edit_message_text("❌ لا توجد بيانات كافية")
+                except Exception as e:
+                    if "Message is not modified" not in str(e): raise
         return
     
     if data == "SHOW_FAST_MODES":
-        await query.edit_message_text(
+        try:
+            await query.edit_message_text(
+        except Exception as e:
+            if "Message is not modified" not in str(e): raise
             "⚡ *خيارات السكالب السريع*\n\nاختر نوع السكالب المفضل:",
-            reply_markup=get_fast_mode_keyboard(),
+            reply_markup=get_fast_mode_keyboard()
+          except telegram.error.BadRequest as e:
+              if "Message is not modified" not in str(e):
+                  raise,
             parse_mode="Markdown"
         )
         return
@@ -3863,9 +3908,15 @@ async def handle_mode_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
 ⚠️ التغيير يطبق من الشمعة القادمة
     """
+    try:
         await query.edit_message_text(
+    except Exception as e:
+        if "Message is not modified" not in str(e): raise
             message,
-            reply_markup=get_mode_keyboard(),
+            reply_markup=get_mode_keyboard()
+          except telegram.error.BadRequest as e:
+              if "Message is not modified" not in str(e):
+                  raise,
             parse_mode="Markdown"
         )
         return
@@ -3878,16 +3929,28 @@ async def handle_mode_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             
         if fast_mode_type == "NORMAL":
             set_fast_mode("FAST_NORMAL")
-            await query.edit_message_text(
+            try:
+                await query.edit_message_text(
+            except Exception as e:
+                if "Message is not modified" not in str(e): raise
                 "✅ تم تفعيل السكالب السريع العادي بنجاح",
-                reply_markup=get_fast_mode_keyboard(),
+                reply_markup=get_fast_mode_keyboard()
+          except telegram.error.BadRequest as e:
+              if "Message is not modified" not in str(e):
+                  raise,
                 parse_mode="Markdown"
             )
         elif fast_mode_type == "DOWN":
             set_fast_mode("FAST_DOWN")
-            await query.edit_message_text(
+            try:
+                await query.edit_message_text(
+            except Exception as e:
+                if "Message is not modified" not in str(e): raise
                 "✅ تم تفعيل السكالب الهابط السريع بنجاح",
-                reply_markup=get_fast_mode_keyboard(),
+                reply_markup=get_fast_mode_keyboard()
+          except telegram.error.BadRequest as e:
+              if "Message is not modified" not in str(e):
+                  raise,
                 parse_mode="Markdown"
             )
         return
@@ -3898,14 +3961,23 @@ async def handle_mode_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             success, message = change_trade_mode(new_mode)
             if success:
                 display_name = TradeMode.DISPLAY_NAMES.get(new_mode, new_mode)
-                await query.edit_message_text(
-                    f"✅ تم تفعيل الوضع: *{display_name}*\n\n" + format_mode_confirmation_message(new_mode),
+                try:
+                    await query.edit_message_text(
+                except Exception as e:
+                    if "Message is not modified" not in str(e): raise
+                    f"✅ تم تفعيل الوضع: *{display_name}*\n\n" + format_mode_confirmation_message(new_mode)
+          except telegram.error.BadRequest as e:
+              if "Message is not modified" not in str(e):
+                  raise,
                     reply_markup=get_mode_keyboard(),
                     parse_mode="Markdown"
                 )
                 logger.info(f"[MODE] Changed to {new_mode} via Telegram")
             else:
-                await query.edit_message_text(f"⚠️ {message}")
+                try:
+                    await query.edit_message_text(f"⚠️ {message}")
+                except Exception as e:
+                    if "Message is not modified" not in str(e): raise
 
 
 async def cmd_on(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -4135,30 +4207,60 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     
     if data == "on":
         state.signals_enabled = True
-        await query.edit_message_text("✅ تم تشغيل الإشارات\n\n" + format_status_message(), reply_markup=get_main_keyboard(), parse_mode="Markdown")
+        try:
+            await query.edit_message_text("✅ تم تشغيل الإشارات\n\n" + format_status_message()
+        except Exception as e:
+            if "Message is not modified" not in str(e): raise
     elif data == "off":
         state.signals_enabled = False
-        await query.edit_message_text("⏸️ تم إيقاف الإشارات\n\n" + format_status_message(), reply_markup=get_main_keyboard(), parse_mode="Markdown")
+        try:
+            await query.edit_message_text("⏸️ تم إيقاف الإشارات\n\n" + format_status_message()
+        except Exception as e:
+            if "Message is not modified" not in str(e): raise
     elif data == "status":
-        await query.edit_message_text(format_status_message(), reply_markup=get_main_keyboard(), parse_mode="Markdown")
+        try:
+            await query.edit_message_text(format_status_message()
+        except Exception as e:
+            if "Message is not modified" not in str(e): raise
     elif data == "balance":
-        await query.edit_message_text(format_balance_message(), reply_markup=get_main_keyboard(), parse_mode="Markdown")
+        try:
+            await query.edit_message_text(format_balance_message()
+        except Exception as e:
+            if "Message is not modified" not in str(e): raise
     elif data == "trades":
-        await query.edit_message_text(format_trades_message(), reply_markup=get_main_keyboard(), parse_mode="Markdown")
+        try:
+            await query.edit_message_text(format_trades_message()
+        except Exception as e:
+            if "Message is not modified" not in str(e): raise
     elif data == "stats":
-        await query.edit_message_text(format_stats_message(), reply_markup=get_main_keyboard(), parse_mode="Markdown")
+        try:
+            await query.edit_message_text(format_stats_message()
+        except Exception as e:
+            if "Message is not modified" not in str(e): raise
     elif data == "rules":
-        await query.edit_message_text(format_rules_message(), reply_markup=get_main_keyboard(), parse_mode="Markdown")
+        try:
+            await query.edit_message_text(format_rules_message()
+        except Exception as e:
+            if "Message is not modified" not in str(e): raise
     elif data == "diagnostic":
         await cmd_diagnostic(update, context)
     elif data == "reset":
-        await query.edit_message_text("⚠️ *هل تريد تصفير الرصيد والسجل؟*\n\n", reply_markup=get_confirm_keyboard(), parse_mode="Markdown")
+        try:
+            await query.edit_message_text("⚠️ *هل تريد تصفير الرصيد والسجل؟*\n\n", reply_markup=get_confirm_keyboard()
+        except Exception as e:
+            if "Message is not modified" not in str(e): raise
     elif data == "confirm_reset":
         paper_state.reset()
         reset_position_state()
-        await query.edit_message_text(f"✅ تم تصفير الرصيد إلى {START_BALANCE:.0f} USDT\n\n" + format_status_message(), reply_markup=get_main_keyboard(), parse_mode="Markdown")
+        try:
+            await query.edit_message_text(f"✅ تم تصفير الرصيد إلى {START_BALANCE:.0f} USDT\n\n" + format_status_message()
+        except Exception as e:
+            if "Message is not modified" not in str(e): raise
     elif data == "cancel_reset":
-        await query.edit_message_text("❌ تم إلغاء التصفير\n\n" + format_status_message(), reply_markup=get_main_keyboard(), parse_mode="Markdown")
+        try:
+            await query.edit_message_text("❌ تم إلغاء التصفير\n\n" + format_status_message()
+        except Exception as e:
+            if "Message is not modified" not in str(e): raise
     elif data in ["tf_1m", "tf_5m"]:
         new_tf = "1m" if data == "tf_1m" else "5m"
         state.timeframe = new_tf
@@ -4178,8 +4280,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 name="signal_loop"
             )
             
-        await query.edit_message_text(
-            f"✅ تم تغيير الفريم إلى {'1 دقيقة' if new_tf == '1m' else '5 دقائق'}\n\n" + format_status_message(),
+            try:
+                await query.edit_message_text(
+            except Exception as e:
+                if "Message is not modified" not in str(e): raise
+            f"✅ تم تغيير الفريم إلى {'1 دقيقة' if new_tf == '1m' else '5 دقائق'}\n\n" + format_status_message()
+          except telegram.error.BadRequest as e:
+              if "Message is not modified" not in str(e):
+                  raise,
             reply_markup=get_main_keyboard(),
             parse_mode="Markdown"
         )
@@ -4590,20 +4698,20 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
         market_mode = "EASY_MARKET" if (ema20 > ema50 and ema50 > ema200) else "HARD_MARKET"
         
         # 🧠 AI SCORE INJECTION (v4.2.PRO-AI)
-        ai_score = None
+        tick_ai_score = 0.5
         try:
             from ai_integration import get_ai_status, create_market_data_from_analysis, get_ai_engine
             engine = get_ai_engine()
             if engine:
                 market_data = create_market_data_from_analysis(analysis, candles)
                 if market_data:
-                    ai_score = engine.ai_filter.calculate_score(market_data)
-            logger.info(f"[DEBUG AI SCORE] {ai_score}")
+                    tick_ai_score = engine.ai_filter.calculate_score(market_data)
+            logger.info(f"[TICK AI SCORE LOCKED] score={tick_ai_score}")
         except Exception as e:
             logger.error(f"[AI_ERROR] Failed to fetch AI score: {e}")
 
-        # score = ai_score if ai_score is not None else 0.5
-        score = ai_score if ai_score is not None else 0.5
+        # Use the locked score for the rest of the tick
+        score = tick_ai_score if tick_ai_score is not None else 0.5
         
         # 🛡️ FINAL SAFETY PATCH (v4.2.PRO-AI)
         if score <= 0:
@@ -4613,7 +4721,7 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
         
         # Pass real ai_score to trading params if in FAST_SCALP
         market_data_with_score = dict(analysis)
-        market_data_with_score["ai_score"] = ai_score
+        market_data_with_score["ai_score"] = tick_ai_score
         
         # --- PRIORITY ORDER ENFORCEMENT (v4.5.PRO-FIX) ---
         if check_backpressure(state.timeframe):

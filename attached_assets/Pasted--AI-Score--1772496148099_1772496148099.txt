@@ -1,0 +1,106 @@
+إصلاح جذري – توحيد حساب AI Score + إصلاح خطأ تعديل رسائل تليجرام
+
+المشكلات الحالية:
+
+أولاً:
+يتم حساب AI score أكثر من مرة داخل نفس signal_loop tick.
+هذا يؤدي إلى ظهور قيم مختلفة لكل Mode داخل نفس الدورة (مثال: 0.94 و 0.5).
+المفترض أن يتم حساب السكور مرة واحدة فقط، ثم يُمرر كما هو لجميع الأنظمة.
+
+ثانياً:
+خطأ Telegram:
+telegram.error.BadRequest: Message is not modified
+السبب: يتم استدعاء edit_message_text بنفس النص ونفس الكيبورد بدون أي تغيير فعلي.
+
+-----------------------------------------------------
+
+المطلوب تنفيذه بدقة:
+
+القسم الأول: توحيد حساب AI Score
+
+1) افتح main.py وابحث عن signal_loop.
+
+2) داخل كل tick:
+   يجب أن يتم حساب AI score مرة واحدة فقط بالشكل التالي:
+
+   ai_score = ai_filter.calculate_score(market_data)
+
+3) مباشرة بعد الحساب:
+   خزّن القيمة في متغير ثابت داخل نفس الدورة:
+
+   tick_ai_score = ai_score
+
+4) مرّر tick_ai_score إلى جميع أوضاع التداول:
+   - AGGRESSIVE
+   - FAST_SCALP
+   - DEFAULT
+   - HARD_MARKET
+   وغيرها
+
+5) ممنوع تماماً:
+   - استدعاء calculate_score داخل trade_modes.py
+   - استدعاء calculate_score داخل أي Mode evaluator
+   - إعادة إنشاء MarketData داخل كل Mode
+   - تعديل السكور داخل أي Mode
+
+6) أي Mode يجب أن يستقبل السكور كـ parameter فقط:
+   evaluate_mode(mode_name, tick_ai_score, ...)
+
+7) لا يُسمح بتعديل السكور أو إعادة حسابه داخل أي وضع تداول.
+
+8) أضف سجل تحقق:
+
+   في main بعد الحساب:
+   logger.info(f"[TICK AI SCORE LOCKED] score={tick_ai_score}")
+
+   داخل كل Mode:
+   logger.info(f"[MODE RECEIVED SCORE] mode={mode_name} score={incoming_score}")
+
+النتيجة المتوقعة:
+داخل نفس tick يجب أن تظهر نفس القيمة لجميع الـ modes.
+ممنوع ظهور 0.94 و 0.5 في نفس الدورة.
+
+-----------------------------------------------------
+
+القسم الثاني: إصلاح خطأ Telegram – Message is not modified
+
+1) ابحث عن جميع أماكن استخدام:
+   edit_message_text()
+
+2) قبل أي عملية تعديل، أضف تحقق:
+
+   if query.message.text != new_text:
+       await query.edit_message_text(
+           text=new_text,
+           reply_markup=new_markup
+       )
+
+3) أو استخدم حماية عبر try/except:
+
+   try:
+       await query.edit_message_text(...)
+   except telegram.error.BadRequest as e:
+       if "Message is not modified" not in str(e):
+           raise
+
+4) لا يتم تعديل أي رسالة إذا كان النص والكيبورد مطابقين تماماً.
+
+-----------------------------------------------------
+
+مهم جداً:
+
+لا يتم تعديل:
+- منطق AI filter
+- الأوزان
+- Risk management
+- شروط الدخول والخروج
+- Direction logic
+- Scheduler
+
+الإصلاح يقتصر فقط على:
+- منع تكرار حساب السكور
+- منع تعديل الرسائل بدون تغيير فعلي
+
+بعد التنفيذ:
+يجب أن يختفي اختلاف السكورات داخل نفس tick.
+ويجب أن يختفي خطأ BadRequest نهائياً.

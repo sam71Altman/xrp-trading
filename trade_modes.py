@@ -132,6 +132,8 @@ class TradingLogicController:
     
     def get_trading_params(self, trade_mode: str, market_data: Optional[Dict] = None) -> Dict:
         """إرجاع معاملات التداول الخاصة بكل وضع"""
+        incoming_score = market_data.get("ai_score") if market_data else "N/A"
+        logger.info(f"[MODE RECEIVED SCORE] mode={trade_mode} score={incoming_score}")
         
         params = {
             "price_protection": True,
