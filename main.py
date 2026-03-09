@@ -4591,19 +4591,25 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
         
         # 🧠 AI SCORE INJECTION (v4.2.PRO-AI)
         ai_score = None
+        ai_enabled = True  # default to enabled
         try:
             from ai_integration import get_ai_status, create_market_data_from_analysis, get_ai_engine
-            engine = get_ai_engine()
-            if engine:
-                market_data = create_market_data_from_analysis(analysis, candles)
-                if market_data:
-                    ai_score = engine.ai_filter.calculate_score(market_data)
-            logger.info(f"[DEBUG AI SCORE] {ai_score}")
+            ai_status = get_ai_status()
+            ai_enabled = ai_status.get("enabled", True)
+            
+            if ai_enabled:  # Only calculate score if AI is ON
+                engine = get_ai_engine()
+                if engine:
+                    market_data = create_market_data_from_analysis(analysis, candles)
+                    if market_data:
+                        ai_score = engine.ai_filter.calculate_score(market_data)
+            
+            logger.info(f"[DEBUG AI SCORE] ai_enabled={ai_enabled}, ai_score={ai_score}")
         except Exception as e:
             logger.error(f"[AI_ERROR] Failed to fetch AI score: {e}")
 
-        # score = ai_score if ai_score is not None else 0.5
-        score = ai_score if ai_score is not None else 0.5
+        # Use AI score only if AI is ON, otherwise use strategy defaults (0.5)
+        score = ai_score if (ai_score is not None and ai_enabled) else 0.5
         
         # 🛡️ FINAL SAFETY PATCH (v4.2.PRO-AI)
         if score <= 0:
