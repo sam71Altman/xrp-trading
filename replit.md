@@ -101,6 +101,7 @@ Preferred communication style: Simple, everyday language.
 4. **Recent Performance**: Win Rate <40% in last 10 trades = stop trading
 - Auto-resume after 30 minutes
 - Manual resume via `/استئناف` command
+- **AGGRESSIVE mode intentionally bypasses the Kill Switch entirely** (confirmed by user) — this is a deliberate tradeoff for that mode, not a bug.
 
 ### AI Filtering System v4.5.PRO-AI
 **Core Files**: `ai_state.py`, `ai_filter.py`, `trading_engine.py`, `telegram_interface.py`, `monitor.py`, `ai_integration.py`
