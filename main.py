@@ -226,9 +226,34 @@ class StateGuard:
             self.mismatch_count = 0
             logging.getLogger(__name__).info("[STATE_GUARD] Resumed from halt")
 
-# Global close message tracker to prevent duplicates
+# ═══════════════════════════════════════════════════════════════════
+# CENTRAL NOTIFICATION DEDUP GATE
+# Every Telegram send for a trade lifecycle / recurring event MUST be
+# guarded by should_notify(event_key) so the same logical event can
+# never be sent twice, regardless of which code path triggered it.
+# ═══════════════════════════════════════════════════════════════════
 _close_notification_tracker: Dict[str, float] = {}
 _CLOSE_NOTIFICATION_COOLDOWN = 2.0  # seconds
+
+
+def should_notify(event_key: str, cooldown: float = _CLOSE_NOTIFICATION_COOLDOWN) -> bool:
+    """
+    Atomic check-and-mark dedup gate for outbound Telegram notifications.
+    Returns True only the first time event_key is seen within `cooldown`
+    seconds; returns False (and logs) for any repeat within that window.
+    """
+    now = time.time()
+    expired = [k for k, ts in _close_notification_tracker.items() if now - ts > max(cooldown, _CLOSE_NOTIFICATION_COOLDOWN) * 5]
+    for k in expired:
+        del _close_notification_tracker[k]
+
+    last = _close_notification_tracker.get(event_key)
+    if last is not None and (now - last) < cooldown:
+        logger.warning(f"[NOTIFY_DEDUP] Suppressed duplicate notification: {event_key}")
+        return False
+
+    _close_notification_tracker[event_key] = now
+    return True
 
 # Global trading engine instance
 def execute_trade_wrapper(symbol, direction, amount):
@@ -653,15 +678,18 @@ async def quick_scalp_down_execute_trade(bot, chat_id, entry_price, candles):
     No local state modification allowed.
     """
     amount = round(FIXED_TRADE_SIZE / entry_price, 2) if entry_price > 0 else 0
+    # OPEN is fully executed (broker call + state update + single
+    # notification) inside check_and_execute_trade() itself.
+    # Do NOT also call request_trade({"type": "OPEN", ...}) here -
+    # that would execute a second broker order and send a duplicate
+    # Telegram message for the same trade.
     result = await execution_engine.check_and_execute_trade(
         symbol=SYMBOL,
         direction="BUY",
         amount=amount,
         original_conditions_met=True
     )
-    if result.executed:
-        await execution_engine.request_trade({ "type": "OPEN", "symbol": SYMBOL, "amount": amount })
-    return False
+    return result.executed
 
 def check_trailing_activation(entry_price: float, current_price: float, timeframe: str = "1m") -> bool:
     """Check if trailing should be activated based on profit percentage"""
@@ -1172,18 +1200,9 @@ def check_buy_signal(analysis, candles):
             state.valid_entries += 1
             logger.info(f"[FAST_SCALP] Entry allowed: score={score}, price={current_price}")
             
-            # Send notification for entry (Arabic format)
-            msg = (
-                "🔵 *دخول صفقة سكالب (FAST_SCALP)*\n\n"
-                f"الزوج: {SYMBOL_DISPLAY}\n"
-                f"السعر: {current_price:.4f}\n"
-                f"السكور: {score}/10\n"
-                f"RSI: {rsi:.1f}\n\n"
-                f"⏱ الوقت (مكة): {get_now().strftime('%H:%M:%S')}"
-            )
-            if execution_engine.telegram:
-                asyncio.create_task(execution_engine.telegram.send(msg))
-            
+            # NOTE: no Telegram notification here - this is a pure signal
+            # check. The actual trade OPEN message is sent exactly once,
+            # centrally, by the TradingEngine when the trade is executed.
             safety_core.set_state(BotState.ENTERED, strategy_id="SCALP_FAST", reason="FAST_SCALP_SIGNAL")
             safety_core.active_trades[state.timeframe] += 1
             return True
@@ -3061,6 +3080,22 @@ def execute_paper_exit(entry_price: float, exit_price: float, reason: str,
     return finalize_trade("EXIT", entry_price, exit_price, reason, score, duration_min)
 
 
+def sync_paper_state_after_engine_close(entry_price: float, exit_price: float, reason: str) -> None:
+    """
+    The TradingEngine's close_trade_atomically() is the single source of
+    truth for engine state + the close Telegram notification, but it has
+    NO knowledge of the legacy paper balance/CSV bookkeeping. Every fast
+    TP/SL close routed through the engine MUST call this afterward so
+    paper_state.balance / trades CSV stay in sync with the engine.
+    This function does NOT send any Telegram message (avoids duplicates).
+    """
+    if not entry_price or entry_price <= 0:
+        return
+    duration_min = get_trade_duration_minutes()
+    score = getattr(state, "last_signal_score", 0)
+    finalize_trade("EXIT", entry_price, exit_price, reason, score, duration_min)
+
+
 def update_ui_async(text: str, msg_type: str = "status"):
     """
     تحديث الواجهة بشكل غير حاجز (Non-blocking status update) - DEPRECATED for signals
@@ -4463,12 +4498,14 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
 
         if pnl >= 0.10:
             print("[MANAGE] TP HIT → closing")
-            await engine.close_trade_atomically("TP", current)
+            if await engine.close_trade_atomically("TP", current):
+                sync_paper_state_after_engine_close(entry, current, "TP")
             return
 
         if pnl <= -0.12:
             print("[MANAGE] SL HIT → closing")
-            await engine.close_trade_atomically("SL", current)
+            if await engine.close_trade_atomically("SL", current):
+                sync_paper_state_after_engine_close(entry, current, "SL")
             return
 
     # ═══════════════════════════════════════════════
@@ -4490,12 +4527,14 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
 
             # TP
             if pnl >= 0.10:
-                await engine.close_trade_atomically("FAST_DOWN_TP", current_price)
+                if await engine.close_trade_atomically("FAST_DOWN_TP", current_price):
+                    sync_paper_state_after_engine_close(entry, current_price, "FAST_DOWN_TP")
                 return
 
             # SL
             if pnl <= -0.12:
-                await engine.close_trade_atomically("FAST_DOWN_SL", current_price)
+                if await engine.close_trade_atomically("FAST_DOWN_SL", current_price):
+                    sync_paper_state_after_engine_close(entry, current_price, "FAST_DOWN_SL")
                 return
 
         return
@@ -4509,7 +4548,8 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
         
         if kill_switch.check_auto_resume():
             resume_trading()
-            await bot.send_message(chat_id=chat_id, text="✅ تم استئناف التداول تلقائياً", parse_mode="Markdown")
+            if should_notify(f"RESUME:{int(time.time() // _CLOSE_NOTIFICATION_COOLDOWN)}"):
+                await bot.send_message(chat_id=chat_id, text="✅ تم استئناف التداول تلقائياً", parse_mode="Markdown")
         
         # Disable Kill Switch check for Aggressive Mode
         if not state.signals_enabled or (kill_switch.active and state.mode != "AGGRESSIVE"):
@@ -4545,7 +4585,8 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                 f"السكور: {analysis.get('score', 0)}/10\n\n"
                 f"⏱ الوقت (مكة): {get_now().strftime('%H:%M:%S')}"
             )
-            if execution_engine.telegram:
+            alert_key = f"PRICE_ALERT:{round(current_price, 2)}:{direction}"
+            if execution_engine.telegram and should_notify(alert_key, cooldown=5.0):
                 asyncio.create_task(execution_engine.telegram.send(alert_msg))
             state.last_alert_price = current_price
 
@@ -4565,7 +4606,9 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                 logger.warning(f"[INTEL] Execution exceeded 100ms: {(time.time() - start_intel)*1000:.2f}ms")
             
             if intel_action == ACTION_3_FLAGS:
-                await execution_engine.close_trade_atomically("TREND_REVERSAL_PREVENTED", current_price)
+                intel_entry_price = pos["entry_price"]
+                if await execution_engine.close_trade_atomically("TREND_REVERSAL_PREVENTED", current_price):
+                    sync_paper_state_after_engine_close(intel_entry_price, current_price, "TREND_REVERSAL_PREVENTED")
                 return
             elif intel_action == ACTION_2_FLAGS:
                 entry_price = pos["entry_price"]
@@ -4609,11 +4652,9 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
             logger.error(f"[AI_ERROR] Failed to fetch AI score: {e}")
 
         # Use AI score only if AI is ON, otherwise use strategy defaults (0.5)
+        # NOTE: a real AI score of 0 (lowest confidence) must NOT be
+        # overwritten - only a missing/None score falls back to neutral 0.5.
         score = ai_score if (ai_score is not None and ai_enabled) else 0.5
-        
-        # 🛡️ FINAL SAFETY PATCH (v4.2.PRO-AI)
-        if score <= 0:
-            score = 0.5
             
         rsi = analysis.get('rsi', 50)
         
@@ -4662,8 +4703,10 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                     pnl_pct, pnl_usdt, balance = exit_result
                     if state.mode != "AGGRESSIVE":
                         update_cooldown_after_exit(exit_reason)
-                    msg = format_exit_message(entry_price, exit_price, pnl_pct, pnl_usdt, exit_reason, duration, balance)
-                    await bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
+                    event_key = f"EXIT:{pos.get('version')}:{entry_price}:{exit_reason}"
+                    if should_notify(event_key):
+                        msg = format_exit_message(entry_price, exit_price, pnl_pct, pnl_usdt, exit_reason, duration, balance)
+                        await bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
             
             # Additional Aggressive Flip check
             elif state.mode == "AGGRESSIVE" and check_sell_signal(analysis, candles):
@@ -4674,8 +4717,10 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                 exit_result = execute_paper_exit(entry_price, exit_price, "aggressive_flip", state.last_signal_score, duration)
                 if exit_result:
                     pnl_pct, pnl_usdt, balance = exit_result
-                    msg = format_exit_message(entry_price, exit_price, pnl_pct, pnl_usdt, "aggressive_flip", duration, balance)
-                    await bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
+                    event_key = f"EXIT:{pos.get('version')}:{entry_price}:aggressive_flip"
+                    if should_notify(event_key):
+                        msg = format_exit_message(entry_price, exit_price, pnl_pct, pnl_usdt, "aggressive_flip", duration, balance)
+                        await bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
 
         # ═══════════════════════════════════════════════════════════════════
         # ⚡ QUICK SCALP DOWN MODE (MANUAL SWITCH) - v4.5.PRO-FINAL
@@ -4765,7 +4810,11 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                         logger.info(f"Blocked by TradeMode score: {score} < {min_score_required}")
                         return
 
-                    # Request trade via TradingEngine
+                    # Request trade via TradingEngine (SINGLE central engine).
+                    # check_and_execute_trade() fully executes the order,
+                    # updates engine position state, and sends the ONE
+                    # "دخول صفقة" notification internally - nothing else
+                    # in this codebase is allowed to duplicate that.
                     qty = round(FIXED_TRADE_SIZE / entry_price, 2)
                     strategy_signal_valid = True # Strategy logic already passed to reach here
                     result = await execution_engine.check_and_execute_trade(
@@ -4774,12 +4823,13 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                         amount=qty,
                         original_conditions_met=strategy_signal_valid
                     )
-                    if result.executed:
-                        success = await execution_engine.request_trade({ "type": "OPEN", "symbol": SYMBOL, "amount": qty })
-                    if not success:
-                        logger.error("❌ [TRADING ENGINE] Trade request failed")
+
+                    if not result.executed:
+                        logger.info(f"🚫 [TRADING ENGINE] Trade blocked: {result.decision.value} | score={result.score}")
+                        if result.decision != TradeDecision.BLOCKED_COOLDOWN:
+                            reset_position_state()
                         return
-                    
+
                     # Update non-position state for compatibility
                     state.entry_time = get_now()
                     state.current_sl = sl
@@ -4789,37 +4839,9 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                     state.candles_below_ema = 0
                     state.entry_candles_snapshot = candles[-10:]
 
-                    ai_result = await ai_engine.check_and_execute_trade(
-                        symbol=SYMBOL,
-                        direction="LONG",
-                        amount=round(paper_state.balance * 0.1, 2),
-                        original_conditions_met=strategy_signal_valid
-                    )
-                    
-                    if not ai_result.executed:
-                        logger.info(f"🚫 [AI ENGINE] Trade blocked: {ai_result.decision.value} | score={ai_result.score}")
-                        if ai_result.decision != TradeDecision.BLOCKED_COOLDOWN:
-                            reset_position_state()
-                        return
-                    
-                    # Logic below only executes if trade was NOT already executed by AI engine
-                    if ai_result.decision in [TradeDecision.ALLOWED_OFF_MODE, TradeDecision.ALLOWED_LEARN_MODE, TradeDecision.ALLOWED, TradeDecision.ALLOWED_LIMIT_FALLBACK]:
-                        # The AI engine already called execute_trade_fn
-                        # Just need to update the Telegram and state
-                        # score and reasons are already defined above for the callback
-                        qty = round(FIXED_TRADE_SIZE / entry_price, 2)
-                        
-                        record_trade_executed(SYMBOL)
-                        log_trade("BUY", "AI_EXECUTION", entry_price, None)
-                        
-                        # 🔔 SINGLE SOURCE OF MESSAGING
-                        msg = format_buy_message(entry_price, tp, sl, state.timeframe, score, qty)
-                        await bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
-                        logger.info("[SIGNAL_SENT] Buy notification sent from signal_loop")
-                    else:
-                        # Fallback for unexpected states
-                        reset_position_state()
-                        return
+                    record_trade_executed(SYMBOL)
+                    log_trade("BUY", "AI_EXECUTION", entry_price, None)
+                    logger.info("[SIGNAL_SENT] Buy notification sent by TradingEngine (single source)")
 
     except Exception as e:
         if "WebSocketApp" in str(e):

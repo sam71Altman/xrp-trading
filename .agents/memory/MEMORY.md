@@ -1,0 +1,1 @@
+- [Trading bot notification dedup](trading-bot-notification-dedup.md) — one TradingEngine must own trade lifecycle + Telegram sends; "check" functions must never send messages themselves.

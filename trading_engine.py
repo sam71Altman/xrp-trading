@@ -8,6 +8,7 @@ from enum import Enum
 from dataclasses import dataclass
 import logging
 import asyncio
+import time
 import uuid
 from price_engine import PriceEngine, TradingGuard
 
@@ -80,6 +81,44 @@ class TradingEngine:
 
         self.fast_submode = None
         self._closing = False
+
+        # Centralized notification dedup registry.
+        # Every notification sent by this engine MUST go through
+        # _notify_event() so the same logical event (e.g. the close of
+        # trade #N) can never generate more than one Telegram message,
+        # regardless of which internal path triggered it.
+        self._notified_events: Dict[str, float] = {}
+        self._NOTIFY_DEDUP_TTL = 10.0
+
+    def _should_notify(self, event_key: str) -> bool:
+        """
+        Atomic check-and-mark for notification dedup.
+        Returns True only the first time this exact event_key is seen
+        within the TTL window; returns False (and logs) on any repeat.
+        """
+        now = time.time()
+        # Opportunistic cleanup so this dict never grows unbounded.
+        expired = [k for k, ts in self._notified_events.items() if now - ts > self._NOTIFY_DEDUP_TTL]
+        for k in expired:
+            del self._notified_events[k]
+
+        if event_key in self._notified_events:
+            logger.warning(f"[NOTIFY_DEDUP] Suppressed duplicate notification for event={event_key}")
+            return False
+
+        self._notified_events[event_key] = now
+        return True
+
+    async def _notify_event(self, event_key: str, message: str) -> None:
+        """Single choke point for ALL outbound trade notifications."""
+        if not self.telegram:
+            return
+        if not self._should_notify(event_key):
+            return
+        try:
+            await self.telegram.send(message)
+        except Exception:
+            logger.exception("[NOTIFY] Telegram send failed")
     
     async def check_and_execute_trade(
         self,
@@ -210,6 +249,25 @@ class TradingEngine:
             executed = True if executed_order else False
             if executed:
                 self.ai_state.record_trade(symbol)
+
+                # This is the SINGLE place an OPEN position is created.
+                # Update engine state + fire exactly one notification here so
+                # no other code path needs to (and must not) duplicate it.
+                if direction in ("BUY", "LONG"):
+                    self._position_open = True
+                    self._position_symbol = symbol
+                    self._entry_price = getattr(executed_order, "price", None) or 0.0
+                    self._position_version += 1
+                    self._last_trade_id = getattr(executed_order, "id", None)
+
+                    price_str = f"{self._entry_price:.5f}" if self._entry_price else "N/A"
+                    msg = (
+                        f"🔵 دخول صفقة\n\n"
+                        f"الزوج: {symbol}\n"
+                        f"السعر: {price_str}\n"
+                        f"الكمية: {amount}"
+                    )
+                    await self._notify_event(f"OPEN:{symbol}:{self._last_trade_id}", msg)
             return TradeResult(
                 decision=decision,
                 score=score,
@@ -253,10 +311,15 @@ class TradingEngine:
         """
         Wait briefly instead of dropping immediately.
         Prevents silent signal loss.
-        """
-        if not self.ai_state.record_trade:
-            return False
 
+        NOTE: This queues a signal for the background pipeline
+        (_execute_under_lock). OPEN entries are already fully executed
+        and notified by check_and_execute_trade()/_execute_with_result();
+        callers must NOT call request_trade({"type": "OPEN", ...}) after
+        check_and_execute_trade() succeeded, or the trade (and its
+        notification) will be duplicated. Use this only for CLOSE signals
+        originating outside close_trade_atomically().
+        """
         try:
             async with asyncio.timeout(1.0):
                 await self._trade_queue.put(signal)
@@ -356,11 +419,15 @@ class TradingEngine:
             self._closing = True
             logger.info(f"[CLOSE] Executing: {reason} @ {exit_price}")
 
+            symbol = self._position_symbol
+            entry_price = self._entry_price
+            close_version = self._position_version
+
             try:
-                # 1. Broker Close (Async)
+                # 1. Broker Close (Async) - capture the result, don't discard it.
+                order = None
                 if self.broker:
-                    # Logic to call broker.order(SELL)
-                    await self.broker.order(self._position_symbol, "SELL", 0) # Assuming amount 0 means close all
+                    order = await self.broker.order(symbol, "SELL", 0)  # amount 0 means close all
 
                 # 2. Update Engine State
                 self._position_open = False
@@ -368,10 +435,18 @@ class TradingEngine:
                 self._entry_price = 0.0
                 self._position_version += 1
 
-                # 3. Notification
-                if order:
-                    await self._send_trade_notification(order)
-                    logger.info("Notification sent")
+                # 3. Notification (exactly once per close event)
+                pnl_pct = ((exit_price - entry_price) / entry_price * 100) if entry_price else 0.0
+                order_id = getattr(order, "id", None) if order else close_version
+                msg = (
+                    f"🔴 إغلاق صفقة\n\n"
+                    f"الزوج: {symbol}\n"
+                    f"السبب: {reason}\n"
+                    f"سعر الدخول: {entry_price:.5f}\n"
+                    f"سعر الخروج: {exit_price:.5f}\n"
+                    f"الربح/الخسارة: {pnl_pct:.2f}%"
+                )
+                await self._notify_event(f"CLOSE:{symbol}:{order_id}:{close_version}", msg)
 
                 logger.info(f"[CLOSE] Success: {reason}")
                 return True
@@ -405,9 +480,9 @@ class TradingEngine:
             self._position_symbol = symbol
             self._entry_price = order.price
             self._position_version += 1
+            self._last_trade_id = order.id
 
             await self._send_trade_notification(order)
-            self._last_trade_id = order.id
 
             return True
 
@@ -441,30 +516,19 @@ class TradingEngine:
         return False
 
     async def _send_trade_notification(self, order):
-        if not self.telegram:
-            return
-
-        msg = f"""
-🔵 دخول صفقة
-
-الزوج: {order.symbol}
-السعر: {order.price}
-الكمية: {order.amount}
-"""
-        await self.telegram.send(msg)
+        """OPEN notification, routed through the shared dedup registry."""
+        msg = (
+            f"🔵 دخول صفقة\n\n"
+            f"الزوج: {order.symbol}\n"
+            f"السعر: {order.price}\n"
+            f"الكمية: {order.amount}"
+        )
+        await self._notify_event(f"OPEN:{order.symbol}:{order.id}", msg)
 
     async def _notify_trade_once(self, order):
-        if order.id == self._last_trade_id:
-            return
-
+        """CLOSE notification, routed through the shared dedup registry."""
         message = f"{order.side} {order.symbol} @ {order.price}"
-
-        try:
-            if self.telegram:
-                await self.telegram.send(message)
-                self._last_trade_id = order.id
-        except Exception:
-            logger.exception("Telegram send failed")
+        await self._notify_event(f"CLOSE:{order.symbol}:{order.id}", message)
 
     async def _state_guard_loop(self):
         """
