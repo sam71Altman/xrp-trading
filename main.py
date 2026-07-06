@@ -3284,12 +3284,20 @@ def get_confirm_keyboard():
 
 
 def format_welcome_message() -> str:
+    is_aggressive = state.mode == "AGGRESSIVE"
+    mode_line = "🔥 نمط المضاربة العنيف: مفعّل (Aggressive Mode)" if is_aggressive else f"⚙️ الوضع الحالي: {TradeMode.DISPLAY_NAMES.get(state.mode, state.mode)}"
+    if is_aggressive:
+        ks_line = "🛡️ نظام Kill Switch: مُعطل (Aggressive Mode)"
+    elif kill_switch.active:
+        ks_line = f"🛡️ نظام Kill Switch: 🛑 مفعل - {kill_switch.reason}"
+    else:
+        ks_line = "🛡️ نظام Kill Switch: ✅ غير مفعل"
     return (
         f"🤖 *بوت إشارات {SYMBOL_DISPLAY} {BOT_VERSION}*\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🔥 نمط المضاربة العنيف: مفعّل (Aggressive Mode)\n"
+        f"{mode_line}\n"
         f"💰 الرصيد الحالي: {paper_state.balance:.2f} USDT\n"
-        f"🛡️ نظام Kill Switch: مُعطل (Aggressive Mode)\n"
+        f"{ks_line}\n"
         f"🛡️ حماية السعر الممتد: مفعّلة (Price Protection)\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"استخدم الأزرار أدناه للتحكم"
@@ -3298,7 +3306,12 @@ def format_welcome_message() -> str:
 
 def format_status_message() -> str:
     status = "🟢 يعمل" if state.signals_enabled else "⏸️ متوقف"
-    ks_status = "⚠️ معطل (Aggressive Mode)"
+    if state.mode == "AGGRESSIVE":
+        ks_status = "⚠️ معطل (Aggressive Mode)"
+    elif kill_switch.active:
+        ks_status = f"🛑 مفعل - {kill_switch.reason}"
+    else:
+        ks_status = "✅ غير مفعل"
     
     pos_status = "❌ لا توجد صفقة"
     # Safely get engine from globals
