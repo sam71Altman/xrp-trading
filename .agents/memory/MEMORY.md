@@ -1,3 +1,4 @@
 - [Trading bot notification dedup](trading-bot-notification-dedup.md) — one TradingEngine must own trade lifecycle + Telegram sends; "check" functions must never send messages themselves.
 - [Mode system unification](trading-bot-mode-unification.md) — state.mode delegates to mode_state; DEFAULT is the *protected smart* mode despite the misleading constant name.
 - [Replit Python env + Telegram polling quirks](replit-python-env-quirks.md) — uv sync fails (no venv); use `uv pip install --target`. telegram Conflict = parallel task agent sharing TG_TOKEN.
+- [TradingEngine wiring pitfalls](trading-bot-engine-wiring.md) — wire broker/telegram at startup (missing telegram = silent no-send); staleness guards must exceed stream cadence; E2E trigger-file test pattern.

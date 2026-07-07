@@ -706,6 +706,16 @@ async def quick_scalp_down_execute_trade(bot, chat_id, entry_price, candles):
         amount=amount,
         original_conditions_met=True
     )
+    if result.executed:
+        # View-only paper bookkeeping sync (engine stays source of truth):
+        # qty/reason for correct PnL on close, entry_time for duration,
+        # and a BUY row in paper_trades.csv (same as the DEFAULT path).
+        pos = execution_engine.get_position_state()
+        fill_price = pos.get("entry_price") or entry_price
+        execute_paper_buy(fill_price, getattr(state, "last_signal_score", 0),
+                          ["FAST_DOWN entry"], 0.0, 0.0)
+        state.entry_time = get_now()
+        log_trade("BUY", "FAST_DOWN", fill_price, None)
     return result.executed
 
 def check_trailing_activation(entry_price: float, current_price: float, timeframe: str = "1m") -> bool:
@@ -4347,6 +4357,30 @@ def generate_exit_signal(snapshot: TradingSnapshot) -> TradeSignal:
     return TradeSignal(action=TradeAction.NONE, confidence=0, reasons=["Hold position"], source="exit_check")
 
 
+class PaperBroker:
+    """Module-level paper broker. Fills orders at the live websocket price."""
+    async def order(self, symbol, side, amount):
+        class Order:
+            def __init__(self, s, sd, p, a):
+                self.id = time.time()
+                self.symbol = s
+                self.side = sd
+                self.price = p
+                self.amount = a
+        price = PriceEngine.last_price or 0.0
+        return Order(symbol, side, price, amount)
+
+
+class EngineTelegramSender:
+    """Minimal async sender for TradingEngine notifications (plain text)."""
+    def __init__(self, bot: Bot, chat_id: str):
+        self._bot = bot
+        self._chat_id = chat_id
+
+    async def send(self, message: str):
+        await self._bot.send_message(chat_id=self._chat_id, text=message)
+
+
 async def signal_loop(bot: Bot, chat_id: str) -> None:
     print(">>> SIGNAL LOOP TICK <<<")
     print(">>> FAST CHECK BLOCK ENTERED <<<")
@@ -4354,9 +4388,13 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
     engine = execution_engine
     pos = engine.get_position_state()
 
-    if pos.get("position_open") and pos.get("entry_price") and 'candles' in globals():
+    # NOTE: uses the live websocket price (PriceEngine.last_price).
+    # The previous guard `'candles' in globals()` was always False
+    # (candles is a signal_loop local), so this manage block never ran
+    # and non-FAST_DOWN positions had no TP/SL close path.
+    if pos.get("position_open") and pos.get("entry_price") and PriceEngine.last_price:
         entry = pos["entry_price"]
-        current = candles[-1]['close']
+        current = PriceEngine.last_price
         pnl = ((current - entry) / entry) * 100
 
         print(f"[MANAGE] PNL={pnl:.4f}%")
@@ -4872,6 +4910,17 @@ async def main() -> None:
             logger.error(f"FailSafe notifier scheduling error: {e}")
 
     FailSafeSystem.set_notifier(_failsafe_notifier)
+
+    # Wire the single TradingEngine with its broker + telegram sender at
+    # startup. Previously broker was only lazily created inside the DEFAULT
+    # entry path (FAST_DOWN entries hit "No broker configured") and
+    # execution_engine.telegram was NEVER set, so the engine's open/close
+    # notifications could not be sent at all.
+    if execution_engine.broker is None:
+        execution_engine.broker = PaperBroker()
+    if execution_engine.telegram is None:
+        execution_engine.telegram = EngineTelegramSender(application.bot, chat_id)
+    await execution_engine.start_trading_core()
     
     # Use JobQueue for signal loop if available, else use create_task
     if application.job_queue:

@@ -88,9 +88,13 @@ class TradingGuard:
     Guard that prevents trading when stale prices or connection issues are detected.
     Reads PriceEngine above — the same class the websocket updates.
     """
-    BLOCK_ALL_TRADING = False
-    BLOCK_REASON = ""
-    MAX_LATENCY_MS = 500
+    BLOCK_ALL_TRADING: bool = False
+    BLOCK_REASON: str = ""
+    # Binance @ticker stream pushes ~1 update/second, so a 0.5s staleness
+    # ceiling spuriously blocked ~half of all real trade attempts
+    # ("Price stale (0.8s) - Blocking TRADE"). 2.0s matches the staleness
+    # window used by main.py's own TradingGuard.
+    MAX_LATENCY_MS: float = 2000
 
     @classmethod
     def enforce_guard(cls, operation_type: str) -> bool:
