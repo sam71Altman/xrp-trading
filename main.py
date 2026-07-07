@@ -2264,12 +2264,20 @@ def get_paper_trades(limit: int = 5) -> List[Dict]:
         
         for row in exit_trades[-limit:][::-1]:
             try:
+                gross_usdt = float(row['pnl_usdt']) if row.get('pnl_usdt') else 0
+                gross_pct = float(row['pnl_percent']) if row.get('pnl_percent') else 0
+                has_net = bool(row.get('net_pnl_usdt'))
+                net_usdt = float(row['net_pnl_usdt']) if has_net else gross_usdt
+                net_pct = float(row['net_pnl_percent']) if row.get('net_pnl_percent') else gross_pct
                 trades.append({
                     'timestamp': row.get('timestamp', ''),
                     'entry_price': row.get('entry_price', ''),
                     'exit_price': row.get('exit_price', ''),
-                    'pnl_pct': float(row['pnl_percent']) if row.get('pnl_percent') else 0,
-                    'pnl_usdt': float(row['pnl_usdt']) if row.get('pnl_usdt') else 0,
+                    'pnl_pct': gross_pct,
+                    'pnl_usdt': gross_usdt,
+                    'net_pnl_pct': net_pct,
+                    'net_pnl_usdt': net_usdt,
+                    'has_net': has_net,
                     'balance': float(row['balance_after']) if row.get('balance_after') else 0,
                     'exit_reason': row.get('exit_reason', '')
     })
@@ -3481,8 +3489,12 @@ def format_trades_message() -> str:
     
     msg = "📜 *آخر 5 صفقات منفذة*\n━━━━━━━━━━━━━━━━━━━━━\n"
     for t in trades:
-        emoji = "🟢" if t['pnl_usdt'] >= 0 else "🔴"
-        msg += f"{emoji} {t['timestamp'].split(' ')[1]} | {t['pnl_pct']:+.2f}% | {t['pnl_usdt']:+.2f} $\n"
+        emoji = "🟢" if t['net_pnl_usdt'] >= 0 else "🔴"
+        if t.get('has_net'):
+            msg += (f"{emoji} {t['timestamp'].split(' ')[1]} | صافي: {t['net_pnl_pct']:+.2f}% "
+                    f"({t['net_pnl_usdt']:+.2f} $) | إجمالي: {t['pnl_usdt']:+.2f} $\n")
+        else:
+            msg += f"{emoji} {t['timestamp'].split(' ')[1]} | {t['pnl_pct']:+.2f}% | {t['pnl_usdt']:+.2f} $\n"
     
     return msg
 
