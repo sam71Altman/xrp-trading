@@ -2592,10 +2592,9 @@ def check_bounce_entry(analysis: dict, candles: List[dict], score: int) -> bool:
     # [HOLD PROBE] - Mandatory runtime probe log
     current_rsi_probe = calculate_rsi([c["close"] for c in candles])
     
-    # 🛡️ SCORE SAFETY PATCH (v4.2.PRO-AI)
+    # A real score of 0 means minimum confidence — keep it.
+    # Only a missing/None score falls back to the neutral default 0.5.
     effective_score = score if score is not None else 0.5
-    if effective_score <= 0:
-        effective_score = 0.5
         
     is_bounce_probing = (
         effective_score <= 5 and
@@ -4635,14 +4634,27 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
         if "error" in analysis:
             return
 
+        # ─── KEY ENRICHMENT ────────────────────────────────────────────────
+        # analyze_market() returns ema_short/ema_long.  Many helper functions
+        # (check_buy_signal, check_hold_entry_conditions, HOLD PROBE, etc.)
+        # expect the aliased keys ema20/ema50/ema200/rsi/score.
+        # We enrich the dict once here so every downstream caller gets real
+        # values instead of the hardcoded defaults (0 or 50).
+        _ema200_vals = calculate_ema([c['close'] for c in candles], 200)
+        analysis["ema20"]  = analysis.get("ema_short", 0)
+        analysis["ema50"]  = analysis.get("ema_long",  0)
+        analysis["ema200"] = _ema200_vals[-1] if _ema200_vals else 0
+        analysis["rsi"]    = calculate_rsi([c['close'] for c in candles])
+        # ───────────────────────────────────────────────────────────────────
+
         # Override analysis price with real-time ticker price
         analysis["close"] = current_price
         state.last_close = current_price
 
         # [HOLD PROBE] v3.7.5
-        ema20 = analysis.get('ema20', 0)
-        ema50 = analysis.get('ema50', 0)
-        ema200 = analysis.get('ema200', 0)
+        ema20 = analysis["ema20"]
+        ema50 = analysis["ema50"]
+        ema200 = analysis["ema200"]
         market_mode = "EASY_MARKET" if (ema20 > ema50 and ema50 > ema200) else "HARD_MARKET"
         
         # 🧠 AI SCORE INJECTION (v4.2.PRO-AI)
@@ -4683,7 +4695,7 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
         params = logic_controller.get_trading_params(state.mode, market_data_with_score)
         min_score = params.get("min_signal_score", 0.4)
 
-        logger.warning(
+        logger.debug(
             f"[HOLD PROBE] mode={market_mode}, "
             f"score={score}, rsi={rsi:.1f}, "
             f"bounce={check_bounce_entry(analysis, candles, score)}, "
