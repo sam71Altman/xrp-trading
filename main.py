@@ -3293,11 +3293,11 @@ def format_welcome_message() -> str:
     is_aggressive = state.mode == "DEFAULT"
     mode_line = "🔥 نمط المضاربة العنيف: مفعّل (Aggressive Mode)" if is_aggressive else f"⚙️ الوضع الحالي: {TradeMode.DISPLAY_NAMES.get(state.mode, state.mode)}"
     if is_aggressive:
-        ks_line = "🛡️ نظام Kill Switch: مُعطل (Aggressive Mode)"
+        ks_line = "🛡️ نظام Kill Switch: ⚠️ معطل (Aggressive Mode)"
     elif kill_switch.active:
-        ks_line = f"🛡️ نظام Kill Switch: 🛑 مفعل - {kill_switch.reason}"
+        ks_line = f"🛡️ نظام Kill Switch: 🛑 أوقف التداول - {kill_switch.reason}"
     else:
-        ks_line = "🛡️ نظام Kill Switch: ✅ غير مفعل"
+        ks_line = "🛡️ نظام Kill Switch: ✅ مفعل (يراقب)"
     return (
         f"🤖 *بوت إشارات {SYMBOL_DISPLAY} {BOT_VERSION}*\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
@@ -3315,9 +3315,9 @@ def format_status_message() -> str:
     if state.mode == "DEFAULT":
         ks_status = "⚠️ معطل (Aggressive Mode)"
     elif kill_switch.active:
-        ks_status = f"🛑 مفعل - {kill_switch.reason}"
+        ks_status = f"🛑 أوقف التداول - {kill_switch.reason}"
     else:
-        ks_status = "✅ غير مفعل"
+        ks_status = "✅ مفعل (يراقب)"
     
     pos_status = "❌ لا توجد صفقة"
     # Safely get engine from globals
@@ -4075,7 +4075,12 @@ async def cmd_diagnostic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # حالة التداول
     signals = "✅ مفعّلة" if state.signals_enabled else "🛑 موقوفة"
-    ks_status = "⚠️ مفعل" if kill_switch.active else "✅ غير مفعل"
+    if state.mode == "DEFAULT":
+        ks_status = "⚠️ معطل (Aggressive Mode)"
+    elif kill_switch.active:
+        ks_status = "🛑 أوقف التداول"
+    else:
+        ks_status = "✅ مفعل (يراقب)"
     
     # AI Status (Real & Dynamic)
     ai_info = get_ai_status()
