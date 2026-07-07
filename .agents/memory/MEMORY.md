@@ -1,1 +1,2 @@
 - [Trading bot notification dedup](trading-bot-notification-dedup.md) — one TradingEngine must own trade lifecycle + Telegram sends; "check" functions must never send messages themselves.
+- [Mode system unification](trading-bot-mode-unification.md) — state.mode delegates to mode_state; valid modes DEFAULT/FAST_SCALP/BOUNCE (no "AGGRESSIVE"); mode persists to disk.

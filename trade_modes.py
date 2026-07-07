@@ -19,6 +19,7 @@ BUILD_DATE = "2026"
 
 MODE_PERFORMANCE_FILE = "mode_performance.json"
 MODE_HISTORY_FILE = "mode_history.json"
+MODE_STATE_FILE = "mode_state.json"
 AI_STATE_FILE = "ai_state.json"
 
 # ⚡ HARD RULES (NON-NEGOTIABLE)
@@ -308,6 +309,33 @@ class ModeStateManager:
         self.mode_activated_at = datetime.now()
         self.hourly_changes = 0
         self.hourly_reset_time = datetime.now()
+        saved_mode = self._load_saved_mode()
+        if saved_mode and saved_mode != self.current_mode:
+            self.current_mode = saved_mode
+            logger.info(f"[MODE RESTORE] Restored mode from disk: {saved_mode}")
+
+    def _load_saved_mode(self) -> Optional[str]:
+        """استعادة الوضع المحفوظ بعد إعادة التشغيل"""
+        if os.path.exists(MODE_STATE_FILE):
+            try:
+                with open(MODE_STATE_FILE, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                m = data.get("current_mode")
+                if m in TradeMode.ALL_MODES:
+                    return m
+            except Exception:
+                pass
+        return None
+
+    def _save_current_mode(self):
+        """حفظ الوضع الحالي على القرص (كتابة ذرّية)"""
+        try:
+            tmp_file = MODE_STATE_FILE + ".tmp"
+            with open(tmp_file, 'w', encoding='utf-8') as f:
+                json.dump({"current_mode": self.current_mode}, f, ensure_ascii=False)
+            os.replace(tmp_file, MODE_STATE_FILE)
+        except Exception as e:
+            logger.error(f"Error saving mode state: {e}")
     
     def _load_history(self) -> List[Dict]:
         """تحميل سجل التغييرات"""
@@ -371,6 +399,7 @@ class ModeStateManager:
             "to": new_mode
         })
         self._save_history()
+        self._save_current_mode()
         
         logger.info(f"[MODE CHANGE] {self.previous_mode} -> {new_mode}")
         return True, "تم تغيير الوضع بنجاح"

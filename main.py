@@ -574,12 +574,29 @@ class QuickScalpDownStats:
 QUICK_SCALP_DOWN_MAX_CONSECUTIVE_LOSSES = 3
 QUICK_SCALP_DOWN_LOSS_PAUSE_DURATION = 120
 
+FAST_MODE_STATE_FILE = "fast_mode_state.json"
+
 current_fast_mode = "FAST_NORMAL"
+try:
+    if os.path.exists(FAST_MODE_STATE_FILE):
+        with open(FAST_MODE_STATE_FILE, 'r', encoding='utf-8') as _f:
+            _saved_fm = json.load(_f).get("fast_mode")
+        if _saved_fm in ("FAST_NORMAL", "FAST_DOWN"):
+            current_fast_mode = _saved_fm
+except Exception:
+    pass
 
 def set_fast_mode(mode):
     global current_fast_mode
     old_mode = current_fast_mode
     current_fast_mode = mode
+    try:
+        _tmp = FAST_MODE_STATE_FILE + ".tmp"
+        with open(_tmp, 'w', encoding='utf-8') as _f:
+            json.dump({"fast_mode": mode}, _f)
+        os.replace(_tmp, FAST_MODE_STATE_FILE)
+    except Exception:
+        pass
     mode_name = "NORMAL" if mode == "FAST_NORMAL" else "DOWN"
     logger.info(f"[MODE] Fast Scalp → {mode_name}")
     return old_mode
@@ -1459,6 +1476,9 @@ logging.basicConfig(
     level=logging.INFO
 )
 
+# Suppress httpx INFO logs (they leak the bot token in request URLs)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 # تعيين توقيت مكة للمكتبة الأساسية (Logging)
 def logging_time_converter(*args):
     return get_now().timetuple()
@@ -1819,39 +1839,6 @@ MIN_EXIT_TIME_SECONDS = 10       # أقل مدة صفقة قبل السماح ب
 HARD_EXIT_REASONS = ["STOP_LOSS", "MANUAL_CLOSE", "FORCE_CLOSE", "MAINTENANCE"]
 
 class LegacyBotState:
-    def __init__(self):
-        self.mode: str = "AGGRESSIVE"  # Force Aggressive Mode
-        self.entry_price: Optional[float] = None
-        self.entry_time: Optional[datetime] = None
-        self.entry_timeframe: Optional[str] = None
-        self.last_message_time: float = 0
-        self.signals_enabled: bool = True
-        self.timeframe: str = TIMEFRAME
-        self.last_close: Optional[float] = None
-        self.last_signal_type: Optional[str] = None
-        self.consecutive_errors: int = 0
-        self.error_alerted: bool = False
-        self.trailing_activated: bool = False
-        self.candles_below_ema: int = 0
-        self.last_exit_type: Optional[str] = None
-        self.current_cooldown: int = 0  # Disable cooldowns
-        self.consecutive_losses: int = 0
-        self.consecutive_wins: int = 0
-        self.pause_until: Optional[datetime] = None
-        self.pause_alerted: bool = False
-        self.backtest_warned: bool = False
-        self.last_signal_score: int = 10  # Bypass score
-        self.last_signal_reasons: List[str] = []
-        self.last_signal_reason: str = "Aggressive Entry"
-        self.backtest_stats: Dict = {}
-        self.pending_reset: bool = False
-        self.last_downtrend_alert_time: float = 0
-        self.tp_triggered: bool = False
-        self.risk_free_sl: Optional[float] = None
-        self.current_sl: Optional[float] = None
-        self.entry_candles_snapshot: List[dict] = []
-        self.entry_time_unix: float = 0.0
-
     @property
     def position_open(self) -> bool:
         """SINGLE SOURCE OF TRUTH redirect"""
@@ -1892,12 +1879,7 @@ class LegacyBotState:
     # ─────────────────────────────────────────────────────────────────────
 
     def __init__(self):
-        self._mode_fallback: str = "AGGRESSIVE"
-        # Initialize mode via the property setter so mode_state is updated
-        try:
-            change_trade_mode("DEFAULT")
-        except Exception:
-            pass
+        self._mode_fallback: str = "DEFAULT"
         self.entry_price: Optional[float] = None
         self.entry_time: Optional[datetime] = None
         self.entry_timeframe: Optional[str] = None
@@ -4619,7 +4601,7 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                 f"الزوج: {SYMBOL_DISPLAY}\n"
                 f"السعر الحالي: {current_price:.4f}\n"
                 f"التغير: {price_diff_pct:.2f}%\n"
-                f"السكور: {analysis.get('score', 0)}/10\n\n"
+                f"السكور: {state.last_signal_score}/10\n\n"
                 f"⏱ الوقت (مكة): {get_now().strftime('%H:%M:%S')}"
             )
             alert_key = f"PRICE_ALERT:{round(current_price, 2)}:{direction}"
