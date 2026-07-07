@@ -116,15 +116,58 @@ class TradingGuard:
 class FailSafeSystem:
     """
     Failsafe system to handle connection drops.
+
+    A notifier callback (registered by main.py at startup via set_notifier)
+    sends Telegram alerts on block/resume. price_engine.py must NEVER import
+    anything from main.py — the callback is injected, not imported.
     """
-    @staticmethod
-    def on_websocket_disconnect():
+    ALERT_COOLDOWN_SECONDS = 300  # max one disconnect alert per 5 minutes
+
+    _notifier = None            # callable(text: str), thread-safe, injected by main.py
+    _last_disconnect_alert_time: float = 0
+    _disconnect_alerted: bool = False
+
+    @classmethod
+    def set_notifier(cls, notifier):
+        cls._notifier = notifier
+
+    @classmethod
+    def _notify(cls, text: str):
+        if cls._notifier is None:
+            return
+        try:
+            cls._notifier(text)
+        except Exception as e:
+            logger.error(f"FAILSAFE notifier error: {e}")
+
+    @classmethod
+    def on_websocket_disconnect(cls):
         TradingGuard.BLOCK_ALL_TRADING = True
         TradingGuard.BLOCK_REASON = "WebSocket disconnected"
         logger.critical("FAILSAFE: Trading Blocked due to connection loss")
 
-    @staticmethod
-    def on_websocket_reconnect():
+        # Only consume the cooldown window when a notifier is registered,
+        # so an early disconnect (before main.py registers the callback)
+        # doesn't silently swallow the first real alert.
+        now = time.time()
+        if cls._notifier is not None and (now - cls._last_disconnect_alert_time) >= cls.ALERT_COOLDOWN_SECONDS:
+            cls._last_disconnect_alert_time = now
+            cls._disconnect_alerted = True
+            cls._notify(
+                "🚨 *تنبيه: انقطاع مصدر الأسعار*\n"
+                "تم إيقاف فتح صفقات جديدة مؤقتاً حتى عودة بيانات الأسعار.\n"
+                "الصفقات المفتوحة تُدار كالمعتاد."
+            )
+
+    @classmethod
+    def on_websocket_reconnect(cls):
         TradingGuard.BLOCK_ALL_TRADING = False
         TradingGuard.BLOCK_REASON = ""
         logger.info("FAILSAFE: Trading Resumed")
+
+        if cls._disconnect_alerted:
+            cls._disconnect_alerted = False
+            cls._notify(
+                "✅ *عاد مصدر الأسعار*\n"
+                "تم استئناف التداول تلقائياً."
+            )

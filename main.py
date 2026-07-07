@@ -4855,6 +4855,23 @@ async def main() -> None:
     
     # Initialize the application
     await application.initialize()
+
+    # FailSafe Telegram alerts (Task: notify on price-feed outage)
+    # The websocket runs in its own thread, so the notifier schedules the
+    # send on the bot's event loop thread-safely. price_engine.py never
+    # imports main.py — the callback is injected here.
+    _main_loop = asyncio.get_running_loop()
+
+    def _failsafe_notifier(text: str):
+        try:
+            asyncio.run_coroutine_threadsafe(
+                send_signal_message(application.bot, chat_id, text, "failsafe_alert"),
+                _main_loop
+            )
+        except Exception as e:
+            logger.error(f"FailSafe notifier scheduling error: {e}")
+
+    FailSafeSystem.set_notifier(_failsafe_notifier)
     
     # Use JobQueue for signal loop if available, else use create_task
     if application.job_queue:
