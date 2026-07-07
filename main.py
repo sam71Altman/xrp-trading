@@ -1870,9 +1870,34 @@ class LegacyBotState:
                 _engine._position_symbol = None
                 _engine._entry_price = 0.0
             _engine._position_version += 1
-        
+
+    # ── MODE PROPERTY ────────────────────────────────────────────────────
+    # Delegates to the real mode manager (mode_state) so that every
+    # state.mode read always returns the ACTUAL current mode, and every
+    # state.mode = X write calls change_trade_mode() to update it properly.
+    @property
+    def mode(self) -> str:
+        try:
+            return get_current_mode()
+        except Exception:
+            return self._mode_fallback
+
+    @mode.setter
+    def mode(self, value: str) -> None:
+        self._mode_fallback = value
+        try:
+            change_trade_mode(value)
+        except Exception:
+            pass
+    # ─────────────────────────────────────────────────────────────────────
+
     def __init__(self):
-        self.mode: str = "AGGRESSIVE"  # Force Aggressive Mode
+        self._mode_fallback: str = "AGGRESSIVE"
+        # Initialize mode via the property setter so mode_state is updated
+        try:
+            change_trade_mode("DEFAULT")
+        except Exception:
+            pass
         self.entry_price: Optional[float] = None
         self.entry_time: Optional[datetime] = None
         self.entry_timeframe: Optional[str] = None
@@ -2679,7 +2704,7 @@ def log_hold_status(current_price: float, market_mode: str):
         return False
     
     # Kill Switch Check (Disabled for Aggressive)
-    if kill_switch.active and state.mode != "AGGRESSIVE":
+    if kill_switch.active and state.mode != "DEFAULT":
         return False
     
     current_close = analysis["close"]
@@ -2771,7 +2796,7 @@ def check_sell_signal(analysis: dict, candles: List[dict]) -> bool:
         return False
     
     # Kill Switch Check (Disabled for Aggressive)
-    if kill_switch.active and state.mode != "AGGRESSIVE":
+    if kill_switch.active and state.mode != "DEFAULT":
         return False
         
     current_close = analysis["close"]
@@ -3283,7 +3308,7 @@ def get_confirm_keyboard():
 
 
 def format_welcome_message() -> str:
-    is_aggressive = state.mode == "AGGRESSIVE"
+    is_aggressive = state.mode == "DEFAULT"
     mode_line = "🔥 نمط المضاربة العنيف: مفعّل (Aggressive Mode)" if is_aggressive else f"⚙️ الوضع الحالي: {TradeMode.DISPLAY_NAMES.get(state.mode, state.mode)}"
     if is_aggressive:
         ks_line = "🛡️ نظام Kill Switch: مُعطل (Aggressive Mode)"
@@ -3305,7 +3330,7 @@ def format_welcome_message() -> str:
 
 def format_status_message() -> str:
     status = "🟢 يعمل" if state.signals_enabled else "⏸️ متوقف"
-    if state.mode == "AGGRESSIVE":
+    if state.mode == "DEFAULT":
         ks_status = "⚠️ معطل (Aggressive Mode)"
     elif kill_switch.active:
         ks_status = f"🛑 مفعل - {kill_switch.reason}"
@@ -4483,7 +4508,7 @@ def generate_exit_signal(snapshot: TradingSnapshot) -> TradeSignal:
             source="exit_check"
         )
     
-    if state.mode == "AGGRESSIVE" and check_sell_signal(analysis, candles):
+    if state.mode == "DEFAULT" and check_sell_signal(analysis, candles):
         return TradeSignal(
             action=TradeAction.SELL,
             confidence=0.8,
@@ -4551,7 +4576,7 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
 
         return
     
-    if state.mode == "AGGRESSIVE":
+    if state.mode == "DEFAULT":
         print("[AGG] checking entry conditions")
         
     try:
@@ -4564,16 +4589,16 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                 await bot.send_message(chat_id=chat_id, text="✅ تم استئناف التداول تلقائياً", parse_mode="Markdown")
         
         # Disable Kill Switch check for Aggressive Mode
-        if not state.signals_enabled or (kill_switch.active and state.mode != "AGGRESSIVE"):
+        if not state.signals_enabled or (kill_switch.active and state.mode != "DEFAULT"):
             return
         
         # Disable Cooldown for Aggressive Mode
-        if state.mode != "AGGRESSIVE":
+        if state.mode != "DEFAULT":
             if state.pause_until and get_now() < state.pause_until:
                 return
         
         # Use Real-time Price for Aggressive Mode
-        if state.mode == "AGGRESSIVE" and PriceEngine.last_price:
+        if state.mode == "DEFAULT" and PriceEngine.last_price:
             current_price = PriceEngine.last_price
         else:
             ticker = get_binance_ticker()
@@ -4710,7 +4735,7 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
         
         # Disable Kill Switch evaluation for Aggressive Mode
         pos = execution_engine.get_position_state()
-        if state.mode != "AGGRESSIVE":
+        if state.mode != "DEFAULT":
             ks_reason = evaluate_kill_switch()
             if ks_reason and not pos["position_open"]:
                 kill_switch.activate(ks_reason)
@@ -4726,7 +4751,7 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                 exit_result = execute_paper_exit(entry_price, exit_price, exit_reason, state.last_signal_score, duration)
                 if exit_result:
                     pnl_pct, pnl_usdt, balance = exit_result
-                    if state.mode != "AGGRESSIVE":
+                    if state.mode != "DEFAULT":
                         update_cooldown_after_exit(exit_reason)
                     event_key = f"EXIT:{pos.get('version')}:{entry_price}:{exit_reason}"
                     if should_notify(event_key):
@@ -4734,7 +4759,7 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                         await bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
             
             # Additional Aggressive Flip check
-            elif state.mode == "AGGRESSIVE" and check_sell_signal(analysis, candles):
+            elif state.mode == "DEFAULT" and check_sell_signal(analysis, candles):
                 entry_price = pos["entry_price"]
                 exit_price = analysis["close"]
                 duration = get_trade_duration_minutes()
