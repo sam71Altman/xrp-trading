@@ -1190,6 +1190,8 @@ def check_buy_signal(analysis, candles):
     ema20 = analysis.get('ema20', 0)
     ema50 = analysis.get('ema50', 0)
     ema200 = analysis.get('ema200', 0)
+    # Bot signal score (0–10 scale) — enriched into analysis once per cycle
+    # in signal_loop via calculate_signal_score(). Separate from AI score (0–1).
     score = analysis.get('score', 0)
     rsi = analysis.get('rsi', 50)
     
@@ -1208,9 +1210,11 @@ def check_buy_signal(analysis, candles):
             state.last_rejection_reason = f"CIRCUIT_BREAKER ({reason})"
             return False
             
-        # Fast scalp: minimal filtering, enter quickly
+        # Fast scalp: minimal filtering, enter quickly.
+        # mode_params min_signal_score (0.4) is on the AI 0–1 scale; here we
+        # compare against the bot signal score (0–10), so force a floor of 1.
         min_score = mode_params.get('min_signal_score', 1)
-        if min_score < 1: min_score = 1 # Force minimum score of 1
+        if min_score < 1: min_score = 1 # Force minimum score of 1 (0–10 scale)
         
         # STRICT REQUIREMENT: Score must be >= 1 AND Price > EMA20
         if score >= min_score and current_price > ema20:
@@ -1315,10 +1319,6 @@ def check_hold_exit_conditions(candles):
         return "Hold Disabled - Daily Loss Limit"
     
     return None
-    if state.daily_cumulative_loss >= 1.0:
-        return "Hold Disabled - Daily Loss Limit"
-    
-    return None
 
 def log_hold_status():
     """تسجيل مفصل لحالة الـ Hold v3.7.5"""
@@ -1400,7 +1400,9 @@ MIN_WIN_RATE = 0.0
 POLL_INTERVAL_BASE = 1.0  # Base interval (fastest - for scalping)
 POLL_INTERVAL_DEFAULT = 5.0  # Default for non-scalping modes
 POLL_INTERVAL = 3  # Reduced frequency to prevent overload
-MIN_SIGNAL_SCORE = 0.4 # Relaxed from 1 to allow trades
+# Compared against the bot signal score from calculate_signal_score() (0–10 scale).
+# NOT the AI score (0–1). Relaxed from 1 to allow trades.
+MIN_SIGNAL_SCORE = 0.4
 _signal_loop_cycle_counter = 0
 
 def get_mode_poll_interval() -> float:
@@ -2711,152 +2713,6 @@ def check_bounce_entry(analysis: dict, candles: List[dict], score: int) -> bool:
     
     return entry_is_bounce
 
-    def check_hold_exit_conditions(analysis: dict, candles: List[dict]) -> Optional[str]:
-        """فحص شروط الخروج أثناء الـ Hold"""
-        if not state.hold_active:
-            return None
-        
-        current_price = analysis["close"]
-        current_candle = candles[-1]
-        entry_price = state.hold_start_price
-        
-        # 1️⃣ STOP LOSS (أولوية قصوى - لا تغيير)
-        if state.current_sl and current_price <= state.current_sl:
-            return "SL Hit (Hold)"
-        
-        # 2️⃣ فشل سعري (دروداون محدود)
-        max_drawdown_price = entry_price * 0.9990  # -0.10% كحد أقصى
-        if current_price <= max_drawdown_price:
-            return "Hold Failed - Max Drawdown"
-        
-        # 3️⃣ تحقيق هدف واقعي للسكالب
-        scalp_target = entry_price * 1.003  # +0.3%
-        if current_price >= scalp_target:
-            return "Scalp Target Hit"
-        
-        # 4️⃣ فشل زمني مع ضعف الزخم
-        if state.hold_candles >= 5:
-            if len(candles) >= 23:
-                recent_volume_avg = sum(c['volume'] for c in candles[-3:]) / 3
-                normal_volume_avg = sum(c['volume'] for c in candles[-23:-3]) / 20
-                if recent_volume_avg < normal_volume_avg * 0.65:
-                    return "Hold Failed - No Momentum"
-        
-        # 5️⃣ كسر هابط قوي (شمعة هابطة كبيرة)
-        bearish_strength = detect_bearish_strength(current_candle)
-        if bearish_strength == "STRONG":
-            return "Hold Failed - Strong Breakdown"
-        
-        # 6️⃣ قيد الخسارة اليومية التراكمية
-        if state.daily_cumulative_loss >= 1.0:  # 1% كحد يومي
-            return "Hold Disabled - Daily Loss Limit"
-        
-        return None
-
-def log_hold_status(current_price: float, market_mode: str):
-    """تسجيل مفصل لحالة الـ Hold"""
-    drawdown = ((state.hold_start_price - current_price) / state.hold_start_price * 100) if state.hold_start_price > 0 else 0
-    logger.info(f"""
-    📊 HOLD STATUS
-    ├── Active: {state.hold_active}
-    ├── Candles Held: {state.hold_candles}
-    ├── Market Mode: {market_mode}
-    ├── Entry Price: {state.hold_start_price:.6f}
-    ├── Current Price: {current_price:.6f}
-    ├── Drawdown: {drawdown:.4f}%
-    └── Daily Loss: {state.daily_cumulative_loss:.2f}%
-    """)
-    if "error" in analysis:
-        return False
-    
-    # Kill Switch Check (applies in DEFAULT smart mode; bypassed in FAST_SCALP/BOUNCE)
-    if kill_switch.active and state.mode == "DEFAULT":
-        return False
-    
-    current_close = analysis["close"]
-    prev_close = analysis["prev_close"]
-    ema20 = analysis["ema_short"]
-    
-    # Post-Exit Integration (LPEM + PEG v1.3)
-    monitor = EntryGateMonitor.get()
-    
-    # 1. LPEM Check (سعري - سريع)
-    if state.lpem_active:
-        # Simplified LPEM check directly using state variables
-        price_diff = abs(current_close - state.lpem_exit_price) / state.lpem_exit_price * 100
-        # v3.7.2: Lower LPEM protection band for faster re-entry on 1m (0.25% -> 0.12%)
-        if price_diff < 0.12: 
-            monitor.record_decision(lpem_blocked=True, peg_blocked=False, entered=False)
-            if analysis_count % 12 == 0:
-                logger.info("[ENTRY GATE] BLOCKED by LPEM")
-            return False
-
-    # 2. PEG Check (سياقي - فقط إذا سمح LPEM)
-    guard = PostExitGuard.get()
-    if guard.active:
-        if guard.expired():
-            guard.clear("max_duration_reached")
-        else:
-            recovered, recovery_reason = market_recovered(guard, current_close, candles, analysis["ema_short"], analysis["ema_long"])
-            if not recovered:
-                guard.record_block()
-                monitor.record_decision(lpem_blocked=False, peg_blocked=True, entered=False)
-                if analysis_count % 12 == 0:
-                    logger.info(f"[ENTRY GATE] BLOCKED by PEG | Exit price: {guard.exit_price}")
-                return False
-            else:
-                guard.clear(f"recovered_{recovery_reason}")
-                guard.record_allow(recovery_reason)
-
-    # Calculate Score and RSI for filtering
-    score, reasons = calculate_signal_score(analysis, candles)
-    prices = [c["close"] for c in candles]
-    rsi = calculate_rsi(prices)
-    is_extended = check_extended_price(current_close, analysis, candles)
-
-    # 1. SCORE + RSI HARD BLOCK
-    if score <= 1 and (rsi > 75 or rsi < 25):
-        state.rejected_entries += 1
-        state.rejected_due_to_rsi += 1
-        state.last_rejection_reason = f"Weak RSI/Score (Score={score}, RSI={rsi:.1f})"
-        logger.info(f"[AGG] Blocked: Weak Entry (Score={score}, RSI={rsi:.1f})")
-        return False
-        
-    # 2. EXTENDED + WEAK SIGNAL = BLOCK (v3.7.2: Relaxed from 3 to 2)
-    if is_extended and score <= 2:
-        state.rejected_entries += 1
-        state.rejected_due_to_no_bounce += 1 # Catching weak signals that aren't bounces
-        state.last_rejection_reason = f"Weak Extended (Score={score})"
-        logger.info(f"[AGG] Blocked: Weak Extended (Score={score}, Extended=True)")
-        return False
-    
-    # Entry Logic (Same as before)
-    # 1. Price touches/dips below EMA20 and rejects upward
-    low_hit = any(c["low"] <= ema20 for c in candles[-2:])
-    if low_hit and current_close > ema20:
-        EntryGateMonitor.get().record_decision(lpem_blocked=False, peg_blocked=False, entered=True)
-        state.last_signal_reason = "EMA bounce"
-        state.last_signal_score = score
-        return True
-    
-    # 2. Momentum
-    price_change = (current_close - prev_close) / prev_close * 100
-    if price_change >= 0.05:
-        EntryGateMonitor.get().record_decision(lpem_blocked=False, peg_blocked=False, entered=True)
-        state.last_signal_reason = "Momentum"
-        state.last_signal_score = score
-        return True
-        
-    # 3. Micro breakout
-    recent_high = max([c["high"] for c in candles[-4:-1]])
-    if current_close > recent_high:
-        EntryGateMonitor.get().record_decision(lpem_blocked=False, peg_blocked=False, entered=True)
-        state.last_signal_reason = "Micro breakout"
-        state.last_signal_score = score
-        return True
-        
-    return False
-
 def check_sell_signal(analysis: dict, candles: List[dict]) -> bool:
     if "error" in analysis:
         return False
@@ -2891,14 +2747,6 @@ def calculate_targets(entry_price: float, candles: List[dict]) -> tuple:
     sl = entry_price * (1 - STOP_LOSS_PCT / 100)
     return tp, sl
 
-def manage_trade_exits(analysis: dict, candles: List[dict]) -> Optional[str]:
-    """
-    DEPRECATED: All exits now go through TradingEngine.close_trade_atomically()
-    This function is kept for compatibility but does nothing.
-    """
-    logger.debug("[DEPRECATED] manage_trade_exits called - use TradingEngine instead")
-    return None
-
 def check_exit_signal(analysis: dict, candles: List[dict]) -> Optional[str]:
     pos = execution_engine.get_position_state()
     if not pos["position_open"] or pos["entry_price"] is None:
@@ -2908,8 +2756,6 @@ def check_exit_signal(analysis: dict, candles: List[dict]) -> Optional[str]:
     entry_price = pos["entry_price"]
     pnl_pct = ((current_price - entry_price) / entry_price) * 100
     tp_price = entry_price * (1 + TAKE_PROFIT_PCT / 100)
-    
-    # 🏃 Runner management is now handled in manage_trade_exits wrapper
     
     # ═══════════════════════════════════════════════════════════════════════
     # v3.3: TP Trigger Logic (with TP CONTINUATION support)
@@ -2967,11 +2813,6 @@ def check_exit_signal(analysis: dict, candles: List[dict]) -> Optional[str]:
         SYSTEM_HEALTH["tp_execution_latency_p99"] = latency
         logger.info(f"🎯 TP EXECUTED | Latency: {latency:.2f}ms")
         
-        return "tp_trigger"
-
-        if state.hold_active:
-            logger.info("[HOLD] TP Triggered - Releasing hold for normal exit")
-            state.hold_active = False
         return "tp_trigger"
 
     # v3.3: Exit Conditions after TP Triggered or Smart SL
@@ -4422,6 +4263,8 @@ async def check_downtrend_alerts(bot: Bot, chat_id: str, analysis: dict, candles
 
 
 # Real-time Price Engine (v3.8)
+import price_engine as _pe
+
 class PriceEngine:
     last_price: Optional[float] = None
     last_update_time: float = 0
@@ -4433,6 +4276,13 @@ class PriceEngine:
         cls.last_price = price
         cls.last_update_time = time.time()
         cls.is_connected = True
+        # CRITICAL: mirror into price_engine.PriceEngine as well.
+        # trading_engine's TradingGuard.enforce_guard("TRADE") reads
+        # price_engine.PriceEngine.last_price — this local class shadows the
+        # imported one, so without mirroring that stays None forever and
+        # EVERY trade is blocked with "Waiting for price data for TRADE".
+        _pe.PriceEngine.last_price = price
+        _pe.PriceEngine.last_update_time = cls.last_update_time
 
     @classmethod
     def on_message(cls, ws, message):
@@ -4593,15 +4443,9 @@ def generate_exit_signal(snapshot: TradingSnapshot) -> TradeSignal:
     analysis = snapshot.indicators
     candles = list(snapshot.candles)
     
-    exit_reason = manage_trade_exits(analysis, candles)
-    if exit_reason:
-        return TradeSignal(
-            action=TradeAction.SELL,
-            confidence=1.0,
-            reasons=[exit_reason],
-            source="exit_check"
-        )
-    
+    # NOTE: TP/SL/emergency exits are handled by TradingEngine
+    # (close_trade_atomically); the old manage_trade_exits wrapper was a
+    # verified no-op (always returned None) and has been removed.
     if state.mode == "DEFAULT" and check_sell_signal(analysis, candles):
         return TradeSignal(
             action=TradeAction.SELL,
@@ -4641,6 +4485,11 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
 
     # ═══════════════════════════════════════════════
     # ✅ FAST_SCALP_DOWN — ENGINE ATOMIC EXIT (FIX)
+    # Exit management runs ONLY when a position is open.
+    # When no position is open, execution MUST continue below so the
+    # FAST_DOWN entry check (quick_scalp_down_get_entry_signal) and
+    # price alerts are reachable. (Previously an unconditional `return`
+    # here blocked all FAST_DOWN entries.)
     # ═══════════════════════════════════════════════
     if state.mode == "FAST_SCALP" and "DOWN" in str(get_fast_mode()):
 
@@ -4667,8 +4516,6 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                 if await engine.close_trade_atomically("FAST_DOWN_SL", current_price):
                     sync_paper_state_after_engine_close(entry, current_price, "FAST_DOWN_SL")
                 return
-
-        return
     
     if state.mode == "DEFAULT":
         print("[AGG] checking entry conditions")
@@ -4764,6 +4611,15 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
         analysis["ema50"]  = analysis.get("ema_long",  0)
         analysis["ema200"] = _ema200_vals[-1] if _ema200_vals else 0
         analysis["rsi"]    = calculate_rsi([c['close'] for c in candles])
+
+        # ─── SIGNAL SCORE (0–10 scale) ─────────────────────────────────────
+        # Compute the real bot signal score ONCE per cycle, BEFORE any entry
+        # check. check_buy_signal reads analysis['score'] — without this,
+        # the score was always 0 and FAST_SCALP/DEFAULT entries were rejected.
+        # NOTE: this 0–10 signal score is a DIFFERENT scale from the AI score
+        # (0–1) computed further below — do not mix the two.
+        signal_score, signal_reasons = calculate_signal_score(analysis, candles)
+        analysis["score"] = signal_score
         # ───────────────────────────────────────────────────────────────────
 
         # Override analysis price with real-time ticker price
@@ -4814,10 +4670,11 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
         params = logic_controller.get_trading_params(state.mode, market_data_with_score)
         min_score = params.get("min_signal_score", 0.4)
 
+        # check_bounce_entry expects the bot signal score (0–10), NOT the AI score (0–1)
         logger.debug(
             f"[HOLD PROBE] mode={market_mode}, "
-            f"score={score}, rsi={rsi:.1f}, "
-            f"bounce={check_bounce_entry(analysis, candles, score)}, "
+            f"signal_score={signal_score}, ai_score={score}, rsi={rsi:.1f}, "
+            f"bounce={check_bounce_entry(analysis, candles, signal_score)}, "
             f"hold_active={state.hold_active}"
         )
             
@@ -4836,24 +4693,11 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                 return
         
         if pos["position_open"] and pos["entry_price"] is not None:
-            exit_reason = manage_trade_exits(analysis, candles)
-            if exit_reason:
-                entry_price = pos["entry_price"]
-                exit_price = analysis["close"]
-                duration = get_trade_duration_minutes()
-                # Pass consistent score ({BOT_VERSION})
-                exit_result = execute_paper_exit(entry_price, exit_price, exit_reason, state.last_signal_score, duration)
-                if exit_result:
-                    pnl_pct, pnl_usdt, balance = exit_result
-                    if state.mode != "DEFAULT":
-                        update_cooldown_after_exit(exit_reason)
-                    event_key = f"EXIT:{pos.get('version')}:{entry_price}:{exit_reason}"
-                    if should_notify(event_key):
-                        msg = format_exit_message(entry_price, exit_price, pnl_pct, pnl_usdt, exit_reason, duration, balance)
-                        await bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
-            
-            # Additional Aggressive Flip check
-            elif state.mode == "DEFAULT" and check_sell_signal(analysis, candles):
+            # TP/SL/emergency exits are handled by TradingEngine
+            # (close_trade_atomically) earlier in this loop; the old
+            # manage_trade_exits wrapper was a verified no-op and removed.
+            # Aggressive Flip check (DEFAULT smart mode only)
+            if state.mode == "DEFAULT" and check_sell_signal(analysis, candles):
                 entry_price = pos["entry_price"]
                 exit_price = analysis["close"]
                 duration = get_trade_duration_minutes()
@@ -4876,10 +4720,26 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                 if quick_scalp_down_get_entry_signal(candles, analysis):
                     await quick_scalp_down_execute_trade(bot, chat_id, current_price, candles)
                     return
+                # Throttled rejection log (~every 30 analysis cycles)
+                if analysis_count % 30 == 0:
+                    logger.info(
+                        f"[ENTRY REJECTED] mode=FAST_DOWN | no reversal signal yet | "
+                        f"signal_score={signal_score}/10 rsi={rsi:.1f} "
+                        f"ema20={analysis['ema20']:.4f} ema50={analysis['ema50']:.4f}"
+                    )
 
         # Re-check entry (Allow immediate re-entry for aggressive mode)
         if not pos["position_open"]:
-            if check_buy_signal(analysis, candles):
+            if not check_buy_signal(analysis, candles):
+                # Throttled rejection log (~every 30 analysis cycles) so
+                # rejections are diagnosable instead of silent.
+                if analysis_count % 30 == 0:
+                    logger.info(
+                        f"[ENTRY REJECTED] mode={get_current_mode()} market={market_mode} | "
+                        f"signal_score={signal_score}/10 rsi={rsi:.1f} | "
+                        f"reason={getattr(state, 'last_rejection_reason', 'N/A')}"
+                    )
+            else:
                 entry_price = analysis["close"]
                 
                 # LPEM Filter (v3.7.2)
@@ -4927,8 +4787,9 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                 entry_price = analysis["close"]
                 tp, sl = calculate_targets(entry_price, candles)
                 
-                # Dynamic Score Calculation (Fix 10/10 issue)
-                score, reasons = calculate_signal_score(analysis, candles)
+                # Reuse the signal score (0–10) computed once at the top of
+                # the cycle — avoids computing it twice with different values.
+                score, reasons = signal_score, signal_reasons
 
                 # Update execution function to include targets
                 ai_engine.execute_trade_fn = lambda symbol, direction, amount: execute_paper_buy(entry_price, score, reasons, tp, sl)
@@ -4948,10 +4809,14 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                         logger.warning("Signal rejected — score None")
                         return
 
+                    # NOTE: `score` here is the bot signal score (0–10).
+                    # mode_params min_signal_score (0.4) is nominally on the
+                    # AI 0–1 scale, so on the 0–10 scale it acts as a very
+                    # lenient floor (any score >= 1 passes).
                     mode_params = get_mode_params()
                     min_score_required = mode_params.get("min_signal_score", 0.4)
                     if score < min_score_required:
-                        logger.info(f"Blocked by TradeMode score: {score} < {min_score_required}")
+                        logger.info(f"Blocked by TradeMode score: {score}/10 < {min_score_required}")
                         return
 
                     # Request trade via TradingEngine (SINGLE central engine).

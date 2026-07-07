@@ -145,6 +145,10 @@ class TradingLogicController:
             "sl_target": 0.25,
             "max_trade_duration": 3600,
             "cooldown_between_trades": 60,
+            # AI score scale (0–1). Compared against ai_score below.
+            # NOTE: main.py's bot signal score is a different 0–10 scale;
+            # where main.py compares that score to this value it enforces
+            # its own floor (see check_buy_signal FAST_SCALP branch).
             "min_signal_score": 0.4,
         }
         
