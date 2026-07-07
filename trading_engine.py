@@ -66,6 +66,10 @@ class TradingEngine:
         self.ai_filter = SimpleAIFilter()
         self.broker = broker
         self.telegram = telegram
+        # Optional pure accounting fn (entry, exit, size) -> dict with
+        # gross/fees/slippage/net. Set by main.py. View-only: does NOT
+        # affect exit decisions or engine state.
+        self.pnl_calculator = None
 
         self.current_trade_id = uuid.uuid4()
         self._trade_lock = asyncio.Lock()
@@ -438,13 +442,24 @@ class TradingEngine:
                 # 3. Notification (exactly once per close event)
                 pnl_pct = ((exit_price - entry_price) / entry_price * 100) if entry_price else 0.0
                 order_id = getattr(order, "id", None) if order else close_version
+                net_lines = ""
+                if self.pnl_calculator and entry_price:
+                    try:
+                        acct = self.pnl_calculator(entry_price, exit_price)
+                        net_lines = (
+                            f"\nالرسوم + الانزلاق: -{acct['fees_usdt'] + acct['slippage_usdt']:.2f} USDT"
+                            f"\nالصافي بعد الرسوم: {acct['net_pct']:+.2f}% | {acct['net_usdt']:+.2f} USDT"
+                        )
+                    except Exception as calc_err:
+                        logger.error(f"[CLOSE] Net PnL calc failed: {calc_err}")
                 msg = (
                     f"🔴 إغلاق صفقة\n\n"
                     f"الزوج: {symbol}\n"
                     f"السبب: {reason}\n"
                     f"سعر الدخول: {entry_price:.5f}\n"
                     f"سعر الخروج: {exit_price:.5f}\n"
-                    f"الربح/الخسارة: {pnl_pct:.2f}%"
+                    f"الربح/الخسارة (إجمالي): {pnl_pct:.2f}%"
+                    f"{net_lines}"
                 )
                 await self._notify_event(f"CLOSE:{symbol}:{order_id}:{close_version}", msg)
 

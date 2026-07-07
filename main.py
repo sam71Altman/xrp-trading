@@ -1453,6 +1453,43 @@ BACKTEST_DAYS = 30
 START_BALANCE = 1000.0
 FIXED_TRADE_SIZE = 100.0
 
+# ═══ Fees & Slippage Simulation (Paper Trading Accounting) ═══
+# Applied only to NET P&L accounting - exit decisions (TP/SL) and
+# Kill Switch remain on raw/gross values (unchanged behavior).
+FEE_RATE_PER_SIDE = 0.001        # 0.1% per side (Binance Spot taker)
+SLIPPAGE_RATE_PER_SIDE = 0.0002  # 0.02% per side
+
+
+def calculate_net_pnl(entry_price: float, exit_price: float,
+                      trade_size_usdt: float = FIXED_TRADE_SIZE) -> Dict:
+    """
+    Pure accounting function: gross PnL, fees, slippage cost, net PnL.
+    Does NOT touch any state. Exit logic / Kill Switch stay on gross.
+    """
+    if not entry_price or entry_price <= 0 or trade_size_usdt <= 0:
+        return {
+            'gross_usdt': 0.0, 'gross_pct': 0.0,
+            'fees_usdt': 0.0, 'slippage_usdt': 0.0,
+            'net_usdt': 0.0, 'net_pct': 0.0
+        }
+    qty = trade_size_usdt / entry_price
+    gross_usdt = (exit_price - entry_price) * qty
+    gross_pct = ((exit_price - entry_price) / entry_price) * 100
+    entry_notional = trade_size_usdt
+    exit_notional = exit_price * qty
+    fees_usdt = (entry_notional + exit_notional) * FEE_RATE_PER_SIDE
+    slippage_usdt = (entry_notional + exit_notional) * SLIPPAGE_RATE_PER_SIDE
+    net_usdt = gross_usdt - fees_usdt - slippage_usdt
+    net_pct = (net_usdt / trade_size_usdt) * 100
+    return {
+        'gross_usdt': gross_usdt, 'gross_pct': gross_pct,
+        'fees_usdt': fees_usdt, 'slippage_usdt': slippage_usdt,
+        'net_usdt': net_usdt, 'net_pct': net_pct
+    }
+
+# Wire accounting into the engine's close notification (view-only)
+execution_engine.pnl_calculator = calculate_net_pnl
+
 DATA_MATURITY_TRADES = 0
 LOSS_STREAK_LIMIT = 999 # Disabled
 DRAWDOWN_LIMIT_PERCENT = 5.0 # Keep only catastrophic kill switch
@@ -2119,22 +2156,44 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.edit_message_text("🏠 القائمة الرئيسية\n\nاستخدم الأوامر للتنقل.")
 
 
+PAPER_TRADES_HEADER = [
+    'timestamp', 'action', 'entry_price', 'exit_price',
+    'pnl_percent', 'pnl_usdt', 'balance_after', 'score',
+    'entry_reason', 'exit_reason', 'duration_minutes',
+    'kill_switch_triggered', 'kill_switch_reason', 'balance_peak',
+    'fees_usdt', 'slippage_usdt', 'net_pnl_usdt', 'net_pnl_percent'
+]
+
+
 def init_paper_trades_file():
     if not os.path.exists(PAPER_TRADES_FILE):
         with open(PAPER_TRADES_FILE, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.writer(f)
-            writer.writerow([
-                'timestamp', 'action', 'entry_price', 'exit_price',
-                'pnl_percent', 'pnl_usdt', 'balance_after', 'score',
-                'entry_reason', 'exit_reason', 'duration_minutes',
-                'kill_switch_triggered', 'kill_switch_reason', 'balance_peak'
-            ])
+            csv.writer(f).writerow(PAPER_TRADES_HEADER)
+        return
+    # Migrate old header (without fee columns) so new rows stay aligned.
+    # Old data rows keep fewer columns - readers treat missing fees as 0.
+    try:
+        with open(PAPER_TRADES_FILE, 'r', encoding='utf-8') as f:
+            first_line = f.readline().strip()
+        if first_line and 'fees_usdt' not in first_line and first_line.startswith('timestamp'):
+            with open(PAPER_TRADES_FILE, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+            lines[0] = ','.join(PAPER_TRADES_HEADER) + '\n'
+            with open(PAPER_TRADES_FILE, 'w', encoding='utf-8') as f:
+                f.writelines(lines)
+            logger.info("[CSV] paper_trades.csv header migrated to include fee columns")
+    except Exception as e:
+        logger.error(f"[CSV] Header migration failed: {e}")
 
 def log_paper_trade(action: str, entry_price: float, exit_price: Optional[float],
                     pnl_pct: Optional[float], pnl_usdt: Optional[float],
                     balance_after: float, score: int, entry_reason: str,
                     exit_reason: str, duration_min: int,
-                    ks_triggered: bool = False, ks_reason: str = ""):
+                    ks_triggered: bool = False, ks_reason: str = "",
+                    fees_usdt: Optional[float] = None,
+                    slippage_usdt: Optional[float] = None,
+                    net_pnl_usdt: Optional[float] = None,
+                    net_pnl_pct: Optional[float] = None):
     init_paper_trades_file()
     with open(PAPER_TRADES_FILE, 'a', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
@@ -2152,7 +2211,11 @@ def log_paper_trade(action: str, entry_price: float, exit_price: Optional[float]
             duration_min,
             str(ks_triggered),
             ks_reason,
-            f"{paper_state.peak_balance:.2f}"
+            f"{paper_state.peak_balance:.2f}",
+            f"{fees_usdt:.4f}" if fees_usdt is not None else "",
+            f"{slippage_usdt:.4f}" if slippage_usdt is not None else "",
+            f"{net_pnl_usdt:.4f}" if net_pnl_usdt is not None else "",
+            f"{net_pnl_pct:.4f}" if net_pnl_pct is not None else ""
         ])
 
 
@@ -2166,11 +2229,18 @@ def get_closed_trades() -> List[Dict]:
         for row in reader:
             if row.get('action') == 'EXIT' and row.get('pnl_usdt'):
                 try:
+                    fees = float(row['fees_usdt']) if row.get('fees_usdt') else 0.0
+                    slippage = float(row['slippage_usdt']) if row.get('slippage_usdt') else 0.0
+                    gross = float(row['pnl_usdt'])
+                    net = float(row['net_pnl_usdt']) if row.get('net_pnl_usdt') else gross
                     trades.append({
                         'timestamp': row.get('timestamp', ''),
-                        'pnl_usdt': float(row['pnl_usdt']),
+                        'pnl_usdt': gross,
                         'pnl_percent': float(row.get('pnl_percent', 0)),
-                        'result': 'WIN' if float(row['pnl_usdt']) >= 0 else 'LOSS'
+                        'fees_usdt': fees,
+                        'slippage_usdt': slippage,
+                        'net_pnl_usdt': net,
+                        'result': 'WIN' if gross >= 0 else 'LOSS'
     })
                 except:
                     pass
@@ -2216,6 +2286,9 @@ def get_paper_stats() -> Dict:
         'losses': 0,
         'win_rate': 0.0,
         'total_pnl': 0.0,
+        'total_fees': 0.0,
+        'total_slippage': 0.0,
+        'net_pnl': 0.0,
         'balance': paper_state.balance,
         'peak_balance': paper_state.peak_balance,
         'drawdown': 0.0,
@@ -2226,6 +2299,9 @@ def get_paper_stats() -> Dict:
     for trade in closed:
         stats['total'] += 1
         stats['total_pnl'] += trade['pnl_usdt']
+        stats['total_fees'] += trade.get('fees_usdt', 0.0)
+        stats['total_slippage'] += trade.get('slippage_usdt', 0.0)
+        stats['net_pnl'] += trade.get('net_pnl_usdt', trade['pnl_usdt'])
         if trade['result'] == 'WIN':
             stats['wins'] += 1
         else:
@@ -3070,14 +3146,21 @@ def finalize_trade(result, entry_price, exit_price, reason, score, duration_min)
     This function is kept for compatibility but only logs - actual closing is via engine.
     """
     logger.debug("[DEPRECATED] finalize_trade called - use TradingEngine.close_trade_atomically instead")
+    # Gross PnL (raw) - Kill Switch / exit decisions stay on these values
     pnl_usdt = (exit_price - entry_price) * paper_state.position_qty if paper_state.position_qty > 0 else 0
     pnl_pct = ((exit_price - entry_price) / entry_price) * 100 if entry_price > 0 else 0
-    paper_state.balance += pnl_usdt
+    # Fees & slippage accounting (net) - balance updates with NET
+    trade_size = entry_price * paper_state.position_qty if paper_state.position_qty > 0 else FIXED_TRADE_SIZE
+    acct = calculate_net_pnl(entry_price, exit_price, trade_size)
+    paper_state.balance += acct['net_usdt']
     paper_state.update_peak()
-    log_paper_trade("EXIT", entry_price, exit_price, pnl_pct, pnl_usdt, paper_state.balance, score, paper_state.entry_reason, reason, duration_min)
+    log_paper_trade("EXIT", entry_price, exit_price, pnl_pct, pnl_usdt,
+                    paper_state.balance, score, paper_state.entry_reason, reason, duration_min,
+                    fees_usdt=acct['fees_usdt'], slippage_usdt=acct['slippage_usdt'],
+                    net_pnl_usdt=acct['net_usdt'], net_pnl_pct=acct['net_pct'])
     log_trade("EXIT", reason, exit_price, pnl_pct)
     safety_core.active_trades = {"1m": 0, "5m": 0}
-    logger.info(f"[LIFECYCLE] Trade finalized: {reason} | PnL: {pnl_pct:.2f}%")
+    logger.info(f"[LIFECYCLE] Trade finalized: {reason} | Gross: {pnl_pct:.2f}% | Net: {acct['net_usdt']:+.2f} USDT (fees {acct['fees_usdt']:.2f} + slip {acct['slippage_usdt']:.2f})")
     return pnl_pct, pnl_usdt, paper_state.balance
 
 def execute_paper_exit(entry_price: float, exit_price: float, reason: str,
@@ -3383,7 +3466,9 @@ def format_balance_message() -> str:
         f"💵 الرصيد الحالي: {stats['balance']:.2f} USDT\n"
         f"📈 أعلى رصيد: {stats['peak_balance']:.2f} USDT\n"
         f"📉 أقصى تراجع: {stats['drawdown']:.2f}%\n"
-        f"📊 إجمالي الربح/الخسارة: {stats['total_pnl']:+.2f} USDT\n"
+        f"📊 الربح الإجمالي (قبل الرسوم): {stats['total_pnl']:+.2f} USDT\n"
+        f"💸 الرسوم + الانزلاق: -{stats['total_fees'] + stats['total_slippage']:.2f} USDT\n"
+        f"✅ الربح الصافي: {stats['net_pnl']:+.2f} USDT\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"رأس المال الابتدائي: {START_BALANCE} USDT"
     )
@@ -3412,6 +3497,11 @@ def format_stats_message() -> str:
         f"❌ الصفقات الخاسرة: {stats['losses']}\n"
         f"🎯 نسبة النجاح: {stats['win_rate']:.1f}%\n"
         f"🔥 سلسلة الخسائر: {stats['loss_streak']}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📊 الربح الإجمالي (قبل الرسوم): {stats['total_pnl']:+.2f} USDT\n"
+        f"💸 الرسوم المدفوعة: {stats['total_fees']:.2f} USDT\n"
+        f"📉 تكلفة الانزلاق: {stats['total_slippage']:.2f} USDT\n"
+        f"✅ الربح الصافي: {stats['net_pnl']:+.2f} USDT\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"Win Rate (آخر 10): {calculate_recent_win_rate():.1f}%"
     )
@@ -3453,6 +3543,7 @@ def format_buy_message(price: float, tp: float, sl: float, tf: str, score: int, 
 
 def format_exit_message(entry: float, exit_price: float, pnl_pct: float,
                         pnl_usdt: float, reason: str, duration: int, balance: float) -> str:
+    acct = calculate_net_pnl(entry, exit_price, FIXED_TRADE_SIZE)
     emoji = "🟢" if pnl_usdt >= 0 else "🔴"
     reason_text = {
         "tp": "Take Profit ✅",
@@ -3471,8 +3562,9 @@ def format_exit_message(entry: float, exit_price: float, pnl_pct: float,
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"💹 سعر الدخول: {entry:.4f}\n"
         f"💹 سعر الخروج: {exit_price:.4f}\n"
-        f"📈 النتيجة: {pnl_pct:+.2f}%\n"
-        f"💵 الربح/الخسارة: {pnl_usdt:+.2f} USDT\n"
+        f"📈 النتيجة (إجمالي): {pnl_pct:+.2f}% | {pnl_usdt:+.2f} USDT\n"
+        f"💸 الرسوم + الانزلاق: -{acct['fees_usdt'] + acct['slippage_usdt']:.2f} USDT\n"
+        f"✅ الصافي بعد الرسوم: {acct['net_pct']:+.2f}% | {acct['net_usdt']:+.2f} USDT\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"💰 الرصيد: {balance:.2f} USDT\n"
         f"⏱ المدة: {duration} دقيقة\n"
