@@ -2685,8 +2685,8 @@ def log_hold_status(current_price: float, market_mode: str):
     if "error" in analysis:
         return False
     
-    # Kill Switch Check (Disabled for Aggressive)
-    if kill_switch.active and state.mode != "DEFAULT":
+    # Kill Switch Check (applies in DEFAULT smart mode; bypassed in FAST_SCALP/BOUNCE)
+    if kill_switch.active and state.mode == "DEFAULT":
         return False
     
     current_close = analysis["close"]
@@ -2777,8 +2777,8 @@ def check_sell_signal(analysis: dict, candles: List[dict]) -> bool:
     if "error" in analysis:
         return False
     
-    # Kill Switch Check (Disabled for Aggressive)
-    if kill_switch.active and state.mode != "DEFAULT":
+    # Kill Switch Check (applies in DEFAULT smart mode; bypassed in FAST_SCALP/BOUNCE)
+    if kill_switch.active and state.mode == "DEFAULT":
         return False
         
     current_close = analysis["close"]
@@ -3290,10 +3290,10 @@ def get_confirm_keyboard():
 
 
 def format_welcome_message() -> str:
-    is_aggressive = state.mode == "DEFAULT"
-    mode_line = "🔥 نمط المضاربة العنيف: مفعّل (Aggressive Mode)" if is_aggressive else f"⚙️ الوضع الحالي: {TradeMode.DISPLAY_NAMES.get(state.mode, state.mode)}"
+    is_aggressive = state.mode != "DEFAULT"
+    mode_line = f"⚙️ الوضع الحالي: {TradeMode.DISPLAY_NAMES.get(state.mode, state.mode)}"
     if is_aggressive:
-        ks_line = "🛡️ نظام Kill Switch: ⚠️ معطل (Aggressive Mode)"
+        ks_line = "🛡️ نظام Kill Switch: ⚠️ معطل (وضع عنيف - متعمد)"
     elif kill_switch.active:
         ks_line = f"🛡️ نظام Kill Switch: 🛑 أوقف التداول - {kill_switch.reason}"
     else:
@@ -3312,8 +3312,8 @@ def format_welcome_message() -> str:
 
 def format_status_message() -> str:
     status = "🟢 يعمل" if state.signals_enabled else "⏸️ متوقف"
-    if state.mode == "DEFAULT":
-        ks_status = "⚠️ معطل (Aggressive Mode)"
+    if state.mode != "DEFAULT":
+        ks_status = "⚠️ معطل (وضع عنيف - متعمد)"
     elif kill_switch.active:
         ks_status = f"🛑 أوقف التداول - {kill_switch.reason}"
     else:
@@ -4075,8 +4075,8 @@ async def cmd_diagnostic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # حالة التداول
     signals = "✅ مفعّلة" if state.signals_enabled else "🛑 موقوفة"
-    if state.mode == "DEFAULT":
-        ks_status = "⚠️ معطل (Aggressive Mode)"
+    if state.mode != "DEFAULT":
+        ks_status = "⚠️ معطل (وضع عنيف - متعمد)"
     elif kill_switch.active:
         ks_status = "🛑 أوقف التداول"
     else:
@@ -4168,8 +4168,11 @@ async def cmd_diagnostic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # الخلاصة الذكية
     summary = ""
-    if kill_switch.active or not state.signals_enabled or ks_block:
-        reason = kill_switch.reason if kill_switch.active else (ks_block if ks_block else "إيقاف يدوي")
+    ks_blocking = state.mode == "DEFAULT" and (kill_switch.active or bool(ks_block))
+    if not state.signals_enabled:
+        summary = "🛑 التداول موقوف حاليًا بسبب: إيقاف يدوي"
+    elif ks_blocking:
+        reason = kill_switch.reason if kill_switch.active else ks_block
         summary = f"🛑 التداول موقوف حاليًا بسبب: {reason}"
     elif score >= MIN_SIGNAL_SCORE:
         summary = "✅ البوت جاهز وسيدخل عند تحقق الشروط"
@@ -4575,8 +4578,8 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
             if should_notify(f"RESUME:{int(time.time() // _CLOSE_NOTIFICATION_COOLDOWN)}"):
                 await bot.send_message(chat_id=chat_id, text="✅ تم استئناف التداول تلقائياً", parse_mode="Markdown")
         
-        # Disable Kill Switch check for Aggressive Mode
-        if not state.signals_enabled or (kill_switch.active and state.mode != "DEFAULT"):
+        # Kill Switch gate: blocks new trades in DEFAULT smart mode only (bypassed in FAST_SCALP/BOUNCE)
+        if not state.signals_enabled or (kill_switch.active and state.mode == "DEFAULT"):
             return
         
         # Disable Cooldown for Aggressive Mode
@@ -4720,9 +4723,9 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
         # LPEM Invalidation Check (v3.7.2)
         check_lpem_invalidation(current_price, analysis)
         
-        # Disable Kill Switch evaluation for Aggressive Mode
+        # Kill Switch evaluation: only in DEFAULT smart mode (bypassed in FAST_SCALP/BOUNCE)
         pos = execution_engine.get_position_state()
-        if state.mode != "DEFAULT":
+        if state.mode == "DEFAULT":
             ks_reason = evaluate_kill_switch()
             if ks_reason and not pos["position_open"]:
                 kill_switch.activate(ks_reason)
