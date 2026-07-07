@@ -1334,9 +1334,8 @@ def log_hold_status():
     └── Daily Loss: {state.daily_cumulative_loss:.2f}%
     """)
 
-import websocket
 from version import BOT_VERSION
-from price_engine import PriceEngine, TradingGuard, TelegramReporter, FailSafeSystem, ValidationChecks
+from price_engine import PriceEngine, TradingGuard, FailSafeSystem
 from datetime import datetime, timezone, timedelta
 try:
     from zoneinfo import ZoneInfo
@@ -4261,115 +4260,6 @@ async def check_downtrend_alerts(bot: Bot, chat_id: str, analysis: dict, candles
         if await send_signal_message(bot, chat_id, msg, "downtrend_alert"):
             state.last_downtrend_alert_time = now
 
-
-# Real-time Price Engine (v3.8)
-import price_engine as _pe
-
-class PriceEngine:
-    last_price: Optional[float] = None
-    last_update_time: float = 0
-    latency_ms: float = 0
-    is_connected: bool = False
-    
-    @classmethod
-    def update_price(cls, price: float):
-        cls.last_price = price
-        cls.last_update_time = time.time()
-        cls.is_connected = True
-        # CRITICAL: mirror into price_engine.PriceEngine as well.
-        # trading_engine's TradingGuard.enforce_guard("TRADE") reads
-        # price_engine.PriceEngine.last_price — this local class shadows the
-        # imported one, so without mirroring that stays None forever and
-        # EVERY trade is blocked with "Waiting for price data for TRADE".
-        _pe.PriceEngine.last_price = price
-        _pe.PriceEngine.last_update_time = cls.last_update_time
-
-    @classmethod
-    def on_message(cls, ws, message):
-        try:
-            data = json.loads(message)
-            if 'p' in data:
-                price = float(data['p'])
-                cls.update_price(price)
-                if 'E' in data:
-                    cls.latency_ms = (time.time() * 1000) - data['E']
-        except Exception as e:
-            logger.error(f"PriceEngine error: {e}")
-
-    @classmethod
-    def on_error(cls, ws, error):
-        logger.error(f"WebSocket Error: {error}")
-        cls.is_connected = False
-        FailSafeSystem.on_websocket_disconnect()
-
-    @classmethod
-    def on_close(cls, ws, close_status_code, close_msg):
-        logger.warning("WebSocket Closed")
-        cls.is_connected = False
-        FailSafeSystem.on_websocket_disconnect()
-
-    @classmethod
-    def start(cls):
-        def run():
-            while True:
-                try:
-                    ws_url = "wss://stream.binance.com:9443/ws/xrpusdt@aggTrade"
-                    ws = websocket.WebSocketApp(
-                        ws_url,
-                        on_message=cls.on_message,
-                        on_error=cls.on_error,
-                        on_close=cls.on_close
-                    )
-                    ws.run_forever()
-                except Exception as e:
-                    logger.error(f"WebSocket restart error: {e}")
-                time.sleep(5)
-        
-        thread = threading.Thread(target=run, daemon=True)
-        thread.start()
-
-class TradingGuard:
-    BLOCK_ALL_TRADING = False
-    BLOCK_REASON = ""
-    MAX_LATENCY_MS = 500
-
-    @classmethod
-    def enforce_guard(cls, operation_type: str) -> bool:
-        if cls.BLOCK_ALL_TRADING:
-            logger.warning(f"Guard Blocked {operation_type}: {cls.BLOCK_REASON}")
-            return False
-            
-        if PriceEngine.last_price is None:
-            logger.warning(f"Guard Blocked {operation_type}: No price data")
-            return False
-            
-        if (time.time() - PriceEngine.last_update_time) > 2:
-            logger.warning(f"Guard Blocked {operation_type}: Stale price (>2s)")
-            return False
-            
-        if PriceEngine.latency_ms > cls.MAX_LATENCY_MS:
-            logger.warning(f"Guard Blocked {operation_type}: High latency ({PriceEngine.latency_ms:.0f}ms)")
-            return False
-            
-        return True
-
-class FailSafeSystem:
-    @staticmethod
-    def on_websocket_disconnect():
-        TradingGuard.BLOCK_ALL_TRADING = True
-        TradingGuard.BLOCK_REASON = "WebSocket disconnected"
-        logger.critical("FAILSAFE: Trading Blocked due to connection loss")
-
-    @staticmethod
-    def on_websocket_connect():
-        TradingGuard.BLOCK_ALL_TRADING = False
-        TradingGuard.BLOCK_REASON = ""
-        logger.info("FAILSAFE: Trading Resumed")
-
-def execute_trade_operation(operation_type: str, logic_function, *args, **kwargs):
-    if not TradingGuard.enforce_guard(operation_type):
-        return None
-    return logic_function(*args, **kwargs)
 
 def get_binance_ticker():
     # Primary source is now PriceEngine
