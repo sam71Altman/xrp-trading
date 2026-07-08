@@ -175,7 +175,15 @@ Preferred communication style: Simple, everyday language.
 
 ### Paper Trading System
 - Virtual position tracking (one position at a time)
-- Fixed trade size: 100 USDT from 1000 USDT starting balance
+- **Full-balance compounding (v4.8)**: every BUY (all modes: DEFAULT / FAST_SCALP / BOUNCE)
+  uses the ENTIRE current paper balance as trade size (qty = balance ÷ entry price).
+  Actual size is stored per-position (`paper_state.position_size_usdt`) at every entry
+  path and drives all fee/slippage/net accounting on close; cleared on close.
+  `FIXED_TRADE_SIZE=100` remains only as a last-resort accounting fallback.
+- Minimum balance to open a NEW trade: 10 USDT (`MIN_TRADE_BALANCE`) — entries below
+  this are blocked with a log + one Telegram alert/hour; closing is never affected.
+- Starting balance: 1000 USDT; restart restores balance as START + Σ net PnL of real
+  EXIT rows (test trades excluded) — identical math to live compounding
 - Take profit: 0.40%, Stop loss: 0.30%
 - Trailing stop trigger at 0.25%
 

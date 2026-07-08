@@ -643,7 +643,10 @@ async def quick_scalp_down_execute_trade(bot, chat_id, entry_price, candles):
     OPEN trade via TradingEngine ONLY.
     No local state modification allowed.
     """
-    amount = round(FIXED_TRADE_SIZE / entry_price, 2) if entry_price > 0 else 0
+    # v4.8: full-balance sizing — qty = ENTIRE current balance / entry price
+    if not entry_balance_ok():
+        return False
+    amount = round(paper_state.balance / entry_price, 2) if entry_price > 0 else 0
     # OPEN is fully executed (broker call + state update + single
     # notification) inside check_and_execute_trade() itself.
     # Do NOT also call request_trade({"type": "OPEN", ...}) here -
@@ -1534,7 +1537,15 @@ KLINE_LIMIT = 200
 BACKTEST_DAYS = 30
 
 START_BALANCE = 1000.0
+# Legacy fixed size — kept ONLY as a last-resort accounting fallback when a
+# position's actual size is unknown (should not happen in normal operation).
 FIXED_TRADE_SIZE = 100.0
+# v4.8: FULL-BALANCE COMPOUNDING — every BUY uses the ENTIRE current paper
+# balance as the trade size (qty = balance / entry_price). Profits compound;
+# losses shrink the next trade automatically.
+# Minimum balance required to open a NEW trade (blocks entries below this
+# with a clear log + one Telegram alert instead of failing silently).
+MIN_TRADE_BALANCE = 10.0
 
 # ═══ Fees & Slippage Simulation (Paper Trading Accounting) ═══
 # Applied only to NET P&L accounting - exit decisions (TP/SL) and
@@ -1581,8 +1592,26 @@ def calculate_net_pnl(entry_price: float, exit_price: float,
         'net_usdt': net_usdt, 'net_pct': net_pct
     }
 
+def get_open_position_size_usdt(entry_price: float = 0.0) -> float:
+    """
+    Actual USDT size of the CURRENT open position (v4.8 dynamic sizing).
+    Priority: stored size at entry → qty × entry price → legacy fixed size.
+    """
+    size = getattr(paper_state, "position_size_usdt", 0.0)
+    if size and size > 0:
+        return size
+    if paper_state.position_qty > 0 and entry_price and entry_price > 0:
+        return entry_price * paper_state.position_qty
+    return FIXED_TRADE_SIZE
+
+
+def _engine_net_pnl(entry_price: float, exit_price: float) -> Dict:
+    """Engine close-notification accounting: uses the ACTUAL position size."""
+    return calculate_net_pnl(entry_price, exit_price,
+                             get_open_position_size_usdt(entry_price))
+
 # Wire accounting into the engine's close notification (view-only)
-execution_engine.pnl_calculator = calculate_net_pnl
+execution_engine.pnl_calculator = _engine_net_pnl
 
 DATA_MATURITY_TRADES = 0
 LOSS_STREAK_LIMIT = 999 # Disabled
@@ -1680,6 +1709,10 @@ class PaperTradingState:
         self.balance: float = START_BALANCE
         self.peak_balance: float = START_BALANCE
         self.position_qty: float = 0.0
+        # v4.8: actual USDT size of the open position (full balance at entry)
+        self.position_size_usdt: float = 0.0
+        # Size of the most recently CLOSED trade (for post-close displays)
+        self.last_trade_size_usdt: float = 0.0
         self.entry_reason: str = ""
         self.loss_streak: int = 0
         self.load_balance()
@@ -1725,6 +1758,8 @@ class PaperTradingState:
         self.balance = START_BALANCE
         self.peak_balance = START_BALANCE
         self.position_qty = 0.0
+        self.position_size_usdt = 0.0
+        self.last_trade_size_usdt = 0.0
         self.entry_reason = ""
         self.loss_streak = 0
         if os.path.exists(PAPER_TRADES_FILE):
@@ -1733,6 +1768,34 @@ class PaperTradingState:
         kill_switch.deactivate()
 
 paper_state = PaperTradingState()
+
+
+def entry_balance_ok() -> bool:
+    """
+    v4.8 minimum-balance gate for NEW entries (all modes).
+    Returns False (and alerts once per hour) when the paper balance has
+    dropped below MIN_TRADE_BALANCE. Never affects closing positions.
+    """
+    if paper_state.balance >= MIN_TRADE_BALANCE:
+        return True
+    logger.warning(
+        f"[ENTRY BLOCKED] الرصيد الحالي {paper_state.balance:.2f} USDT أقل من "
+        f"الحد الأدنى {MIN_TRADE_BALANCE:.0f} USDT — لن يتم فتح صفقات جديدة"
+    )
+    if execution_engine.telegram and should_notify("MIN_BALANCE_BLOCK", cooldown=3600.0):
+        msg = (
+            "🛑 *إيقاف الدخول — الرصيد أقل من الحد الأدنى*\n"
+            f"💰 الرصيد الحالي: {paper_state.balance:.2f} USDT\n"
+            f"📉 الحد الأدنى المطلوب: {MIN_TRADE_BALANCE:.0f} USDT\n"
+            "لن يفتح البوت صفقات جديدة حتى يرتفع الرصيد فوق الحد الأدنى."
+        )
+        try:
+            asyncio.get_running_loop().create_task(execution_engine.telegram.send(msg))
+        except RuntimeError:
+            logger.warning("[MIN_BALANCE] No running event loop - Telegram alert skipped")
+        except Exception:
+            logger.exception("[MIN_BALANCE] Failed to schedule Telegram alert")
+    return False
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -3223,13 +3286,16 @@ def execute_paper_buy(price: float, score: int, reasons: List[str], tp: float, s
     This function is kept for compatibility with AI engine callback but delegates to engine.
     """
     logger.debug("[DEPRECATED] execute_paper_buy called - trades now go through TradingEngine")
-    trade_size_usdt = 100.0
-    if trade_size_usdt <= 0 or paper_state.balance < trade_size_usdt:
+    # v4.8: full-balance sizing — the ENTIRE current balance is the trade size
+    trade_size_usdt = paper_state.balance
+    if trade_size_usdt < MIN_TRADE_BALANCE:
+        logger.warning(f"[ENTRY BLOCKED] Balance {trade_size_usdt:.2f} USDT < minimum {MIN_TRADE_BALANCE} USDT")
         return 0.0
     qty = trade_size_usdt / price
     if qty <= 0:
         return 0.0
     paper_state.position_qty = qty
+    paper_state.position_size_usdt = trade_size_usdt
     paper_state.entry_reason = ", ".join(reasons)
     log_paper_trade("BUY", price, None, None, None, paper_state.balance, score, paper_state.entry_reason, "", 0)
     logger.info(f"[TRADE_EXEC] Buy executed at {price}, qty={qty}")
@@ -3300,10 +3366,13 @@ def finalize_trade(result, entry_price, exit_price, reason, score, duration_min)
     """
     logger.debug("[DEPRECATED] finalize_trade called - use TradingEngine.close_trade_atomically instead")
     # Gross PnL (raw) - Kill Switch / exit decisions stay on these values
-    pnl_usdt = (exit_price - entry_price) * paper_state.position_qty if paper_state.position_qty > 0 else 0
+    # v4.8: actual size stored at entry (full balance) drives ALL accounting
+    trade_size = get_open_position_size_usdt(entry_price)
+    qty = (paper_state.position_qty if paper_state.position_qty > 0
+           else (trade_size / entry_price if entry_price > 0 else 0.0))
+    pnl_usdt = (exit_price - entry_price) * qty if qty > 0 else 0
     pnl_pct = ((exit_price - entry_price) / entry_price) * 100 if entry_price > 0 else 0
     # Fees & slippage accounting (net) - balance updates with NET
-    trade_size = entry_price * paper_state.position_qty if paper_state.position_qty > 0 else FIXED_TRADE_SIZE
     acct = calculate_net_pnl(entry_price, exit_price, trade_size)
     # Synthetic test/verification trades are recorded in the CSV (audit)
     # but must NOT move the paper balance or peak (they'd skew stats,
@@ -3324,6 +3393,11 @@ def finalize_trade(result, entry_price, exit_price, reason, score, duration_min)
                     fees_usdt=acct['fees_usdt'], slippage_usdt=acct['slippage_usdt'],
                     net_pnl_usdt=acct['net_usdt'], net_pnl_pct=acct['net_pct'])
     log_trade("EXIT", reason, exit_price, pnl_pct)
+    # v4.8: remember the size of the trade we just closed (for displays),
+    # then clear per-position sizing so it can NEVER leak into the next trade.
+    paper_state.last_trade_size_usdt = trade_size
+    paper_state.position_qty = 0.0
+    paper_state.position_size_usdt = 0.0
     safety_core.active_trades = {"1m": 0, "5m": 0}
     # v3.7.5 Hold Logic: hold_active must not leak into the next trade.
     # Without this reset, every trade after the first bounce entry would
@@ -3776,7 +3850,7 @@ def format_rules_message() -> str:
     return (
         f"⚖️ *قواعد التداول {BOT_VERSION}*\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🔹 حجم الصفقة: {FIXED_TRADE_SIZE} USDT\n"
+        f"🔹 حجم الصفقة: كامل الرصيد الحالي ({paper_state.balance:.2f} USDT)\n"
         f"🔹 محفز الربح (Trigger): {TAKE_PROFIT_PCT}%\n"
         f"🔹 وقف الخسارة: {STOP_LOSS_PCT}%\n"
         f"🔹 تأمين الصفقة: رفع SL لـ +0.1%\n"
@@ -3800,7 +3874,7 @@ def format_buy_message(price: float, tp: float, sl: float, tf: str, score: int, 
         f"🛑 الوقف (SL): {sl:.4f}\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"📦 الكمية: {qty:.2f} XRP\n"
-        f"💵 القيمة: {FIXED_TRADE_SIZE:.0f} USDT\n"
+        f"💵 القيمة: {price * qty:.2f} USDT\n"
         f"⭐ Score: {score}/10\n"
         f"━━━━━━━━━━━━━━━━━━━━━"
     )
@@ -3808,7 +3882,11 @@ def format_buy_message(price: float, tp: float, sl: float, tf: str, score: int, 
 
 def format_exit_message(entry: float, exit_price: float, pnl_pct: float,
                         pnl_usdt: float, reason: str, duration: int, balance: float) -> str:
-    acct = calculate_net_pnl(entry, exit_price, FIXED_TRADE_SIZE)
+    # v4.8: use the ACTUAL size of the trade that was just closed
+    trade_size = (paper_state.last_trade_size_usdt
+                  if paper_state.last_trade_size_usdt > 0
+                  else get_open_position_size_usdt(entry))
+    acct = calculate_net_pnl(entry, exit_price, trade_size)
     emoji = "🟢" if pnl_usdt >= 0 else "🔴"
     reason_text = {
         "tp": "Take Profit ✅",
@@ -4514,6 +4592,9 @@ async def cmd_diagnostic(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _entry = _pos.get("entry_price", 0)
         entry_price_str = f"{_entry:.4f}" if _entry else "None"
         msg += f"• سعر الدخول: {entry_price_str}\n"
+        msg += f"• حجم الصفقة: {get_open_position_size_usdt(_entry or 0.0):.2f} USDT (كامل الرصيد عند الدخول)\n"
+    elif not is_open:
+        msg += f"• حجم الصفقة القادمة: {paper_state.balance:.2f} USDT (كامل الرصيد)\n"
     msg += f"• عدد الصفقات: {len(closed_trades)}\n\n"
     
     # Downtrend Alerts
@@ -5202,12 +5283,20 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                         entry_reason_code = "TREND_ENTRY"
                         entry_reason_display = f"اتجاه صاعد (سكور {signal_score}/10)"
 
+                    # v4.8: minimum-balance gate — block new entries (with a
+                    # clear alert) instead of failing silently on tiny balances.
+                    if not entry_balance_ok():
+                        return
+
                     # Request trade via TradingEngine (SINGLE central engine).
                     # check_and_execute_trade() fully executes the order,
                     # updates engine position state, and sends the ONE
                     # "دخول صفقة" notification internally - nothing else
                     # in this codebase is allowed to duplicate that.
-                    qty = round(FIXED_TRADE_SIZE / entry_price, 2)
+                    # v4.8: FULL-BALANCE sizing — the entire current paper
+                    # balance is the trade size (compounding).
+                    trade_size_usdt = paper_state.balance
+                    qty = round(trade_size_usdt / entry_price, 2)
                     strategy_signal_valid = True # Strategy logic already passed to reach here
                     result = await execution_engine.check_and_execute_trade(
                         symbol=SYMBOL,
@@ -5222,6 +5311,19 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                         if result.decision != TradeDecision.BLOCKED_COOLDOWN:
                             reset_position_state()
                         return
+
+                    # v4.8: record the ACTUAL position size for accounting.
+                    # finalize_trade / engine close notifications read these —
+                    # without them the close would fall back to the legacy
+                    # fixed 100 USDT size.
+                    fill_price = (execution_engine.get_position_state().get("entry_price")
+                                  or entry_price)
+                    paper_state.position_qty = (trade_size_usdt / fill_price
+                                                if fill_price > 0 else 0.0)
+                    paper_state.position_size_usdt = trade_size_usdt
+                    paper_state.entry_reason = entry_reason_code
+                    logger.info(f"[SIZING] Full-balance entry: {trade_size_usdt:.2f} USDT "
+                                f"@ {fill_price:.4f} → qty={paper_state.position_qty:.2f}")
 
                     # Update non-position state for compatibility
                     state.entry_time = get_now()
