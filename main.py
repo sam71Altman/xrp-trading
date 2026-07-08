@@ -12,6 +12,7 @@ import logging
 import time
 import threading
 import json
+import math
 import sys
 import subprocess
 
@@ -169,62 +170,10 @@ class AuditTrail:
                 await self.flush()
         self._flush_task = asyncio.create_task(flush_loop())
 
-class CircuitBreakerLogic:
-    def __init__(self):
-        self.emergency_stop = False
-    def is_blocked(self):
-        return self.emergency_stop, "Emergency Stop" if self.emergency_stop else ""
-    def record_trade(self, pnl):
-        pass
-
-circuit_breaker_logic = CircuitBreakerLogic()
-
-class StateGuard:
-    """Phase 11 & 12: Real-time state guard with dual failsafe"""
-    def __init__(self):
-        self._lock = asyncio.Lock()
-        self.is_active = True
-        self.is_backup = False
-        self.last_check: float = time.time()
-        self.mismatch_count: int = 0
-        self.max_mismatches: int = 3
-        self.emergency_halt: bool = False
-        self.halt_reason: str = ""
-    
-    async def verify_state_consistency(self, engine_state: Dict, ui_state: Dict, db_state: Dict) -> bool:
-        async with self._lock:
-            self.last_check = time.time()
-            position_match = engine_state.get("position_open") == ui_state.get("position_open") == db_state.get("position_open", engine_state.get("position_open"))
-            price_tolerance = 0.001
-            engine_price = engine_state.get("entry_price", 0) or 0
-            ui_price = ui_state.get("entry_price", 0) or 0
-            price_match = abs(engine_price - ui_price) < price_tolerance if engine_price and ui_price else True
-            
-            if not position_match or not price_match:
-                self.mismatch_count += 1
-                logging.getLogger(__name__).warning(f"[STATE_GUARD] Mismatch #{self.mismatch_count}: pos={position_match}, price={price_match}")
-                if self.mismatch_count >= self.max_mismatches:
-                    await self._trigger_emergency_halt("State consistency failure")
-                    return False
-            else:
-                self.mismatch_count = 0
-            return True
-    
-    async def _trigger_emergency_halt(self, reason: str):
-        self.emergency_halt = True
-        self.halt_reason = reason
-        logging.getLogger(__name__).critical(f"[STATE_GUARD] EMERGENCY HALT: {reason}")
-    
-    async def is_healthy(self) -> bool:
-        async with self._lock:
-            return not self.emergency_halt and self.is_active
-    
-    async def resume(self):
-        async with self._lock:
-            self.emergency_halt = False
-            self.halt_reason = ""
-            self.mismatch_count = 0
-            logging.getLogger(__name__).info("[STATE_GUARD] Resumed from halt")
+# NOTE (v4.7 cleanup): The old CircuitBreakerLogic stub (always-pass,
+# never-tripping) and the unused StateGuard class were removed. Real
+# protection lives in: TradingEngine's CircuitBreaker + RateLimiter,
+# the Kill Switch (DEFAULT mode), and the global DailyLossLimiter.
 
 # ═══════════════════════════════════════════════════════════════════
 # CENTRAL NOTIFICATION DEDUP GATE
@@ -712,6 +661,14 @@ async def quick_scalp_down_execute_trade(bot, chat_id, entry_price, candles):
         # and a BUY row in paper_trades.csv (same as the DEFAULT path).
         pos = execution_engine.get_position_state()
         fill_price = pos.get("entry_price") or entry_price
+        # Dynamic ATR targets (fee-covering floors: TP>=0.48%, R/R>=1.5)
+        tp_pct_dyn, sl_pct_dyn = get_dynamic_targets("FAST_DOWN", candles, fill_price)
+        state.current_tp_pct = tp_pct_dyn
+        state.current_sl_pct = sl_pct_dyn
+        state.current_sl = fill_price * (1 - sl_pct_dyn / 100)
+        execution_engine.active_tp_pct = tp_pct_dyn
+        execution_engine.active_sl_pct = sl_pct_dyn
+        logger.info(f"[TARGETS] FAST_DOWN Dynamic: TP=+{tp_pct_dyn}% SL=-{sl_pct_dyn}%")
         execute_paper_buy(fill_price, getattr(state, "last_signal_score", 0),
                           ["FAST_DOWN entry"], 0.0, 0.0)
         state.entry_time = get_now()
@@ -876,6 +833,11 @@ class StrategyState:
 MAX_DESYNC = 3
 DESYNC_WINDOW = 60 * 60  # 60 minutes
 
+# v4.7: Real safe-mode gate (replaces the old CircuitBreakerLogic stub).
+# Set True by SafetyCore.enter_safe_mode(); checked in check_buy_signal.
+# Blocks NEW entries only — closing open positions is never affected.
+safe_mode_active = False
+
 class SafetyCore:
     def __init__(self):
         self.strategies = {
@@ -946,8 +908,12 @@ class SafetyCore:
             self.enter_safe_mode()
 
     def enter_safe_mode(self):
-        logger.warning("⚠️ ENTERING SAFE MODE - Blocking new trades")
-        circuit_breaker_logic.emergency_stop = True
+        # v4.7: old CircuitBreakerLogic stub removed. Safe mode is now a
+        # real module-level entry gate checked in check_buy_signal —
+        # blocks ALL new entries, never affects closing open positions.
+        global safe_mode_active
+        safe_mode_active = True
+        logger.warning("⚠️ ENTERING SAFE MODE - Blocking new trades (all modes)")
 
     def shutdown(self):
         logger.critical("🔥 SYSTEM SHUTDOWN INITIATED")
@@ -1184,12 +1150,72 @@ def guarded_ema_exit_fast_scalp(analysis, candles, trade_data):
 
     return False # BLOCK by default
 
+# ═══════════════════════════════════════════════════════════════════
+# HIGHER-TIMEFRAME TREND FILTER (v4.7 PROFESSIONAL)
+# 15m EMA20/EMA50 trend check, cached 5 minutes.
+# Blocks trend-following entries (DEFAULT easy-market, FAST_SCALP UP)
+# when the bigger picture is a downtrend. BOUNCE / dip-buy paths are
+# EXEMPT by design (they intentionally buy weakness).
+# ═══════════════════════════════════════════════════════════════════
+HTF_TREND_INTERVAL = "15m"
+HTF_TREND_CACHE_SECONDS = 300
+_htf_trend_cache = {"ts": 0.0, "downtrend": False, "valid": False}
+
+def is_higher_tf_downtrend() -> bool:
+    """
+    True when the 15m frame is in a downtrend (EMA20 < EMA50 AND price
+    below 15m EMA20). Uses a 5-minute cache to avoid hammering the API.
+    Fail-open with the last known value (up to 30 min old); if we never
+    had data, allow entries but log a warning.
+    """
+    now = time.time()
+    if now - _htf_trend_cache["ts"] < HTF_TREND_CACHE_SECONDS and _htf_trend_cache["valid"]:
+        return _htf_trend_cache["downtrend"]
+    try:
+        htf_candles = get_klines(SYMBOL, HTF_TREND_INTERVAL, limit=120)
+        if htf_candles and len(htf_candles) >= 60:
+            closes = [c['close'] for c in htf_candles]
+            ema20_vals = calculate_ema(closes, 20)
+            ema50_vals = calculate_ema(closes, 50)
+            if ema20_vals and ema50_vals:
+                ema20_htf = ema20_vals[-1]
+                ema50_htf = ema50_vals[-1]
+                price = closes[-1]
+                downtrend = (ema20_htf < ema50_htf) and (price < ema20_htf)
+                _htf_trend_cache.update({"ts": now, "downtrend": downtrend, "valid": True})
+                logger.info(f"[HTF FILTER] 15m trend: {'DOWN' if downtrend else 'OK'} "
+                            f"(price={price:.4f}, ema20={ema20_htf:.4f}, ema50={ema50_htf:.4f})")
+                return downtrend
+    except Exception as e:
+        logger.warning(f"[HTF FILTER] 15m fetch failed: {e}")
+    # Stale-cache fallback (up to 30 minutes)
+    if _htf_trend_cache["valid"] and now - _htf_trend_cache["ts"] < 1800:
+        return _htf_trend_cache["downtrend"]
+    logger.warning("[HTF FILTER] No 15m data available — allowing entry (fail-open)")
+    return False
+
+
 def check_buy_signal(analysis, candles):
     """
     منطق v3.7.5 المطور لفحص إشارة الشراء.
     يتكيف مع وضع التداول الحالي (Smart Trading System)
     """
     if not analysis or not candles:
+        return False
+    
+    # ═══ GLOBAL DAILY LOSS LIMIT (ALL MODES — no bypass) ═══
+    # Unlike the Kill Switch (DEFAULT-only), this gate applies to every
+    # mode including FAST_SCALP and BOUNCE. It only blocks NEW entries;
+    # closing open positions is never affected.
+    if daily_loss_limiter.is_blocked():
+        state.rejected_entries += 1
+        state.last_rejection_reason = "DAILY_LOSS_LIMIT"
+        return False
+    
+    # ═══ SAFE MODE gate (set by SafetyCore on severe failures) ═══
+    if safe_mode_active:
+        state.rejected_entries += 1
+        state.last_rejection_reason = "SAFE_MODE"
         return False
     
     # Get current mode and params (Smart Trading System)
@@ -1207,26 +1233,35 @@ def check_buy_signal(analysis, candles):
     
     market_mode = "EASY_MARKET" if (ema20 > ema50 and ema50 > ema200) else "HARD_MARKET"
     
-    # ⚡ FAST_SCALP Mode: Relaxed entry conditions
+    # ⚡ FAST_SCALP Mode: tightened entry conditions (v4.7)
     if current_trade_mode == "FAST_SCALP":
         # Backpressure Check v4.4
         if check_backpressure(state.timeframe):
             return False
 
-        # Circuit Breaker Check
-        blocked, reason = circuit_breaker_logic.is_blocked()
-        if blocked:
+        # Higher-timeframe filter: never scalp-long against a 15m downtrend
+        if is_higher_tf_downtrend():
             state.rejected_entries += 1
-            state.last_rejection_reason = f"CIRCUIT_BREAKER ({reason})"
+            state.last_rejection_reason = "HTF_DOWNTREND (15m)"
             return False
-            
-        # Fast scalp: minimal filtering, enter quickly.
-        # mode_params min_signal_score (0.4) is on the AI 0–1 scale; here we
-        # compare against the bot signal score (0–10), so force a floor of 1.
-        min_score = mode_params.get('min_signal_score', 1)
-        if min_score < 1: min_score = 1 # Force minimum score of 1 (0–10 scale)
+
+        # Tightened score floor (bot signal score, 0–10 scale):
+        # was >= 1 (nearly always true) → now >= 3 so entries need
+        # actual confluence, not a single weak indicator.
+        min_score = FAST_SCALP_MIN_SIGNAL_SCORE
+
+        # Volume filter (re-enabled v4.7): current candle volume must not
+        # be dead vs. the recent average — thin volume = noise moves that
+        # can't cover the 0.24% round-trip cost.
+        if mode_params.get('volume_filter', True) and len(candles) >= 21:
+            recent_vol = candles[-1].get('volume', 0)
+            avg_vol = sum(c.get('volume', 0) for c in candles[-21:-1]) / 20
+            if avg_vol > 0 and recent_vol < avg_vol * 0.8:
+                state.rejected_entries += 1
+                state.last_rejection_reason = f"FAST_SCALP (Low volume: {recent_vol:.0f} < 80% of avg {avg_vol:.0f})"
+                return False
         
-        # STRICT REQUIREMENT: Score must be >= 1 AND Price > EMA20
+        # STRICT REQUIREMENT: Score must be >= 3 AND Price > EMA20
         if score >= min_score and current_price > ema20:
             state.valid_entries += 1
             logger.info(f"[FAST_SCALP] Entry allowed: score={score}, price={current_price}")
@@ -1288,6 +1323,13 @@ def check_buy_signal(analysis, candles):
         return False
     
     # الدخول العادي في السوق السهل
+    # v4.7: Higher-timeframe filter — never trend-follow long on the 1m
+    # frame while the 15m frame is in a downtrend. (Bounce/dip-buy paths
+    # above are exempt by design — they intentionally buy weakness.)
+    if is_higher_tf_downtrend():
+        state.rejected_entries += 1
+        state.last_rejection_reason = "HTF_DOWNTREND (15m)"
+        return False
     return current_price > ema20 and score >= MIN_SIGNAL_SCORE
 
 def check_hold_exit_conditions(candles):
@@ -1391,8 +1433,15 @@ EMA_SHORT = 20
 EMA_LONG = 50
 BREAKOUT_CANDLES = 3  # AGGRESSIVE: 3 candles
 
-TAKE_PROFIT_PCT = 0.15  # AGGRESSIVE: 0.10% to 0.25%
-STOP_LOSS_PCT = 0.25    # AGGRESSIVE: 0.20% to 0.35%
+# ═══════════════════════════════════════════════════════════════════
+# TRADE ECONOMICS (v4.7 PROFESSIONAL) — static fallbacks.
+# Round-trip cost = 0.24% (fees 0.1%×2 + slippage 0.02%×2).
+# Rule: TP >= 2× round-trip cost (>= 0.48%) and TP/SL >= 1.5 (R/R).
+# Real per-trade targets are ATR-dynamic via get_dynamic_targets();
+# these constants are the safety fallback when no candles/ATR exist.
+# ═══════════════════════════════════════════════════════════════════
+TAKE_PROFIT_PCT = 0.50  # fallback TP % (>= MIN_TP_PCT, net-positive after 0.24% cost)
+STOP_LOSS_PCT = 0.33    # fallback SL % (R/R = 0.50/0.33 ≈ 1.5)
 TRAILING_TRIGGER_PCT = None # AGGRESSIVE: No trailing
 
 RANGE_FILTER_THRESHOLD = 0.0001 # Relaxed
@@ -1409,9 +1458,32 @@ MIN_WIN_RATE = 0.0
 POLL_INTERVAL_BASE = 1.0  # Base interval (fastest - for scalping)
 POLL_INTERVAL_DEFAULT = 5.0  # Default for non-scalping modes
 POLL_INTERVAL = 3  # Reduced frequency to prevent overload
+# ═══════════════════════════════════════════════════════════════════
+# 📏 SCORE SCALES — SINGLE SOURCE OF DOCUMENTATION
+# There are TWO different score scales in this codebase. Never mix them:
+#
+#   1) BOT SIGNAL SCORE (0–10, integer-ish)
+#      Produced by calculate_signal_score() once per cycle and stored in
+#      analysis['score']. Used by: check_buy_signal, check_bounce_entry,
+#      FAST_SCALP floor (FAST_SCALP_MIN_SIGNAL_SCORE), MIN_SIGNAL_SCORE,
+#      Telegram messages ("Score: X/10").
+#
+#   2) AI SCORE (0.0–1.0, float)
+#      Produced by ai_filter.calculate_score(). Used by: AI filter modes
+#      (OFF/LEARN/FULL), AI weight thresholds (0.3/0.6/1.0), and
+#      trade_modes min_signal_score (0.4 default).
+#
+# Pitfall: mode_params['min_signal_score'] (0.4) is on the AI 0–1 scale.
+# Anywhere it is compared against the BOT score (0–10) it acts as a
+# near-zero floor — code that needs a real 0–10 floor must use its own
+# constant (see FAST_SCALP_MIN_SIGNAL_SCORE below).
+# ═══════════════════════════════════════════════════════════════════
 # Compared against the bot signal score from calculate_signal_score() (0–10 scale).
 # NOT the AI score (0–1). Relaxed from 1 to allow trades.
 MIN_SIGNAL_SCORE = 0.4
+# FAST_SCALP entry floor on the BOT 0–10 scale (v4.7: tightened from 1 → 3
+# so scalp entries require real confluence, not a single weak indicator).
+FAST_SCALP_MIN_SIGNAL_SCORE = 3
 _signal_loop_cycle_counter = 0
 
 def get_mode_poll_interval() -> float:
@@ -1469,6 +1541,17 @@ FIXED_TRADE_SIZE = 100.0
 # Kill Switch remain on raw/gross values (unchanged behavior).
 FEE_RATE_PER_SIDE = 0.001        # 0.1% per side (Binance Spot taker)
 SLIPPAGE_RATE_PER_SIDE = 0.0002  # 0.02% per side
+
+# ═══ Trade Economics Rules (v4.7 PROFESSIONAL) ═══
+# Total round-trip cost as a % of position size: (0.1% + 0.02%) × 2 = 0.24%
+ROUND_TRIP_COST_PCT = (FEE_RATE_PER_SIDE + SLIPPAGE_RATE_PER_SIDE) * 2 * 100  # = 0.24
+# Any TP must cover the cost at least twice → gross TP >= 0.48%
+MIN_TP_PCT = round(ROUND_TRIP_COST_PCT * 2.0, 2)  # = 0.48
+# Minimum reward-to-risk ratio: TP% / SL% >= 1.5
+MIN_RISK_REWARD = 1.5
+# Global daily loss limit (NET, after fees) as % of day-start balance.
+# Applies to ALL modes — including modes that bypass the Kill Switch.
+DAILY_LOSS_LIMIT_PCT = 2.0
 
 
 def calculate_net_pnl(entry_price: float, exit_price: float,
@@ -1650,6 +1733,114 @@ class PaperTradingState:
         kill_switch.deactivate()
 
 paper_state = PaperTradingState()
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 🛑 GLOBAL DAILY LOSS LIMIT (v4.7 PROFESSIONAL)
+# Applies to ALL modes — including FAST_SCALP and BOUNCE, which
+# intentionally bypass the Kill Switch. When the cumulative NET loss
+# (after fees/slippage) for the current Mecca day reaches
+# DAILY_LOSS_LIMIT_PCT of the day-start balance:
+#   • ALL new entries are blocked until the next Mecca day
+#   • Closing open positions is NEVER affected
+#   • One Telegram notification is sent
+# Synthetic test trades (E2E/TEST/VERIFY) are excluded.
+# ═══════════════════════════════════════════════════════════════════
+class DailyLossLimiter:
+    def __init__(self):
+        self.day = None                    # Mecca date this state belongs to
+        self.day_start_balance = START_BALANCE
+        self.net_pnl_today = 0.0           # cumulative NET PnL (USDT) today
+        self.active = False                # True = new entries blocked
+        self.notification_pending = False  # signal_loop sends + clears this
+        self._bootstrap_from_csv()
+
+    def _limit_usdt(self) -> float:
+        base = self.day_start_balance if self.day_start_balance > 0 else START_BALANCE
+        return base * (DAILY_LOSS_LIMIT_PCT / 100.0)
+
+    def _bootstrap_from_csv(self):
+        """On boot, rebuild today's net PnL from paper_trades.csv so a
+        restart cannot reset the daily limit."""
+        self.day = get_now().date()
+        net_today = 0.0
+        try:
+            if os.path.exists(PAPER_TRADES_FILE):
+                today_str = self.day.strftime("%Y-%m-%d")
+                with open(PAPER_TRADES_FILE, 'r', encoding='utf-8') as f:
+                    for row in csv.DictReader(f):
+                        if row.get('action') != 'EXIT':
+                            continue
+                        if not (row.get('timestamp') or '').startswith(today_str):
+                            continue
+                        if is_test_trade_row(row):
+                            continue
+                        try:
+                            gross = float(row['pnl_usdt']) if row.get('pnl_usdt') else 0.0
+                            net = float(row['net_pnl_usdt']) if row.get('net_pnl_usdt') else gross
+                        except (TypeError, ValueError):
+                            continue
+                        net_today += net
+        except Exception as e:
+            logger.warning(f"[DAILY LIMIT] CSV bootstrap failed: {e}")
+        self.net_pnl_today = net_today
+        # Day-start balance = current balance minus what was made/lost today
+        self.day_start_balance = paper_state.balance - net_today
+        self._evaluate()
+        logger.info(f"[DAILY LIMIT] Boot: net_today={net_today:+.2f} USDT, "
+                    f"day_start={self.day_start_balance:.2f}, active={self.active}")
+
+    def _roll_day_if_needed(self):
+        today = get_now().date()
+        if self.day != today:
+            self.day = today
+            self.day_start_balance = paper_state.balance
+            self.net_pnl_today = 0.0
+            if self.active:
+                logger.info("[DAILY LIMIT] New Mecca day — daily loss limit reset, trading re-enabled")
+            self.active = False
+            self.notification_pending = False
+
+    def _evaluate(self):
+        if self.net_pnl_today <= -self._limit_usdt():
+            if not self.active:
+                self.active = True
+                self.notification_pending = True
+                logger.warning(
+                    f"[DAILY LIMIT] REACHED: net {self.net_pnl_today:+.2f} USDT <= "
+                    f"-{self._limit_usdt():.2f} USDT ({DAILY_LOSS_LIMIT_PCT}% of day-start "
+                    f"{self.day_start_balance:.2f}) — ALL new entries blocked until next day"
+                )
+
+    def record_close(self, net_usdt: float):
+        """Called from finalize_trade for every REAL (non-test) closed trade."""
+        self._roll_day_if_needed()
+        self.net_pnl_today += net_usdt
+        self._evaluate()
+
+    def is_blocked(self) -> bool:
+        """True when new entries must be blocked. NEVER used for closes."""
+        self._roll_day_if_needed()
+        return self.active
+
+    def status_line(self) -> str:
+        self._roll_day_if_needed()
+        if self.active:
+            return f"🛑 موقوف (خسارة اليوم {self.net_pnl_today:+.2f} USDT)"
+        return f"✅ ضمن الحد ({self.net_pnl_today:+.2f} / -{self._limit_usdt():.2f} USDT)"
+
+    def build_notification(self) -> str:
+        return (
+            "🛑 *تم الوصول لحد الخسارة اليومي*\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📉 صافي خسارة اليوم: {self.net_pnl_today:+.2f} USDT\n"
+            f"🚧 الحد المسموح: -{self._limit_usdt():.2f} USDT ({DAILY_LOSS_LIMIT_PCT}% من رصيد بداية اليوم)\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n"
+            "⚠️ تم إيقاف *جميع* الصفقات الجديدة في *كل الأوضاع* حتى بداية اليوم التالي (توقيت مكة).\n"
+            "✅ إغلاق الصفقات المفتوحة يعمل بشكل طبيعي."
+        )
+
+daily_loss_limiter = DailyLossLimiter()
 
 REJECTION_ZONE = 0.01  # 0.01% zone for early rejection
 TRAILING_TRIGGER_PCT = 0.2  # 0.2% to activate trailing SL
@@ -2793,9 +2984,73 @@ def check_sell_signal(analysis: dict, candles: List[dict]) -> bool:
         
     return False
 
+# ═══════════════════════════════════════════════════════════════════
+# DYNAMIC ATR-BASED TARGETS (v4.7 PROFESSIONAL)
+# Per-mode ATR multipliers with HARD economic floors:
+#   • TP >= MIN_TP_PCT (0.48% = 2× round-trip cost) — always
+#   • SL <= TP / MIN_RISK_REWARD (R/R >= 1.5) — always
+# BOUNCE gets a wider SL profile (dip-buys need noise room).
+# ═══════════════════════════════════════════════════════════════════
+MODE_TARGET_PROFILES = {
+    #             tp = tp_atr × ATR%      sl = sl_atr × ATR%
+    "DEFAULT":    {"tp_atr": 2.0, "sl_atr": 1.2, "min_tp": 0.50, "max_tp": 1.20},
+    "FAST_SCALP": {"tp_atr": 1.6, "sl_atr": 1.0, "min_tp": 0.48, "max_tp": 0.90},
+    "BOUNCE":     {"tp_atr": 2.2, "sl_atr": 1.5, "min_tp": 0.55, "max_tp": 1.40},
+    "FAST_DOWN":  {"tp_atr": 1.6, "sl_atr": 1.0, "min_tp": 0.48, "max_tp": 0.90},
+}
+
+def get_dynamic_targets(mode_key: str, candles: Optional[List[dict]],
+                        entry_price: float) -> tuple:
+    """
+    Returns (tp_pct, sl_pct) — GROSS percentages from entry.
+    ATR-scaled per mode, then clamped so that:
+      tp_pct >= max(profile min_tp, MIN_TP_PCT)  → fees covered 2×
+      sl_pct <= tp_pct / MIN_RISK_REWARD         → R/R >= 1.5
+    Falls back to TAKE_PROFIT_PCT/STOP_LOSS_PCT scale when ATR unavailable.
+    """
+    profile = MODE_TARGET_PROFILES.get(mode_key, MODE_TARGET_PROFILES["DEFAULT"])
+    atr_pct = None
+    try:
+        if candles and entry_price and entry_price > 0:
+            atr = calculate_atr(candles)
+            if atr and atr > 0:
+                atr_pct = (atr / entry_price) * 100
+    except Exception as e:
+        logger.warning(f"[TARGETS] ATR calc failed, using floors: {e}")
+
+    if atr_pct:
+        tp_pct = profile["tp_atr"] * atr_pct
+        sl_pct = profile["sl_atr"] * atr_pct
+    else:
+        tp_pct = max(TAKE_PROFIT_PCT, profile["min_tp"])
+        sl_pct = tp_pct / MIN_RISK_REWARD
+
+    # Economic floors/ceilings (NON-NEGOTIABLE)
+    tp_pct = max(tp_pct, profile["min_tp"], MIN_TP_PCT)
+    tp_pct = min(tp_pct, profile["max_tp"])
+    tp_pct = max(tp_pct, MIN_TP_PCT)  # re-assert floor after ceiling
+    sl_pct = min(sl_pct, tp_pct / MIN_RISK_REWARD)
+    sl_pct = max(sl_pct, 0.15)  # never absurdly tight (noise protection)
+    if sl_pct > tp_pct / MIN_RISK_REWARD:
+        sl_pct = tp_pct / MIN_RISK_REWARD
+    # Round TP normally, but FLOOR the SL at 3 decimals — rounding SL up
+    # (e.g. 0.3667 → 0.367) would silently push R/R below 1.5.
+    return round(tp_pct, 3), math.floor(sl_pct * 1000) / 1000
+
+
+def get_target_mode_key() -> str:
+    """Map current runtime mode to a MODE_TARGET_PROFILES key."""
+    current = get_current_mode()
+    if current == "FAST_SCALP" and "DOWN" in str(get_fast_mode() or ""):
+        return "FAST_DOWN"
+    return current if current in MODE_TARGET_PROFILES else "DEFAULT"
+
+
 def calculate_targets(entry_price: float, candles: List[dict]) -> tuple:
-    tp = entry_price * (1 + TAKE_PROFIT_PCT / 100)
-    sl = entry_price * (1 - STOP_LOSS_PCT / 100)
+    """Returns absolute (tp_price, sl_price) using dynamic ATR targets."""
+    tp_pct, sl_pct = get_dynamic_targets(get_target_mode_key(), candles, entry_price)
+    tp = entry_price * (1 + tp_pct / 100)
+    sl = entry_price * (1 - sl_pct / 100)
     return tp, sl
 
 def check_exit_signal(analysis: dict, candles: List[dict]) -> Optional[str]:
@@ -2806,21 +3061,25 @@ def check_exit_signal(analysis: dict, candles: List[dict]) -> Optional[str]:
     current_price = analysis["close"]
     entry_price = pos["entry_price"]
     pnl_pct = ((current_price - entry_price) / entry_price) * 100
-    tp_price = entry_price * (1 + TAKE_PROFIT_PCT / 100)
+    # Dynamic per-trade TP (set at entry); fallback to economic constant
+    active_tp_pct = getattr(state, "current_tp_pct", None) or TAKE_PROFIT_PCT
+    tp_price = entry_price * (1 + active_tp_pct / 100)
     
     # ═══════════════════════════════════════════════════════════════════════
     # v3.3: TP Trigger Logic (with TP CONTINUATION support)
     # ═══════════════════════════════════════════════════════════════════════
-    if not state.tp_triggered and TAKE_PROFIT_PCT is not None and pnl_pct >= TAKE_PROFIT_PCT:
+    if not state.tp_triggered and active_tp_pct is not None and pnl_pct >= active_tp_pct:
         start_exec = time.time()
         
         # v4.4: Dynamic TP Margin Check
         tp_margin = get_dynamic_tp_margin(analysis)
-        if current_price < (entry_price * (1 + TAKE_PROFIT_PCT/100) - tp_margin):
+        if current_price < (tp_price - tp_margin):
              return None
 
         state.tp_triggered = True
-        state.risk_free_sl = entry_price * 1.001
+        # Risk-free SL must lock in >= breakeven AFTER fees (0.24% cost),
+        # otherwise "risk-free" exits were locking a guaranteed net loss.
+        state.risk_free_sl = entry_price * (1 + (ROUND_TRIP_COST_PCT + 0.06) / 100)
         
         # ═══════════════════════════════════════════════════════════════════
         # 🏃 TP CONTINUATION / PROTECTED RUNNER (v4.5.PRO-FINAL)
@@ -2869,7 +3128,6 @@ def check_exit_signal(analysis: dict, candles: List[dict]) -> Optional[str]:
     # v3.3: Exit Conditions after TP Triggered or Smart SL
     if state.tp_triggered:
         if state.risk_free_sl is not None and current_price <= state.risk_free_sl:
-            circuit_breaker_logic.record_trade(((current_price - entry_price) / entry_price) * 100)
             return "risk_free_sl_hit"
         if "ema_short" in analysis and analysis["ema_short"] is not None and current_price < analysis["ema_short"]:
             # FAST SCALP EMA EXIT GOVERNANCE SYSTEM v3.1 (Post-TP Check)
@@ -2888,13 +3146,10 @@ def check_exit_signal(analysis: dict, candles: List[dict]) -> Optional[str]:
             if state.hold_active:
                 logger.info(f"[HOLD] Ignoring EMA exit (Post TP) | Candles: {state.hold_candles}")
                 return None
-            # Record exit
-            circuit_breaker_logic.record_trade(pnl_pct)
             return "ema_exit_post_tp"
     else:
         # Check Smart SL
         if state.current_sl is not None and current_price <= state.current_sl:
-            circuit_breaker_logic.record_trade(pnl_pct)
             return "sl"
         
     # Trailing SL (Existing logic preserved but secondary to TP trigger)
@@ -2912,8 +3167,6 @@ def check_exit_signal(analysis: dict, candles: List[dict]) -> Optional[str]:
             if safe_trailing_update(new_trailing_sl, current_price, candles):
                 return None # Continue trade with new SL
             
-            # Record exit if update failed or high risk
-            circuit_breaker_logic.record_trade(pnl_pct)
             return "trailing_sl"
     
     # EMA Confirmation (Original logic)
@@ -3064,6 +3317,8 @@ def finalize_trade(result, entry_price, exit_price, reason, score, duration_min)
     else:
         paper_state.balance += acct['net_usdt']
         paper_state.update_peak()
+        # Global daily loss limit: record NET result (all modes, no bypass)
+        daily_loss_limiter.record_close(acct['net_usdt'])
     log_paper_trade("EXIT", entry_price, exit_price, pnl_pct, pnl_usdt,
                     paper_state.balance, score, paper_state.entry_reason, reason, duration_min,
                     fees_usdt=acct['fees_usdt'], slippage_usdt=acct['slippage_usdt'],
@@ -4549,6 +4804,16 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
     engine = execution_engine
     pos = engine.get_position_state()
 
+    # 🛑 Daily loss limit notification (one-shot, non-blocking for closes)
+    if daily_loss_limiter.notification_pending:
+        daily_loss_limiter.notification_pending = False
+        try:
+            await bot.send_message(chat_id=chat_id,
+                                   text=daily_loss_limiter.build_notification(),
+                                   parse_mode="Markdown")
+        except Exception as e:
+            logger.error(f"[DAILY LIMIT] Notification send failed: {e}")
+
     # NOTE: uses the live websocket price (PriceEngine.last_price).
     # The previous guard `'candles' in globals()` was always False
     # (candles is a signal_loop local), so this manage block never ran
@@ -4558,15 +4823,18 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
         current = PriceEngine.last_price
         pnl = ((current - entry) / entry) * 100
 
-        print(f"[MANAGE] PNL={pnl:.4f}%")
+        # Dynamic per-trade targets (set at entry) with economic fallbacks
+        tp_pct = getattr(state, "current_tp_pct", None) or TAKE_PROFIT_PCT
+        sl_pct = getattr(state, "current_sl_pct", None) or STOP_LOSS_PCT
+        print(f"[MANAGE] PNL={pnl:.4f}% (TP@+{tp_pct}% / SL@-{sl_pct}%)")
 
-        if pnl >= 0.10:
+        if pnl >= tp_pct:
             print("[MANAGE] TP HIT → closing")
             if await engine.close_trade_atomically("TP", current):
                 sync_paper_state_after_engine_close(entry, current, "TP")
             return
 
-        if pnl <= -0.12:
+        if pnl <= -sl_pct:
             print("[MANAGE] SL HIT → closing")
             if await engine.close_trade_atomically("SL", current):
                 sync_paper_state_after_engine_close(entry, current, "SL")
@@ -4594,14 +4862,18 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
             entry = pos["entry_price"]
             pnl = ((current_price - entry) / entry) * 100
 
+            # Dynamic per-trade targets (set at entry) with economic fallbacks
+            tp_pct = getattr(state, "current_tp_pct", None) or TAKE_PROFIT_PCT
+            sl_pct = getattr(state, "current_sl_pct", None) or STOP_LOSS_PCT
+
             # TP
-            if pnl >= 0.10:
+            if pnl >= tp_pct:
                 if await engine.close_trade_atomically("FAST_DOWN_TP", current_price):
                     sync_paper_state_after_engine_close(entry, current_price, "FAST_DOWN_TP")
                 return
 
             # SL
-            if pnl <= -0.12:
+            if pnl <= -sl_pct:
                 if await engine.close_trade_atomically("FAST_DOWN_SL", current_price):
                     sync_paper_state_after_engine_close(entry, current_price, "FAST_DOWN_SL")
                 return
@@ -4811,6 +5083,10 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
         pos = execution_engine.get_position_state()
         if not pos["position_open"] and get_current_mode() == "FAST_SCALP":
             if get_fast_mode() == "FAST_DOWN":
+                # Global daily loss limit applies here too (this path
+                # bypasses check_buy_signal, so gate it explicitly).
+                if daily_loss_limiter.is_blocked():
+                    return
                 if quick_scalp_down_get_entry_signal(candles, analysis):
                     await quick_scalp_down_execute_trade(bot, chat_id, current_price, candles)
                     return
@@ -4870,9 +5146,12 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                 # Update the market data provider with a closure to ensure fresh data
                 ai_engine.get_market_data_fn = lambda symbol: create_market_data_from_analysis(analysis, candles)
                 
-                # Pre-calculate targets for potential immediate execution in AI OFF/LEARN modes
+                # Pre-calculate DYNAMIC targets (ATR-based, fee-covering
+                # floors: TP >= 0.48%, R/R >= 1.5) for this trade.
                 entry_price = analysis["close"]
-                tp, sl = calculate_targets(entry_price, candles)
+                tp_pct_dyn, sl_pct_dyn = get_dynamic_targets(get_target_mode_key(), candles, entry_price)
+                tp = entry_price * (1 + tp_pct_dyn / 100)
+                sl = entry_price * (1 - sl_pct_dyn / 100)
                 
                 # Reuse the signal score (0–10) computed once at the top of
                 # the cycle — avoids computing it twice with different values.
@@ -4946,6 +5225,14 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                     # Update non-position state for compatibility
                     state.entry_time = get_now()
                     state.current_sl = sl
+                    # Store the dynamic per-trade targets — ALL exit paths
+                    # ([MANAGE] block, engine manage, check_exit_signal)
+                    # read these instead of hardcoded percentages.
+                    state.current_tp_pct = tp_pct_dyn
+                    state.current_sl_pct = sl_pct_dyn
+                    execution_engine.active_tp_pct = tp_pct_dyn
+                    execution_engine.active_sl_pct = sl_pct_dyn
+                    logger.info(f"[TARGETS] Dynamic: TP=+{tp_pct_dyn}% SL=-{sl_pct_dyn}% (R/R={tp_pct_dyn/sl_pct_dyn:.2f})")
                     state.tp_triggered = False
                     state.risk_free_sl = None
                     state.trailing_activated = False

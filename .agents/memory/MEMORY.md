@@ -4,3 +4,4 @@
 - [TradingEngine wiring pitfalls](trading-bot-engine-wiring.md) — wire broker/telegram at startup (missing telegram = silent no-send); staleness guards must exceed stream cadence; E2E trigger-file test pattern.
 - [E2E verification data](e2e-verification-data.md) — task-agent test trades never merge (CSVs gitignored); E2E/TEST/VERIFY markers reserved and excluded from stats/balance/Kill Switch.
 - [Bounce entry design](trading-bot-bounce-entry-design.md) — score-0 buys in downtrends are intentional dip-buys (score<=5 required); hold_active must clear on every close; AI status has no "enabled" key — use mode!=OFF.
+- [Trade economics floors](trading-bot-economics-floors.md) — TP>=0.48% & R/R>=1.5 everywhere; rounding SL to 2dp after R/R clamp silently breaks the ratio — use 3dp/round-down.

@@ -1,4 +1,4 @@
-# XRP/USDT Telegram Signals Bot v4.6.PRO
+# XRP/USDT Telegram Signals Bot v4.7.PRO
 
 ## Overview
 
@@ -81,6 +81,49 @@ A Python Telegram trading signals bot for XRP/USDT that runs paper trading simul
 **Smart Trailing SL**
 - 1M: Activate @ +0.20%, Lock @ +0.10%, Step = 0.05%
 - 5M: Activate @ +0.35%, Lock @ +0.18%, Step = 0.10%
+
+### v4.7.PRO Professional Economics Layer
+
+**Trade Economics (NON-NEGOTIABLE floors)**
+- Round-trip cost (fees+slippage both sides): 0.24% (`ROUND_TRIP_COST_PCT`)
+- TP >= 0.48% in ALL modes (`MIN_TP_PCT` = 2× round-trip cost)
+- Risk/Reward >= 1.5 in ALL modes (`MIN_RISK_REWARD`; SL <= TP/1.5)
+- Risk-free SL after TP trigger locks breakeven AFTER fees (+0.30%), not +0.10%
+
+**Dynamic ATR Targets** (`get_dynamic_targets` in main.py)
+- Per-mode profiles in `MODE_TARGET_PROFILES` (DEFAULT / FAST_SCALP / BOUNCE / FAST_DOWN)
+- TP = tp_atr × ATR%, SL = sl_atr × ATR%, clamped to floors above; BOUNCE has widest SL
+- Entry paths store per-trade targets in `state.current_tp_pct/current_sl_pct` AND
+  `execution_engine.active_tp_pct/active_sl_pct`; ALL exit paths ([MANAGE] block,
+  engine `manage_open_position`, `_check_quick_down_exit`) read these; engine clears
+  them on close. Fallbacks: TAKE_PROFIT_PCT=0.50 / STOP_LOSS_PCT=0.33, engine
+  QUICK_DOWN_TP=0.48 / QUICK_DOWN_SL=0.32.
+
+**Higher-Timeframe Trend Filter** (`is_higher_tf_downtrend`)
+- 15m EMA20/EMA50 + price check, 5-min cache, fail-open on API errors
+- Blocks DEFAULT easy-market and FAST_SCALP-UP entries in 15m downtrends
+- BOUNCE and FAST_DOWN dip-buy paths EXEMPT by design (they buy weakness)
+
+**FAST_SCALP tightened entry**
+- Score floor: `FAST_SCALP_MIN_SIGNAL_SCORE = 3` (bot 0–10 scale, was 1)
+- Volume filter: last candle volume >= 80% of 20-candle average
+
+**Global Daily Loss Limit** (`DailyLossLimiter` in main.py)
+- 2% of day-start balance (`DAILY_LOSS_LIMIT_PCT`), NET after fees, Mecca-day reset
+- Applies to ALL modes — including FAST_SCALP/BOUNCE which bypass the Kill Switch
+- Blocks NEW entries only; never affects closing positions; one Telegram alert
+- Survives restarts (bootstraps today's net PnL from paper_trades.csv, excl. test rows)
+
+**Score Scales (documented in main.py near MIN_SIGNAL_SCORE)**
+- BOT signal score: 0–10 (calculate_signal_score) — entry gates, Telegram "X/10"
+- AI score: 0.0–1.0 (ai_filter) — AI modes and weights; never mix the two
+
+**v4.7 Cleanup**
+- Deleted `CircuitBreakerLogic` stub (always-pass) → replaced by real module-level
+  `safe_mode_active` gate in check_buy_signal (set by SafetyCore.enter_safe_mode)
+- Deleted unused `StateGuard` class and the engine's mock `_state_guard_loop`
+  (it compared engine state to copies of itself); real drift protection is
+  `reconcile_state()` (broker vs engine, every 2s)
 
 ## User Preferences
 

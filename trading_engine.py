@@ -50,8 +50,11 @@ class TradingSnapshot:
 
 class TradingEngine:
 
-    QUICK_DOWN_TP = 0.10
-    QUICK_DOWN_SL = 0.12
+    # v4.7 PROFESSIONAL: fallback targets when no dynamic per-trade
+    # targets were set. Must cover 2× round-trip cost (0.24%): TP >= 0.48%
+    # and keep R/R >= 1.5 (SL <= TP / 1.5).
+    QUICK_DOWN_TP = 0.48
+    QUICK_DOWN_SL = 0.32
     
     def __init__(
         self,
@@ -85,6 +88,12 @@ class TradingEngine:
 
         self.fast_submode = None
         self._closing = False
+
+        # v4.7: Dynamic per-trade targets (percent from entry), set by the
+        # entry path at fill time. When None, the fallback class constants
+        # above apply. ALL engine-side exit checks read these.
+        self.active_tp_pct: Optional[float] = None
+        self.active_sl_pct: Optional[float] = None
 
         # Centralized notification dedup registry.
         # Every notification sent by this engine MUST go through
@@ -364,12 +373,19 @@ class TradingEngine:
             
             logger.info(f"[MANAGE] pnl={pnl_pct:.4f}% price={price}")
 
-            # TP threshold from params or default
-            TP = self.QUICK_DOWN_TP if self.fast_submode == "DOWN" else 0.10
+            # v4.7: dynamic per-trade targets (set at entry) with
+            # fee-covering fallbacks (TP >= 0.48%, R/R >= 1.5).
+            TP = self.active_tp_pct if self.active_tp_pct else self.QUICK_DOWN_TP
+            SL = self.active_sl_pct if self.active_sl_pct else self.QUICK_DOWN_SL
 
             if pnl_pct >= TP:
                 logger.info(f"[TP HIT] closing via atomic engine: {pnl_pct:.4f}% >= {TP}%")
                 await self.close_trade_atomically("TP", price)
+                return
+
+            if pnl_pct <= -SL:
+                logger.info(f"[SL HIT] closing via atomic engine: {pnl_pct:.4f}% <= -{SL}%")
+                await self.close_trade_atomically("SL", price)
 
         except Exception as e:
             logger.error(f"[MANAGE ERROR] {e}")
@@ -446,6 +462,10 @@ class TradingEngine:
                 self._position_symbol = None
                 self._entry_price = 0.0
                 self._position_version += 1
+                # Clear per-trade dynamic targets so the next trade cannot
+                # inherit stale values (entry paths set fresh ones anyway).
+                self.active_tp_pct = None
+                self.active_sl_pct = None
 
                 # 3. Notification (exactly once per close event)
                 pnl_pct = ((exit_price - entry_price) / entry_price * 100) if entry_price else 0.0
@@ -527,6 +547,8 @@ class TradingEngine:
                 self._position_symbol = None
                 self._entry_price = 0.0
                 self._position_version += 1
+                self.active_tp_pct = None
+                self.active_sl_pct = None
 
                 await self._notify_trade_once(order)
 
@@ -553,39 +575,20 @@ class TradingEngine:
         message = f"{order.side} {order.symbol} @ {order.price}"
         await self._notify_event(f"CLOSE:{order.symbol}:{order.id}", message)
 
-    async def _state_guard_loop(self):
-        """
-        Lightweight StateGuard loop.
-        Compares UI vs Engine vs DB and logs mismatch.
-        """
-        while True:
-            try:
-                # 1. Get Engine State
-                engine_state = self.get_position_state()
-                
-                # 2. Mocking UI and DB state for now (since they reside in main.py/files)
-                # In production, these would be fetched via callbacks
-                ui_state = engine_state # Placeholder
-                db_state = engine_state # Placeholder
-                
-                if not (ui_state["position_open"] == engine_state["position_open"] == db_state["position_open"]):
-                    logger.warning(f"[STATE_GUARD] Mismatch detected! UI: {ui_state['position_open']}, Engine: {engine_state['position_open']}, DB: {db_state['position_open']}")
-                
-                await asyncio.sleep(2.0)
-            except Exception as e:
-                logger.error(f"[STATE_GUARD] Error: {e}")
-                await asyncio.sleep(5.0)
+    # NOTE (v4.7 cleanup): the old _state_guard_loop was removed — it only
+    # compared the engine state against mocked copies of itself, so it could
+    # never detect a real mismatch. Real drift protection is reconcile_state()
+    # in main.py (broker vs engine, every 2s).
 
     async def start_trading_core(self):
         if not self._pipeline_task:
             self._pipeline_task = asyncio.create_task(self._trade_pipeline())
-        # Start State Guard
-        asyncio.create_task(self._state_guard_loop())
 
     async def _check_quick_down_exit(self, price: float):
         """
         STRICT TP/SL exit ONLY for FAST_SCALP DOWN submode.
-        TP = +0.10%, SL = -0.12%
+        Uses dynamic per-trade targets (active_tp_pct/active_sl_pct) with
+        fee-covering fallbacks (TP >= 0.48%, R/R >= 1.5).
         Hard exit only - no trailing, no continuation.
         """
         if self.fast_submode != "DOWN":
@@ -598,13 +601,15 @@ class TradingEngine:
             return
 
         pnl = (price - self._entry_price) / self._entry_price * 100
+        tp = self.active_tp_pct if self.active_tp_pct else self.QUICK_DOWN_TP
+        sl = self.active_sl_pct if self.active_sl_pct else self.QUICK_DOWN_SL
 
-        if pnl >= self.QUICK_DOWN_TP:
-            logger.info(f"[DOWN EXIT] TP hit: {pnl:.4f}% >= {self.QUICK_DOWN_TP}%")
+        if pnl >= tp:
+            logger.info(f"[DOWN EXIT] TP hit: {pnl:.4f}% >= {tp}%")
             await self.request_trade({"type": "CLOSE"})
             return
 
-        if pnl <= -self.QUICK_DOWN_SL:
-            logger.info(f"[DOWN EXIT] SL hit: {pnl:.4f}% <= -{self.QUICK_DOWN_SL}%")
+        if pnl <= -sl:
+            logger.info(f"[DOWN EXIT] SL hit: {pnl:.4f}% <= -{sl}%")
             await self.request_trade({"type": "CLOSE"})
             return

@@ -141,8 +141,12 @@ class TradingLogicController:
             "hold_logic_enabled": True,
             "min_rsi": 30,
             "max_rsi": 70,
-            "tp_target": 0.15,
-            "sl_target": 0.25,
+            # v4.7 PROFESSIONAL ECONOMICS: TP must cover 2× round-trip cost
+            # (0.24%) → TP >= 0.48%, and R/R >= 1.5 → SL <= TP / 1.5.
+            # NOTE: display/reference values — live trades use the dynamic
+            # ATR targets computed in main.py (get_dynamic_targets).
+            "tp_target": 0.50,
+            "sl_target": 0.33,
             "max_trade_duration": 3600,
             "cooldown_between_trades": 60,
             # AI score scale (0–1). Compared against ai_score below.
@@ -155,11 +159,13 @@ class TradingLogicController:
         if trade_mode == TradeMode.FAST_SCALP_AGGRESSIVE:
             params.update({
                 "price_protection": False,
-                "volume_filter": False,
+                # v4.7: volume filter ENABLED for fast scalp — thin-volume
+                # noise moves can't cover the 0.24% round-trip cost.
+                "volume_filter": True,
                 "require_breakout": False,
                 "hold_logic_enabled": False,
-                "tp_target": 0.08,
-                "sl_target": 0.05,
+                "tp_target": 0.48,
+                "sl_target": 0.32,
                 "max_trade_duration": 900,
                 "cooldown_between_trades": 30,
                 "min_signal_score": 0.4,
@@ -173,8 +179,10 @@ class TradingLogicController:
                 "hold_logic_enabled": True,
                 "min_rsi": 20,
                 "max_rsi": 40,
-                "tp_target": 0.12,
-                "sl_target": 0.06,
+                # v4.7: BOUNCE gets wider targets — dip-buys need room for
+                # noise (SL wider) and a fee-covering TP (>= 0.48%).
+                "tp_target": 0.55,
+                "sl_target": 0.36,
                 "entry_conditions": self._get_bounce_conditions(market_data),
             })
         
