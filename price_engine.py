@@ -2,20 +2,32 @@ import json
 import time
 import threading
 import logging
-import websocket
+import requests
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+# REST endpoints tried in order on each poll cycle.
+# api.binance.us is the only endpoint reachable from Replit servers.
+_TICKER_URLS = [
+    "https://api.binance.us/api/v3/ticker/price?symbol=XRPUSDT",
+    "https://api.binance.com/api/v3/ticker/price?symbol=XRPUSDT",
+    "https://api1.binance.com/api/v3/ticker/price?symbol=XRPUSDT",
+    "https://api2.binance.com/api/v3/ticker/price?symbol=XRPUSDT",
+    "https://api3.binance.com/api/v3/ticker/price?symbol=XRPUSDT",
+]
+
+POLL_INTERVAL_SECONDS = 2
+
 
 class PriceEngine:
     """
-    Real-time Price Engine for XRP/USDT using Binance WebSocket (aggTrade stream).
+    Real-time Price Engine for XRP/USDT using Binance REST API polling.
 
+    Polls every 2 seconds across multiple fallback endpoints.
     SINGLE SOURCE OF TRUTH for the live price. Both main.py and
     trading_engine.py (via TradingGuard) read this class. Do NOT define
-    another PriceEngine anywhere else — a duplicate class caused the guard
-    to silently block all trades ("Waiting for price data for TRADE").
+    another PriceEngine anywhere else.
     """
     last_price: Optional[float] = None
     last_update_time: float = 0
@@ -28,34 +40,24 @@ class PriceEngine:
         cls.last_price = price
         cls.last_update_time = time.time()
         cls.is_connected = True
-        # Auto-resume trading if we were blocked only because the
-        # websocket dropped: fresh price data means the feed is back.
-        if TradingGuard.BLOCK_ALL_TRADING and TradingGuard.BLOCK_REASON == "WebSocket disconnected":
-            FailSafeSystem.on_websocket_reconnect()
+        # Auto-resume trading if we were blocked only because the feed dropped
+        if TradingGuard.BLOCK_ALL_TRADING and TradingGuard.BLOCK_REASON == "Price feed disconnected":
+            FailSafeSystem.on_feed_reconnect()
 
     @classmethod
-    def on_message(cls, ws, message):
-        try:
-            data = json.loads(message)
-            if 'p' in data:
-                price = float(data['p'])
-                cls.update_price(price)
-                if 'E' in data:
-                    cls.latency_ms = (time.time() * 1000) - data['E']
-        except Exception as e:
-            logger.error(f"PriceEngine error: {e}")
-
-    @classmethod
-    def on_error(cls, ws, error):
-        logger.error(f"WebSocket Error: {error}")
-        cls.is_connected = False
-        FailSafeSystem.on_websocket_disconnect()
-
-    @classmethod
-    def on_close(cls, ws, close_status_code, close_msg):
-        logger.warning("WebSocket Closed")
-        cls.is_connected = False
-        FailSafeSystem.on_websocket_disconnect()
+    def _fetch_price(cls) -> Optional[float]:
+        """Try each endpoint in order; return price on first success."""
+        for url in _TICKER_URLS:
+            try:
+                t0 = time.time()
+                resp = requests.get(url, timeout=4)
+                if resp.status_code == 200:
+                    price = float(resp.json()["price"])
+                    cls.latency_ms = (time.time() - t0) * 1000
+                    return price
+            except Exception:
+                continue
+        return None
 
     @classmethod
     def start(cls):
@@ -64,37 +66,35 @@ class PriceEngine:
         cls._running = True
 
         def run():
+            consecutive_failures = 0
             while True:
                 try:
-                    ws_url = "wss://stream.binance.com:9443/ws/xrpusdt@aggTrade"
-                    ws = websocket.WebSocketApp(
-                        ws_url,
-                        on_message=cls.on_message,
-                        on_error=cls.on_error,
-                        on_close=cls.on_close
-                    )
-                    ws.run_forever()
+                    price = cls._fetch_price()
+                    if price is not None:
+                        consecutive_failures = 0
+                        cls.update_price(price)
+                    else:
+                        consecutive_failures += 1
+                        cls.is_connected = False
+                        if consecutive_failures >= 3:
+                            FailSafeSystem.on_feed_disconnect()
                 except Exception as e:
-                    logger.error(f"WebSocket restart error: {e}")
-                time.sleep(5)
+                    logger.error(f"PriceEngine poll error: {e}")
+                time.sleep(POLL_INTERVAL_SECONDS)
 
         thread = threading.Thread(target=run, daemon=True)
         thread.start()
-        logger.info("🚀 PriceEngine started...")
+        logger.info("🚀 PriceEngine started (REST polling)...")
 
 
 class TradingGuard:
     """
     Guard that prevents trading when stale prices or connection issues are detected.
-    Reads PriceEngine above — the same class the websocket updates.
+    Reads PriceEngine above — the same class the REST poller updates.
     """
     BLOCK_ALL_TRADING: bool = False
     BLOCK_REASON: str = ""
-    # Binance @ticker stream pushes ~1 update/second, so a 0.5s staleness
-    # ceiling spuriously blocked ~half of all real trade attempts
-    # ("Price stale (0.8s) - Blocking TRADE"). 2.0s matches the staleness
-    # window used by main.py's own TradingGuard.
-    MAX_LATENCY_MS: float = 2000
+    MAX_LATENCY_MS: float = 5000
 
     @classmethod
     def enforce_guard(cls, operation_type: str) -> bool:
@@ -106,8 +106,8 @@ class TradingGuard:
             logger.warning(f"Guard Blocked {operation_type}: No price data")
             return False
 
-        if (time.time() - PriceEngine.last_update_time) > 2:
-            logger.warning(f"Guard Blocked {operation_type}: Stale price (>2s)")
+        if (time.time() - PriceEngine.last_update_time) > 8:
+            logger.warning(f"Guard Blocked {operation_type}: Stale price (>8s)")
             return False
 
         if PriceEngine.latency_ms > cls.MAX_LATENCY_MS:
@@ -127,18 +127,17 @@ class FailSafeSystem:
     """
     ALERT_COOLDOWN_SECONDS = 300  # max one disconnect alert per 5 minutes
 
-    _notifier = None            # callable(text: str), thread-safe, injected by main.py
+    _notifier = None
     _last_disconnect_alert_time: float = 0
     _disconnect_alerted: bool = False
 
     @classmethod
     def set_notifier(cls, notifier):
         cls._notifier = notifier
-        # If the WebSocket disconnected before the notifier was registered
-        # (which happens when Binance blocks the connection within the first
-        # second of startup, before main.py reaches set_notifier), send the
-        # disconnect alert now so that the reconnect notification can fire later.
-        if TradingGuard.BLOCK_ALL_TRADING and TradingGuard.BLOCK_REASON == "WebSocket disconnected":
+        # If the feed was already down before the notifier was registered
+        # (race between PriceEngine startup and main.py finishing init),
+        # send the alert now so the resume notification can fire later.
+        if TradingGuard.BLOCK_ALL_TRADING and TradingGuard.BLOCK_REASON == "Price feed disconnected":
             now = time.time()
             if (now - cls._last_disconnect_alert_time) >= cls.ALERT_COOLDOWN_SECONDS:
                 cls._last_disconnect_alert_time = now
@@ -159,14 +158,11 @@ class FailSafeSystem:
             logger.error(f"FAILSAFE notifier error: {e}")
 
     @classmethod
-    def on_websocket_disconnect(cls):
+    def on_feed_disconnect(cls):
         TradingGuard.BLOCK_ALL_TRADING = True
-        TradingGuard.BLOCK_REASON = "WebSocket disconnected"
+        TradingGuard.BLOCK_REASON = "Price feed disconnected"
         logger.critical("FAILSAFE: Trading Blocked due to connection loss")
 
-        # Only consume the cooldown window when a notifier is registered,
-        # so an early disconnect (before main.py registers the callback)
-        # doesn't silently swallow the first real alert.
         now = time.time()
         if cls._notifier is not None and (now - cls._last_disconnect_alert_time) >= cls.ALERT_COOLDOWN_SECONDS:
             cls._last_disconnect_alert_time = now
@@ -178,7 +174,7 @@ class FailSafeSystem:
             )
 
     @classmethod
-    def on_websocket_reconnect(cls):
+    def on_feed_reconnect(cls):
         TradingGuard.BLOCK_ALL_TRADING = False
         TradingGuard.BLOCK_REASON = ""
         logger.info("FAILSAFE: Trading Resumed")
@@ -189,3 +185,12 @@ class FailSafeSystem:
                 "✅ *عاد مصدر الأسعار*\n"
                 "تم استئناف التداول تلقائياً."
             )
+
+    # ── backward-compat aliases (called from main.py in some places) ──────────
+    @classmethod
+    def on_websocket_disconnect(cls):
+        cls.on_feed_disconnect()
+
+    @classmethod
+    def on_websocket_reconnect(cls):
+        cls.on_feed_reconnect()
