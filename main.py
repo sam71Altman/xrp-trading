@@ -4723,11 +4723,16 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
         
         # 🧠 AI SCORE INJECTION (v4.2.PRO-AI)
         ai_score = None
-        ai_enabled = True  # default to enabled
+        ai_enabled = False
         try:
             from ai_integration import get_ai_status, create_market_data_from_analysis, get_ai_engine
             ai_status = get_ai_status()
-            ai_enabled = ai_status.get("enabled", True)
+            # BUG FIX: the status dict has NO "enabled" key — it exposes
+            # "mode" (OFF/LEARN/FULL). The old ai_status.get("enabled", True)
+            # was therefore ALWAYS True, so the AI score kept being computed
+            # and used even when the user switched AI OFF. Derive enabled
+            # from the real mode instead.
+            ai_enabled = ai_status.get("mode", "OFF") != "OFF"
             
             if ai_enabled:  # Only calculate score if AI is ON
                 engine = get_ai_engine()
