@@ -3165,6 +3165,14 @@ def reset_position_state():
 _last_reconciliation_time = 0
 _RECONCILIATION_INTERVAL = 2.0  # seconds
 
+# STATE_DRIFT alerting (Task: no silent failure on real state mismatch).
+# A drift must persist for N consecutive reconciliation cycles (~2s each)
+# before alerting, to skip transient in-flight open/close windows.
+_DRIFT_CONFIRM_CYCLES = 3
+_DRIFT_ALERT_COOLDOWN = 600  # seconds between Telegram drift alerts
+_drift_consecutive_cycles = 0
+_last_drift_alert_time = 0.0
+
 def get_broker_position_status() -> bool:
     """
     Get actual broker position status from the paper broker's fill state.
@@ -3189,7 +3197,7 @@ def reconcile_state():
     Runs every 2 seconds as safety net.
     Now uses TradingEngine as the single source of truth.
     """
-    global _last_reconciliation_time
+    global _last_reconciliation_time, _drift_consecutive_cycles, _last_drift_alert_time
     
     now = time.time()
     if now - _last_reconciliation_time < _RECONCILIATION_INTERVAL:
@@ -3201,9 +3209,70 @@ def reconcile_state():
     pos = execution_engine.get_position_state()
     engine_position = pos["position_open"]
     
-    if broker_position != engine_position:
-        logger.warning(f"[STATE_DRIFT] DETECTED! Broker={broker_position}, Engine={engine_position}")
-        logger.debug("[STATE_DRIFT] TradingEngine is the source of truth - no local state to fix")
+    if broker_position == engine_position:
+        _drift_consecutive_cycles = 0
+        return
+
+    _drift_consecutive_cycles += 1
+    logger.warning(
+        f"[STATE_DRIFT] DETECTED! Broker={broker_position}, Engine={engine_position} "
+        f"(cycle {_drift_consecutive_cycles}/{_DRIFT_CONFIRM_CYCLES})"
+    )
+
+    if _drift_consecutive_cycles < _DRIFT_CONFIRM_CYCLES:
+        # Could be a transient in-flight open/close window — wait for confirmation.
+        return
+
+    # Confirmed persistent drift → safe auto-fix: sync broker fill record to
+    # the engine (TradingEngine is the single source of truth).
+    fixed = False
+    broker = getattr(execution_engine, "broker", None)
+    if broker is not None and hasattr(broker, "position_open"):
+        try:
+            broker.position_open = engine_position
+            fixed = True
+            logger.warning(
+                f"[STATE_DRIFT] AUTO-FIX applied: broker.position_open synced to Engine={engine_position}"
+            )
+        except Exception:
+            logger.exception("[STATE_DRIFT] auto-fix failed")
+
+    # Telegram alert (no silent failure) with cooldown against spam.
+    if now - _last_drift_alert_time >= _DRIFT_ALERT_COOLDOWN:
+        _last_drift_alert_time = now
+        if broker_position and not engine_position:
+            direction_txt = (
+                "الوسيط الورقي يسجّل صفقة مفتوحة بينما المحرك يعتبرها مغلقة.\n"
+                "قد يعني هذا أن أمراً نُفّذ لكن تحديث حالة المحرك فشل — "
+                "الصفقة قد تكون بلا إدارة (بدون TP/SL فعلي)."
+            )
+        else:
+            direction_txt = (
+                "المحرك يعتبر الصفقة مفتوحة بينما سجل الوسيط الورقي يعتبرها مغلقة.\n"
+                "قد يعني هذا فشلاً في تسجيل التنفيذ لدى الوسيط."
+            )
+        fix_txt = (
+            "🔧 تم تطبيق إصلاح تلقائي آمن: مزامنة سجل الوسيط مع حالة المحرك (المحرك هو مصدر الحقيقة)."
+            if fixed else
+            "⚠️ تعذّر الإصلاح التلقائي — يُرجى مراجعة الحالة يدوياً عبر /الحالة."
+        )
+        message = (
+            "🚨 تحذير: تعارض حقيقي في حالة الصفقات (STATE DRIFT)\n\n"
+            f"{direction_txt}\n\n"
+            f"{fix_txt}\n\n"
+            f"⏱ استمر التعارض لـ {_drift_consecutive_cycles} دورات فحص متتالية (~{int(_drift_consecutive_cycles * _RECONCILIATION_INTERVAL)} ثوانٍ)."
+        )
+        try:
+            asyncio.get_running_loop().create_task(
+                execution_engine._notify_event(f"STATE_DRIFT:{int(now)}", message)
+            )
+        except RuntimeError:
+            logger.warning("[STATE_DRIFT] No running event loop - Telegram alert skipped (logged only)")
+        except Exception:
+            logger.exception("[STATE_DRIFT] Failed to schedule Telegram alert")
+
+    if fixed:
+        _drift_consecutive_cycles = 0
 
 
 def get_trade_duration_minutes() -> int:
