@@ -1897,7 +1897,13 @@ class LegacyBotState:
 
     @position_open.setter
     def position_open(self, value):
-        """Set position state in execution engine"""
+        """Set position state in execution engine.
+
+        WARNING: this writes engine state WITHOUT a broker fill. Using it
+        bypasses the single execution path, so reconcile_state() will
+        (correctly) raise [STATE_DRIFT] warnings. No live callers today —
+        keep it that way; open/close must go through the engine + broker.
+        """
         _engine = globals().get('execution_engine')
         if _engine:
             _engine._position_open = value
@@ -3114,14 +3120,22 @@ _last_reconciliation_time = 0
 _RECONCILIATION_INTERVAL = 2.0  # seconds
 
 def get_broker_position_status() -> bool:
-    """Get actual broker position status (paper trading = based on safety_core)"""
-    # In paper trading, safety_core is the "broker"
-    # Check for both ENTERED and OPEN states as both indicate an active position
-    for strategy_id in ["SCALP_FAST", "SCALP_PULLBACK", "BREAKOUT"]:
-        strategy = safety_core.strategies.get(strategy_id)
-        if strategy and strategy.state in [TradeState.OPEN, BotState.ENTERED]:
-            return True
-    return False
+    """
+    Get actual broker position status from the paper broker's fill state.
+
+    NOTE: previously this read safety_core strategy flags, but safety_core
+    is never updated when trades open via TradingEngine.check_and_execute_trade,
+    so every engine-path trade produced a false [STATE_DRIFT] warning every
+    2 seconds. The broker's own fill record is the correct comparison source:
+    it is updated by actual order fills, independently of the engine's
+    _position_open bookkeeping, so genuine broker/engine mismatch (e.g. a
+    fill succeeded but the engine state update failed) is still detected.
+    """
+    broker = getattr(execution_engine, "broker", None)
+    if broker is None:
+        # No broker => no fills possible => no position at the broker.
+        return False
+    return bool(getattr(broker, "position_open", False))
 
 def reconcile_state():
     """
@@ -4358,7 +4372,16 @@ def generate_exit_signal(snapshot: TradingSnapshot) -> TradeSignal:
 
 
 class PaperBroker:
-    """Module-level paper broker. Fills orders at the live websocket price."""
+    """Module-level paper broker. Fills orders at the live websocket price.
+
+    Tracks its own fill state (position_open) so reconcile_state() can
+    compare actual broker fills against the engine. The old reconciler
+    compared safety_core strategy flags, which are never updated on the
+    engine path — producing constant false [STATE_DRIFT] warnings.
+    """
+    def __init__(self):
+        self.position_open = False
+
     async def order(self, symbol, side, amount):
         class Order:
             def __init__(self, s, sd, p, a):
@@ -4368,6 +4391,10 @@ class PaperBroker:
                 self.price = p
                 self.amount = a
         price = PriceEngine.last_price or 0.0
+        if side in ("BUY", "LONG"):
+            self.position_open = True
+        elif side in ("SELL", "SHORT"):
+            self.position_open = False
         return Order(symbol, side, price, amount)
 
 
@@ -4686,17 +4713,10 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                     return
                 
                 # Paper Broker Simulation & State Sync (Fixed v4.6.PRO)
+                # Fallback only — normally wired at startup in main().
+                # Uses the module-level PaperBroker so broker fill state
+                # (position_open) is always tracked for reconcile_state().
                 if not hasattr(execution_engine, 'broker') or execution_engine.broker is None:
-                    class PaperBroker:
-                        async def order(self, symbol, side, amount):
-                            class Order:
-                                def __init__(self, s, sd, p):
-                                    self.id = time.time()
-                                    self.symbol = s
-                                    self.side = sd
-                                    self.price = p
-                            # Ensure amount is reflected in global paper_state if needed
-                            return Order(symbol, side, analysis["close"])
                     execution_engine.broker = PaperBroker()
                 
                 # Direct position sync for Paper Trading
