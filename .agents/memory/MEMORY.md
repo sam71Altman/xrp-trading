@@ -5,3 +5,4 @@
 - [E2E verification data](e2e-verification-data.md) — task-agent test trades never merge (CSVs gitignored); E2E/TEST/VERIFY markers reserved and excluded from stats/balance/Kill Switch.
 - [Bounce entry design](trading-bot-bounce-entry-design.md) — score-0 buys in downtrends are intentional dip-buys (score<=5 required); hold_active must clear on every close; AI status has no "enabled" key — use mode!=OFF.
 - [Trade economics floors](trading-bot-economics-floors.md) — TP>=0.48% & R/R>=1.5 everywhere; rounding SL to 2dp after R/R clamp silently breaks the ratio — use 3dp/round-down.
+- [Replit .replit userenv secret leak](replit-userenv-secret-leak.md) — plaintext secrets can land in `.replit`'s `[userenv.shared]` and get committed; remove, re-add via requestSecrets, rotate the credential.

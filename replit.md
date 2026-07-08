@@ -129,6 +129,16 @@ A Python Telegram trading signals bot for XRP/USDT that runs paper trading simul
 
 Preferred communication style: Simple, everyday language.
 
+## Running the Trading Bot
+
+The "Trading Bot" workflow runs `python main.py`. Python dependencies
+(`python-telegram-bot[job-queue]`, `requests`, `websocket-client`, `numpy`,
+`pandas`) are installed and `requirements.txt` is deduplicated. Requires
+`TG_TOKEN` and `TG_CHAT_ID` secrets (Telegram bot token + chat id) — both are
+set. This repo also contains an unrelated Expo/React Native app + Node/tsx
+server (`Server` workflow) that was not set up as part of this pass since it
+wasn't requested; it currently fails (`tsx: not found`, no `node_modules`).
+
 ## System Architecture
 
 ### Trading Strategy Engine
