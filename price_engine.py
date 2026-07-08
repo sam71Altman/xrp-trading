@@ -134,6 +134,20 @@ class FailSafeSystem:
     @classmethod
     def set_notifier(cls, notifier):
         cls._notifier = notifier
+        # If the WebSocket disconnected before the notifier was registered
+        # (which happens when Binance blocks the connection within the first
+        # second of startup, before main.py reaches set_notifier), send the
+        # disconnect alert now so that the reconnect notification can fire later.
+        if TradingGuard.BLOCK_ALL_TRADING and TradingGuard.BLOCK_REASON == "WebSocket disconnected":
+            now = time.time()
+            if (now - cls._last_disconnect_alert_time) >= cls.ALERT_COOLDOWN_SECONDS:
+                cls._last_disconnect_alert_time = now
+                cls._disconnect_alerted = True
+                cls._notify(
+                    "🚨 *تنبيه: انقطاع مصدر الأسعار*\n"
+                    "تم إيقاف فتح صفقات جديدة مؤقتاً حتى عودة بيانات الأسعار.\n"
+                    "الصفقات المفتوحة تُدار كالمعتاد."
+                )
 
     @classmethod
     def _notify(cls, text: str):
