@@ -4811,6 +4811,7 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
             await bot.send_message(chat_id=chat_id,
                                    text=daily_loss_limiter.build_notification(),
                                    parse_mode="Markdown")
+            logger.info("[DAILY LIMIT] Telegram alert sent (one-shot)")
         except Exception as e:
             logger.error(f"[DAILY LIMIT] Notification send failed: {e}")
 
