@@ -129,7 +129,8 @@ class TradingEngine:
         symbol: str,
         direction: str,
         amount: float,
-        original_conditions_met: bool
+        original_conditions_met: bool,
+        entry_reason: Optional[str] = None
     ) -> TradeResult:
         if TradingGuard.BLOCK_ALL_TRADING or not TradingGuard.enforce_guard("TRADE"):
             return TradeResult(
@@ -169,7 +170,8 @@ class TradingEngine:
                 amount,
                 TradeDecision.ALLOWED_OFF_MODE,
                 1.0,
-                "AI OFF - Strategy execution allowed"
+                "AI OFF - Strategy execution allowed",
+                entry_reason=entry_reason
             )
         
         market_data = self.get_market_data_fn(symbol)
@@ -199,7 +201,8 @@ class TradingEngine:
             self._log_decision(symbol, score, TradeDecision.ALLOWED_LEARN_MODE)
             return await self._execute_with_result(
                 symbol, direction, amount,
-                TradeDecision.ALLOWED_LEARN_MODE, score, "LEARN mode - analysis only"
+                TradeDecision.ALLOWED_LEARN_MODE, score, "LEARN mode - analysis only",
+                entry_reason=entry_reason
             )
         
         weight = self.ai_state.weight.value
@@ -208,7 +211,8 @@ class TradingEngine:
             self._log_decision(symbol, score, TradeDecision.ALLOWED_LIMIT_FALLBACK)
             return await self._execute_with_result(
                 symbol, direction, amount,
-                TradeDecision.ALLOWED_LIMIT_FALLBACK, score, "Daily limit reached - fallback"
+                TradeDecision.ALLOWED_LIMIT_FALLBACK, score, "Daily limit reached - fallback",
+                entry_reason=entry_reason
             )
         
         if score >= weight:
@@ -216,7 +220,8 @@ class TradingEngine:
             self._log_decision(symbol, score, TradeDecision.ALLOWED)
             return await self._execute_with_result(
                 symbol, direction, amount,
-                TradeDecision.ALLOWED, score, f"Score {score} >= Weight {weight}"
+                TradeDecision.ALLOWED, score, f"Score {score} >= Weight {weight}",
+                entry_reason=entry_reason
             )
         else:
             self.ai_state.record_intervention()
@@ -236,7 +241,8 @@ class TradingEngine:
         amount: float,
         decision: TradeDecision,
         score: Optional[float],
-        details: str
+        details: str,
+        entry_reason: Optional[str] = None
     ) -> TradeResult:
         try:
             if self.broker is None:
@@ -265,11 +271,13 @@ class TradingEngine:
                     self._last_trade_id = getattr(executed_order, "id", None)
 
                     price_str = f"{self._entry_price:.5f}" if self._entry_price else "N/A"
+                    reason_line = f"\nسبب الدخول: {entry_reason}" if entry_reason else ""
                     msg = (
                         f"🔵 دخول صفقة\n\n"
                         f"الزوج: {symbol}\n"
                         f"السعر: {price_str}\n"
                         f"الكمية: {amount}"
+                        f"{reason_line}"
                     )
                     await self._notify_event(f"OPEN:{symbol}:{self._last_trade_id}", msg)
             return TradeResult(

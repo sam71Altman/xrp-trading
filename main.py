@@ -3070,6 +3070,10 @@ def finalize_trade(result, entry_price, exit_price, reason, score, duration_min)
                     net_pnl_usdt=acct['net_usdt'], net_pnl_pct=acct['net_pct'])
     log_trade("EXIT", reason, exit_price, pnl_pct)
     safety_core.active_trades = {"1m": 0, "5m": 0}
+    # v3.7.5 Hold Logic: hold_active must not leak into the next trade.
+    # Without this reset, every trade after the first bounce entry would
+    # permanently ignore EMA/trailing exits and be mislabeled as a bounce.
+    state.reset_hold()
     logger.info(f"[LIFECYCLE] Trade finalized: {reason} | Gross: {pnl_pct:.2f}% | Net: {acct['net_usdt']:+.2f} USDT (fees {acct['fees_usdt']:.2f} + slip {acct['slippage_usdt']:.2f})")
     return pnl_pct, pnl_usdt, paper_state.balance
 
@@ -3155,6 +3159,10 @@ def reset_position_state():
     state.runner_start_time = None
     state.runner_partial_closed = False
     state.runner_sl = None
+    # Hold Logic: clear hold state too. check_buy_signal sets hold_active
+    # BEFORE the engine gate; if the engine then blocks the trade (cooldown/
+    # guard), hold_active would otherwise stay True with no open position.
+    state.reset_hold()
     logger.debug("🔄 Non-position state reset")
 
 
@@ -3211,6 +3219,17 @@ def reconcile_state():
     
     if broker_position == engine_position:
         _drift_consecutive_cycles = 0
+        # Hold Logic safety net: engine-internal closes (TP inside
+        # manage_open_position, force_close_trade) bypass finalize_trade,
+        # so hold_active could stay True with no open position — which
+        # would make the NEXT trade skip EMA/trailing exits and be
+        # mislabeled as a bounce entry. Clear it whenever no position
+        # exists anywhere. Safe vs. the entry window: hold_active is set
+        # and the trade opens within the same signal-loop cycle, and
+        # reconcile_state() only runs at the top of a cycle.
+        if not engine_position and state.hold_active:
+            logger.info("[HOLD] No open position — clearing stale hold state")
+            state.reset_hold()
         return
 
     _drift_consecutive_cycles += 1
@@ -4882,6 +4901,22 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                         logger.info(f"Blocked by TradeMode score: {score}/10 < {min_score_required}")
                         return
 
+                    # Determine the REAL entry reason for transparency.
+                    # In DEFAULT mode + HARD_MARKET the only allowed entry is
+                    # the bounce (dip-buy) path which REQUIRES a low signal
+                    # score (<= 5) + RSI <= 35 + local bottom + volume spike.
+                    # Without this label the user sees "score 0" entries that
+                    # look like bugs but are the bounce strategy by design.
+                    if state.hold_active:
+                        entry_reason_code = "BOUNCE_ENTRY"
+                        entry_reason_display = "ارتداد من قاع محلي (سوق هابط) — السكور المنخفض مقصود"
+                    elif get_current_mode() == "FAST_SCALP":
+                        entry_reason_code = "FAST_SCALP_ENTRY"
+                        entry_reason_display = "سكالب سريع"
+                    else:
+                        entry_reason_code = "TREND_ENTRY"
+                        entry_reason_display = f"اتجاه صاعد (سكور {signal_score}/10)"
+
                     # Request trade via TradingEngine (SINGLE central engine).
                     # check_and_execute_trade() fully executes the order,
                     # updates engine position state, and sends the ONE
@@ -4893,7 +4928,8 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                         symbol=SYMBOL,
                         direction="BUY",
                         amount=qty,
-                        original_conditions_met=strategy_signal_valid
+                        original_conditions_met=strategy_signal_valid,
+                        entry_reason=entry_reason_display
                     )
 
                     if not result.executed:
@@ -4912,7 +4948,7 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                     state.entry_candles_snapshot = candles[-10:]
 
                     record_trade_executed(SYMBOL)
-                    log_trade("BUY", "AI_EXECUTION", entry_price, None)
+                    log_trade("BUY", entry_reason_code, entry_price, None)
                     logger.info("[SIGNAL_SENT] Buy notification sent by TradingEngine (single source)")
 
     except Exception as e:

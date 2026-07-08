@@ -3,3 +3,4 @@
 - [Replit Python env + Telegram polling quirks](replit-python-env-quirks.md) — uv sync fails (no venv); use `uv pip install --target`. telegram Conflict = parallel task agent sharing TG_TOKEN.
 - [TradingEngine wiring pitfalls](trading-bot-engine-wiring.md) — wire broker/telegram at startup (missing telegram = silent no-send); staleness guards must exceed stream cadence; E2E trigger-file test pattern.
 - [E2E verification data](e2e-verification-data.md) — task-agent test trades never merge (CSVs gitignored); E2E/TEST/VERIFY markers reserved and excluded from stats/balance/Kill Switch.
+- [Bounce entry design](trading-bot-bounce-entry-design.md) — score-0 buys in downtrends are the intentional dip-buy path (requires score<=5); hold_active must clear on every close path.
