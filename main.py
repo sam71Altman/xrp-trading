@@ -1714,6 +1714,10 @@ class PaperTradingState:
         # Size of the most recently CLOSED trade (for post-close displays)
         self.last_trade_size_usdt: float = 0.0
         self.entry_reason: str = ""
+        # Trading mode (DEFAULT/FAST_SCALP/BOUNCE) active when the current
+        # position was opened - captured at entry and carried to the EXIT
+        # row so per-mode economics can be computed later (/econ).
+        self.trade_mode: str = ""
         self.loss_streak: int = 0
         self.load_balance()
     
@@ -1761,6 +1765,7 @@ class PaperTradingState:
         self.position_size_usdt = 0.0
         self.last_trade_size_usdt = 0.0
         self.entry_reason = ""
+        self.trade_mode = ""
         self.loss_streak = 0
         if os.path.exists(PAPER_TRADES_FILE):
             os.remove(PAPER_TRADES_FILE)
@@ -2464,7 +2469,8 @@ PAPER_TRADES_HEADER = [
     'pnl_percent', 'pnl_usdt', 'balance_after', 'score',
     'entry_reason', 'exit_reason', 'duration_minutes',
     'kill_switch_triggered', 'kill_switch_reason', 'balance_peak',
-    'fees_usdt', 'slippage_usdt', 'net_pnl_usdt', 'net_pnl_percent'
+    'fees_usdt', 'slippage_usdt', 'net_pnl_usdt', 'net_pnl_percent',
+    'mode'
 ]
 
 
@@ -2473,18 +2479,20 @@ def init_paper_trades_file():
         with open(PAPER_TRADES_FILE, 'w', newline='', encoding='utf-8') as f:
             csv.writer(f).writerow(PAPER_TRADES_HEADER)
         return
-    # Migrate old header (without fee columns) so new rows stay aligned.
-    # Old data rows keep fewer columns - readers treat missing fees as 0.
+    # Migrate old header (without fee/mode columns) so new rows stay aligned.
+    # Old data rows keep fewer columns - readers treat missing fees as 0 and
+    # missing mode as unknown (inferred from entry_reason where possible).
     try:
         with open(PAPER_TRADES_FILE, 'r', encoding='utf-8') as f:
             first_line = f.readline().strip()
-        if first_line and 'fees_usdt' not in first_line and first_line.startswith('timestamp'):
+        if first_line and first_line.startswith('timestamp') and (
+                'fees_usdt' not in first_line or 'mode' not in first_line.split(',')):
             with open(PAPER_TRADES_FILE, 'r', encoding='utf-8') as f:
                 lines = f.readlines()
             lines[0] = ','.join(PAPER_TRADES_HEADER) + '\n'
             with open(PAPER_TRADES_FILE, 'w', encoding='utf-8') as f:
                 f.writelines(lines)
-            logger.info("[CSV] paper_trades.csv header migrated to include fee columns")
+            logger.info("[CSV] paper_trades.csv header migrated to include fee/mode columns")
     except Exception as e:
         logger.error(f"[CSV] Header migration failed: {e}")
 
@@ -2496,7 +2504,8 @@ def log_paper_trade(action: str, entry_price: float, exit_price: Optional[float]
                     fees_usdt: Optional[float] = None,
                     slippage_usdt: Optional[float] = None,
                     net_pnl_usdt: Optional[float] = None,
-                    net_pnl_pct: Optional[float] = None):
+                    net_pnl_pct: Optional[float] = None,
+                    mode: Optional[str] = None):
     init_paper_trades_file()
     with open(PAPER_TRADES_FILE, 'a', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
@@ -2518,8 +2527,28 @@ def log_paper_trade(action: str, entry_price: float, exit_price: Optional[float]
             f"{fees_usdt:.4f}" if fees_usdt is not None else "",
             f"{slippage_usdt:.4f}" if slippage_usdt is not None else "",
             f"{net_pnl_usdt:.4f}" if net_pnl_usdt is not None else "",
-            f"{net_pnl_pct:.4f}" if net_pnl_pct is not None else ""
+            f"{net_pnl_pct:.4f}" if net_pnl_pct is not None else "",
+            mode or ""
         ])
+
+
+def infer_trade_mode(row: Dict) -> str:
+    """
+    Best-effort mode classification for rows logged before the explicit
+    'mode' column existed. Uses the entry_reason text codes that were
+    already in place (BOUNCE_ENTRY / FAST_SCALP_ENTRY / FAST_DOWN / etc).
+    """
+    mode = (row.get('mode') or '').strip().upper()
+    if mode in TradeMode.ALL_MODES:
+        return mode
+    reason = (row.get('entry_reason') or '').upper()
+    if 'BOUNCE' in reason:
+        return "BOUNCE"
+    if 'FAST_SCALP' in reason or 'FAST_DOWN' in reason:
+        return "FAST_SCALP"
+    if reason:
+        return "DEFAULT"
+    return "UNKNOWN"
 
 
 def get_closed_trades() -> List[Dict]:
@@ -2547,7 +2576,8 @@ def get_closed_trades() -> List[Dict]:
                         'fees_usdt': fees,
                         'slippage_usdt': slippage,
                         'net_pnl_usdt': net,
-                        'result': 'WIN' if gross >= 0 else 'LOSS'
+                        'result': 'WIN' if gross >= 0 else 'LOSS',
+                        'mode': infer_trade_mode(row)
     })
                 except:
                     pass
@@ -2629,6 +2659,91 @@ def get_paper_stats() -> Dict:
         stats['drawdown'] = ((paper_state.peak_balance - paper_state.balance) / paper_state.peak_balance) * 100
     
     return stats
+
+
+def compute_mode_economics() -> Dict[str, Dict]:
+    """
+    Net performance summary per trading mode (DEFAULT / FAST_SCALP / BOUNCE),
+    since the v4.7 fee-aware dynamic-target rollout. Synthetic E2E/TEST/VERIFY
+    rows are already excluded by get_closed_trades().
+    """
+    per_mode: Dict[str, Dict] = {
+        m: {'trades': 0, 'wins': 0, 'losses': 0, 'net_pnl_usdt': 0.0,
+            'gross_win_usdt': 0.0, 'gross_loss_usdt': 0.0}
+        for m in TradeMode.ALL_MODES
+    }
+    per_mode['UNKNOWN'] = {'trades': 0, 'wins': 0, 'losses': 0, 'net_pnl_usdt': 0.0,
+                            'gross_win_usdt': 0.0, 'gross_loss_usdt': 0.0}
+
+    for trade in get_closed_trades():
+        mode = trade.get('mode') or 'UNKNOWN'
+        bucket = per_mode.setdefault(mode, {
+            'trades': 0, 'wins': 0, 'losses': 0, 'net_pnl_usdt': 0.0,
+            'gross_win_usdt': 0.0, 'gross_loss_usdt': 0.0
+        })
+        net = trade.get('net_pnl_usdt', trade['pnl_usdt'])
+        bucket['trades'] += 1
+        bucket['net_pnl_usdt'] += net
+        if net >= 0:
+            bucket['wins'] += 1
+            bucket['gross_win_usdt'] += net
+        else:
+            bucket['losses'] += 1
+            bucket['gross_loss_usdt'] += abs(net)
+
+    for mode, bucket in per_mode.items():
+        trades = bucket['trades']
+        bucket['win_rate'] = (bucket['wins'] / trades * 100) if trades else 0.0
+        bucket['avg_net_pnl_usdt'] = (bucket['net_pnl_usdt'] / trades) if trades else 0.0
+        if bucket['gross_loss_usdt'] > 0:
+            bucket['profit_factor'] = bucket['gross_win_usdt'] / bucket['gross_loss_usdt']
+        else:
+            bucket['profit_factor'] = float('inf') if bucket['gross_win_usdt'] > 0 else 0.0
+
+    return per_mode
+
+
+def format_economics_message() -> str:
+    per_mode = compute_mode_economics()
+    total_trades = sum(b['trades'] for m, b in per_mode.items() if m != 'UNKNOWN')
+
+    lines = [
+        "📊 *ملخص الأداء الصافي (منذ v4.7)*",
+        "━━━━━━━━━━━━━━━━━━━━━",
+        "يقيس هذا التقرير ما إذا كانت الأهداف الديناميكية المعدّلة حسب الرسوم (v4.7) تُحسّن النتائج فعلياً، بعد استبعاد صفقات E2E/TEST/VERIFY.",
+        ""
+    ]
+
+    if total_trades == 0:
+        lines.append("لا توجد صفقات حقيقية مغلقة بعد لعرض إحصائيات دقيقة.")
+        return "\n".join(lines)
+
+    for mode in TradeMode.ALL_MODES:
+        b = per_mode[mode]
+        display_name = TradeMode.DISPLAY_NAMES.get(mode, mode)
+        if b['trades'] == 0:
+            lines.append(f"*{display_name}*\n  لا توجد صفقات مغلقة بعد.\n")
+            continue
+        pf = b['profit_factor']
+        pf_str = "∞" if pf == float('inf') else f"{pf:.2f}"
+        emoji = "🟢" if b['net_pnl_usdt'] >= 0 else "🔴"
+        lines.append(
+            f"{emoji} *{display_name}*\n"
+            f"  الصفقات: {b['trades']} (فوز {b['wins']} / خسارة {b['losses']})\n"
+            f"  نسبة الفوز: {b['win_rate']:.1f}%\n"
+            f"  متوسط الصافي/صفقة: {b['avg_net_pnl_usdt']:+.2f} USDT\n"
+            f"  إجمالي الصافي: {b['net_pnl_usdt']:+.2f} USDT\n"
+            f"  معامل الربح (Profit Factor): {pf_str}\n"
+        )
+
+    unknown = per_mode.get('UNKNOWN')
+    if unknown and unknown['trades'] > 0:
+        lines.append(
+            f"⚪ *غير مصنّف (بيانات قديمة قبل تتبّع الوضع)*\n"
+            f"  الصفقات: {unknown['trades']} | الصافي: {unknown['net_pnl_usdt']:+.2f} USDT\n"
+        )
+
+    return "\n".join(lines)
 
 
 def calculate_recent_win_rate() -> float:
@@ -3297,7 +3412,9 @@ def execute_paper_buy(price: float, score: int, reasons: List[str], tp: float, s
     paper_state.position_qty = qty
     paper_state.position_size_usdt = trade_size_usdt
     paper_state.entry_reason = ", ".join(reasons)
-    log_paper_trade("BUY", price, None, None, None, paper_state.balance, score, paper_state.entry_reason, "", 0)
+    paper_state.trade_mode = get_current_mode()
+    log_paper_trade("BUY", price, None, None, None, paper_state.balance, score, paper_state.entry_reason, "", 0,
+                    mode=paper_state.trade_mode)
     logger.info(f"[TRADE_EXEC] Buy executed at {price}, qty={qty}")
     return qty
 
@@ -3391,7 +3508,8 @@ def finalize_trade(result, entry_price, exit_price, reason, score, duration_min)
     log_paper_trade("EXIT", entry_price, exit_price, pnl_pct, pnl_usdt,
                     paper_state.balance, score, paper_state.entry_reason, reason, duration_min,
                     fees_usdt=acct['fees_usdt'], slippage_usdt=acct['slippage_usdt'],
-                    net_pnl_usdt=acct['net_usdt'], net_pnl_pct=acct['net_pct'])
+                    net_pnl_usdt=acct['net_usdt'], net_pnl_pct=acct['net_pct'],
+                    mode=paper_state.trade_mode)
     log_trade("EXIT", reason, exit_price, pnl_pct)
     # v4.8: remember the size of the trade we just closed (for displays),
     # then clear per-position sizing so it can NEVER leak into the next trade.
@@ -4167,6 +4285,15 @@ async def cmd_modestats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     """أمر عرض إحصائيات الأوضاع"""
     await update.message.reply_text(
         format_mode_stats_message(),
+        reply_markup=get_main_keyboard(),
+        parse_mode="Markdown"
+    )
+
+
+async def cmd_econ(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """أمر عرض ملخص الأداء الصافي حسب الوضع (منذ v4.7)"""
+    await update.message.reply_text(
+        format_economics_message(),
         reply_markup=get_main_keyboard(),
         parse_mode="Markdown"
     )
@@ -5322,6 +5449,7 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                                                 if fill_price > 0 else 0.0)
                     paper_state.position_size_usdt = trade_size_usdt
                     paper_state.entry_reason = entry_reason_code
+                    paper_state.trade_mode = get_current_mode()
                     logger.info(f"[SIZING] Full-balance entry: {trade_size_usdt:.2f} USDT "
                                 f"@ {fill_price:.4f} → qty={paper_state.position_qty:.2f}")
 
@@ -5444,6 +5572,7 @@ async def main() -> None:
     # Mode commands (Smart Trading System)
     application.add_handler(CommandHandler("mode", cmd_mode))
     application.add_handler(CommandHandler("modestats", cmd_modestats))
+    application.add_handler(CommandHandler("econ", cmd_econ))
     application.add_handler(CommandHandler("dashboard", cmd_dashboard))
     application.add_handler(CommandHandler("recommend", cmd_recommend))
     application.add_handler(CommandHandler("validate", cmd_validate))
