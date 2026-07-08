@@ -7,8 +7,14 @@ if [ -f pyproject.toml ]; then
 fi
 
 # Sync Node dependencies (server)
+# npm can leave node_modules half-renamed (ENOTEMPTY) if a previous install
+# was interrupted; on failure, wipe node_modules and retry once from scratch.
 if [ -f package-lock.json ]; then
-  npm install --no-audit --no-fund 2>&1 | tail -n 3
+  if ! npm install --no-audit --no-fund 2>&1 | tail -n 3; then
+    echo "npm install failed — wiping node_modules and retrying"
+    rm -rf node_modules
+    npm install --no-audit --no-fund 2>&1 | tail -n 3
+  fi
 fi
 
 # Fail fast if the bot has a syntax error after merge
