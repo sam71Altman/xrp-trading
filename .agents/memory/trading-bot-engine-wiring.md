@@ -11,6 +11,6 @@ description: Broker/telegram must be wired at startup; guards must match stream 
 
 **Guards on locals-vs-globals:** a check like `'candles' in globals()` inside the signal loop is always False (candles is a loop local) — it silently disabled the generic TP/SL manage block. Prefer the live websocket price (`PriceEngine.last_price`) for exit management.
 
-**E2E verification pattern that worked:** a one-shot trigger file consumed only *after* a successful open, bypassing only the entry-signal condition, drives the full real path (engine → broker → single Telegram open msg → [MANAGE] TP/SL close → CSV sync) on live prices within ~2 min. Remove the hook after verification.
+**E2E verification pattern that worked:** a one-shot trigger file consumed only *after* a successful open, bypassing only the entry-signal condition, drives the full real path (engine → broker → single Telegram open msg → [MANAGE] TP/SL close → CSV sync) on live prices within ~2 min. Remove the hook after verification. To exercise the SL branch deterministically, record the entry a bit above the real fill (e.g. +0.5%) in both the engine and paper bookkeeping so PNL is instantly below the SL threshold — TP and SL close paths verified this way end-to-end (one message each, EXIT row with fees).
 
 **Benign noise:** `[STATE_DRIFT] Broker=False, Engine=True` warnings come from reconcile_state comparing safety_core (never updated on engine-path opens) with the engine; it is log-only ("no local state to fix").
