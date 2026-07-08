@@ -158,3 +158,7 @@ Preferred communication style: Simple, everyday language.
 ### Data Storage
 - `paper_trades.csv` - Paper trading history with Kill Switch columns
 - `trades.csv` - Signal history log
+
+### Synthetic Test Trade Tagging
+- Substrings `E2E`, `TEST`, `VERIFY` (case-insensitive) in `entry_reason` or `exit_reason` are RESERVED for synthetic verification trades — never use them in real reason names.
+- Rows tagged this way are kept in `paper_trades.csv` for audit but are excluded from paper stats, win-rate, data maturity, recent performance, drawdown, and paper balance (both live updates and balance restore on boot).

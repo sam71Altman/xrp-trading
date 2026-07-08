@@ -1575,6 +1575,23 @@ class KillSwitchState:
 kill_switch = KillSwitchState()
 
 
+# ─── Synthetic test/verification trade tagging ─────────────────────────────
+# E2E verification runs (e.g. forced TP/SL path checks) create real rows in
+# paper_trades.csv. They are tagged via their entry/exit reason so that
+# statistics, the Kill Switch, and the paper balance NEVER count them.
+TEST_TRADE_MARKERS = ("E2E", "TEST", "VERIFY")
+
+def is_test_trade_row(row: dict) -> bool:
+    """True if a paper_trades.csv row (or row-like dict) is a synthetic
+    verification/test trade that must be excluded from stats, Kill Switch
+    evaluation, and balance accounting."""
+    for field in ("entry_reason", "exit_reason"):
+        value = (row.get(field) or "").upper()
+        if any(marker in value for marker in TEST_TRADE_MARKERS):
+            return True
+    return False
+
+
 class PaperTradingState:
     def __init__(self):
         self.balance: float = START_BALANCE
@@ -1585,22 +1602,37 @@ class PaperTradingState:
         self.load_balance()
     
     def load_balance(self):
-        if os.path.exists(PAPER_TRADES_FILE):
-            try:
-                with open(PAPER_TRADES_FILE, 'r', encoding='utf-8') as f:
-                    reader = csv.DictReader(f)
-                    rows = list(reader)
-                    if rows:
-                        last_row = rows[-1]
-                        if last_row.get('balance_after'):
-                            self.balance = float(last_row['balance_after'])
-                        if last_row.get('balance_peak'):
-                            self.peak_balance = float(last_row['balance_peak'])
-                        if self.balance > self.peak_balance:
-                            self.peak_balance = self.balance
-            except:
-                self.balance = START_BALANCE
-                self.peak_balance = START_BALANCE
+        """
+        Restore balance from CSV, EXCLUDING synthetic test/verification trades.
+        Recomputes from START_BALANCE + net PnL of real EXIT rows instead of
+        trusting the last row's balance_after (which would bake in any test
+        trades' PnL that happened to be recorded).
+        """
+        if not os.path.exists(PAPER_TRADES_FILE):
+            return
+        try:
+            with open(PAPER_TRADES_FILE, 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                balance = START_BALANCE
+                peak = START_BALANCE
+                for row in reader:
+                    if row.get('action') != 'EXIT' or not row.get('pnl_usdt'):
+                        continue
+                    if is_test_trade_row(row):
+                        continue
+                    try:
+                        gross = float(row['pnl_usdt'])
+                        net = float(row['net_pnl_usdt']) if row.get('net_pnl_usdt') else gross
+                    except (TypeError, ValueError):
+                        continue
+                    balance += net
+                    if balance > peak:
+                        peak = balance
+                self.balance = balance
+                self.peak_balance = peak
+        except Exception:
+            self.balance = START_BALANCE
+            self.peak_balance = START_BALANCE
     
     def update_peak(self):
         if self.balance > self.peak_balance:
@@ -2245,6 +2277,10 @@ def get_closed_trades() -> List[Dict]:
         reader = csv.DictReader(f)
         for row in reader:
             if row.get('action') == 'EXIT' and row.get('pnl_usdt'):
+                # Synthetic verification trades must not influence stats,
+                # win-rate, data maturity, or Kill Switch evaluation.
+                if is_test_trade_row(row):
+                    continue
                 try:
                     fees = float(row['fees_usdt']) if row.get('fees_usdt') else 0.0
                     slippage = float(row['slippage_usdt']) if row.get('slippage_usdt') else 0.0
@@ -3016,8 +3052,18 @@ def finalize_trade(result, entry_price, exit_price, reason, score, duration_min)
     # Fees & slippage accounting (net) - balance updates with NET
     trade_size = entry_price * paper_state.position_qty if paper_state.position_qty > 0 else FIXED_TRADE_SIZE
     acct = calculate_net_pnl(entry_price, exit_price, trade_size)
-    paper_state.balance += acct['net_usdt']
-    paper_state.update_peak()
+    # Synthetic test/verification trades are recorded in the CSV (audit)
+    # but must NOT move the paper balance or peak (they'd skew stats,
+    # drawdown, and the Kill Switch). load_balance() applies the same rule.
+    is_test = is_test_trade_row({
+        'entry_reason': paper_state.entry_reason,
+        'exit_reason': reason
+    })
+    if is_test:
+        logger.info("[TEST TRADE] Detected synthetic verification trade - excluded from balance/stats")
+    else:
+        paper_state.balance += acct['net_usdt']
+        paper_state.update_peak()
     log_paper_trade("EXIT", entry_price, exit_price, pnl_pct, pnl_usdt,
                     paper_state.balance, score, paper_state.entry_reason, reason, duration_min,
                     fees_usdt=acct['fees_usdt'], slippage_usdt=acct['slippage_usdt'],
