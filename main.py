@@ -1443,8 +1443,8 @@ BREAKOUT_CANDLES = 3  # AGGRESSIVE: 3 candles
 # Real per-trade targets are ATR-dynamic via get_dynamic_targets();
 # these constants are the safety fallback when no candles/ATR exist.
 # ═══════════════════════════════════════════════════════════════════
-TAKE_PROFIT_PCT = 0.50  # fallback TP % (>= MIN_TP_PCT, net-positive after 0.24% cost)
-STOP_LOSS_PCT = 0.33    # fallback SL % (R/R = 0.50/0.33 ≈ 1.5)
+TAKE_PROFIT_PCT = 1.0   # fallback TP % — net +0.76% after 0.24% round-trip cost (was 0.50, too small)
+STOP_LOSS_PCT = 0.33    # fallback SL % (R/R = 1.0/0.33 ≈ 3.0)
 TRAILING_TRIGGER_PCT = None # AGGRESSIVE: No trailing
 
 RANGE_FILTER_THRESHOLD = 0.0001 # Relaxed
@@ -1483,7 +1483,7 @@ POLL_INTERVAL = 3  # Reduced frequency to prevent overload
 # ═══════════════════════════════════════════════════════════════════
 # Compared against the bot signal score from calculate_signal_score() (0–10 scale).
 # NOT the AI score (0–1). Relaxed from 1 to allow trades.
-MIN_SIGNAL_SCORE = 0.4
+MIN_SIGNAL_SCORE = 6  # was 0.4 (effectively 0 on 0-10 scale); now requires real confluence
 # FAST_SCALP entry floor on the BOT 0–10 scale (v4.7: tightened from 1 → 3
 # so scalp entries require real confluence, not a single weak indicator).
 FAST_SCALP_MIN_SIGNAL_SCORE = 3
@@ -1556,10 +1556,12 @@ SLIPPAGE_RATE_PER_SIDE = 0.0002  # 0.02% per side
 # ═══ Trade Economics Rules (v4.7 PROFESSIONAL) ═══
 # Total round-trip cost as a % of position size: (0.1% + 0.02%) × 2 = 0.24%
 ROUND_TRIP_COST_PCT = (FEE_RATE_PER_SIDE + SLIPPAGE_RATE_PER_SIDE) * 2 * 100  # = 0.24
-# Any TP must cover the cost at least twice → gross TP >= 0.48%
-MIN_TP_PCT = round(ROUND_TRIP_COST_PCT * 2.0, 2)  # = 0.48
-# Minimum reward-to-risk ratio: TP% / SL% >= 1.5
-MIN_RISK_REWARD = 1.5
+# TP must be large enough to deliver meaningful NET profit after fees.
+# 0.48% only breaks even — real floor is 1.0% (net +0.76% per win).
+MIN_TP_PCT = 1.0  # was 0.48 (break-even only); now 1.0 = net +0.76% after 0.24% cost
+# Minimum gross R/R. With fees, gross 3.0 → net ~1.33 R/R (breakeven WR ≈ 43%).
+# Old value 1.5 → net R/R 0.60 → needed 62.6% WR just to break even.
+MIN_RISK_REWARD = 3.0  # was 1.5
 # Global daily loss limit (NET, after fees) as % of day-start balance.
 # Applies to ALL modes — including modes that bypass the Kill Switch.
 DAILY_LOSS_LIMIT_PCT = 2.0
@@ -2244,7 +2246,7 @@ class LegacyBotState:
         self.pause_until: Optional[datetime] = None
         self.pause_alerted: bool = False
         self.backtest_warned: bool = False
-        self.last_signal_score: int = 10  # Bypass score
+        self.last_signal_score: int = 0  # real score updated at entry time
         self.last_signal_reasons: List[str] = []
         self.last_signal_reason: str = "Aggressive Entry"
         self.backtest_stats: Dict = {}
@@ -3171,10 +3173,12 @@ def check_sell_signal(analysis: dict, candles: List[dict]) -> bool:
 # ═══════════════════════════════════════════════════════════════════
 MODE_TARGET_PROFILES = {
     #             tp = tp_atr × ATR%      sl = sl_atr × ATR%
-    "DEFAULT":    {"tp_atr": 2.0, "sl_atr": 1.2, "min_tp": 0.50, "max_tp": 1.20},
-    "FAST_SCALP": {"tp_atr": 1.6, "sl_atr": 1.0, "min_tp": 0.48, "max_tp": 0.90},
-    "BOUNCE":     {"tp_atr": 2.2, "sl_atr": 1.5, "min_tp": 0.55, "max_tp": 1.40},
-    "FAST_DOWN":  {"tp_atr": 1.6, "sl_atr": 1.0, "min_tp": 0.48, "max_tp": 0.90},
+    # min_tp raised across all modes: old floors (0.48-0.55%) only covered fees,
+    # leaving net profit near zero. New floors ensure real net gain per win.
+    "DEFAULT":    {"tp_atr": 2.0, "sl_atr": 1.2, "min_tp": 1.00, "max_tp": 2.00},
+    "FAST_SCALP": {"tp_atr": 1.6, "sl_atr": 1.0, "min_tp": 1.00, "max_tp": 1.80},
+    "BOUNCE":     {"tp_atr": 2.2, "sl_atr": 1.5, "min_tp": 1.10, "max_tp": 2.50},
+    "FAST_DOWN":  {"tp_atr": 1.6, "sl_atr": 1.0, "min_tp": 1.00, "max_tp": 1.80},
 }
 
 def get_dynamic_targets(mode_key: str, candles: Optional[List[dict]],
@@ -3182,8 +3186,8 @@ def get_dynamic_targets(mode_key: str, candles: Optional[List[dict]],
     """
     Returns (tp_pct, sl_pct) — GROSS percentages from entry.
     ATR-scaled per mode, then clamped so that:
-      tp_pct >= max(profile min_tp, MIN_TP_PCT)  → fees covered 2×
-      sl_pct <= tp_pct / MIN_RISK_REWARD         → R/R >= 1.5
+      tp_pct >= max(profile min_tp, MIN_TP_PCT)  → net profit after fees
+      sl_pct <= tp_pct / MIN_RISK_REWARD         → R/R >= 3.0 gross
     Falls back to TAKE_PROFIT_PCT/STOP_LOSS_PCT scale when ATR unavailable.
     """
     profile = MODE_TARGET_PROFILES.get(mode_key, MODE_TARGET_PROFILES["DEFAULT"])
@@ -5369,6 +5373,7 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                 # Reuse the signal score (0–10) computed once at the top of
                 # the cycle — avoids computing it twice with different values.
                 score, reasons = signal_score, signal_reasons
+                state.last_signal_score = signal_score  # persist for CSV/display
 
                 # Update execution function to include targets
                 ai_engine.execute_trade_fn = lambda symbol, direction, amount: execute_paper_buy(entry_price, score, reasons, tp, sl)
