@@ -638,10 +638,12 @@ def quick_scalp_down_get_entry_signal(candles, analysis):
     rsi_recovering = rsi > 30 and rsi < 50
     return bullish_candle and volume_increase and rsi_recovering
 
-async def quick_scalp_down_execute_trade(bot, chat_id, entry_price, candles):
+async def quick_scalp_down_execute_trade(bot, chat_id, entry_price, candles, signal_score: int = 0):
     """
     OPEN trade via TradingEngine ONLY.
     No local state modification allowed.
+    signal_score: the current-cycle bot score (0–10) passed in from signal_loop
+                  so the Telegram message and CSV always reflect the real value.
     """
     # v4.8: full-balance sizing — qty = ENTIRE current balance / entry price
     if not entry_balance_ok():
@@ -656,7 +658,8 @@ async def quick_scalp_down_execute_trade(bot, chat_id, entry_price, candles):
         symbol=SYMBOL,
         direction="BUY",
         amount=amount,
-        original_conditions_met=True
+        original_conditions_met=True,
+        entry_reason=f"سكالب عكسي هابط (سكور {signal_score}/10)"
     )
     if result.executed:
         # View-only paper bookkeeping sync (engine stays source of truth):
@@ -672,7 +675,7 @@ async def quick_scalp_down_execute_trade(bot, chat_id, entry_price, candles):
         execution_engine.active_tp_pct = tp_pct_dyn
         execution_engine.active_sl_pct = sl_pct_dyn
         logger.info(f"[TARGETS] FAST_DOWN Dynamic: TP=+{tp_pct_dyn}% SL=-{sl_pct_dyn}%")
-        execute_paper_buy(fill_price, getattr(state, "last_signal_score", 0),
+        execute_paper_buy(fill_price, signal_score,
                           ["FAST_DOWN entry"], 0.0, 0.0)
         state.entry_time = get_now()
         log_trade("BUY", "FAST_DOWN", fill_price, None)
@@ -3299,7 +3302,7 @@ def check_exit_signal(analysis: dict, candles: List[dict]) -> Optional[str]:
         
         # v4.4: FORCE CLOSE (TP OVERRIDES ALL) - السلوك الافتراضي
         logger.info(f"⚡ TP EVENT: Force closing trade. PnL: {pnl_pct:.4f}%")
-        finalize_trade("TP", entry_price, current_price, "TP_EXECUTED", state.last_signal_score or 100, get_trade_duration_minutes())
+        finalize_trade("TP", entry_price, current_price, "TP_EXECUTED", state.last_signal_score, get_trade_duration_minutes())
         
         latency = (time.time() - start_exec) * 1000
         SYSTEM_HEALTH["tp_execution_latency_p99"] = latency
@@ -5305,7 +5308,9 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                 if daily_loss_limiter.is_blocked():
                     return
                 if quick_scalp_down_get_entry_signal(candles, analysis):
-                    await quick_scalp_down_execute_trade(bot, chat_id, current_price, candles)
+                    # Pass the current-cycle signal_score so the TG message
+                    # and CSV reflect the real computed value, not stale state.
+                    await quick_scalp_down_execute_trade(bot, chat_id, current_price, candles, signal_score)
                     return
                 # Throttled rejection log (~every 30 analysis cycles)
                 if analysis_count % 30 == 0:
@@ -5393,14 +5398,20 @@ async def signal_loop(bot: Bot, chat_id: str) -> None:
                         logger.warning("Signal rejected — score None")
                         return
 
-                    # NOTE: `score` here is the bot signal score (0–10).
-                    # mode_params min_signal_score (0.4) is nominally on the
-                    # AI 0–1 scale, so on the 0–10 scale it acts as a very
-                    # lenient floor (any score >= 1 passes).
-                    mode_params = get_mode_params()
-                    min_score_required = mode_params.get("min_signal_score", 0.4)
-                    if score < min_score_required:
-                        logger.info(f"Blocked by TradeMode score: {score}/10 < {min_score_required}")
+                    # Secondary score gate (bot 0–10 scale) — mode-aware so it
+                    # doesn't override strategy-specific thresholds already
+                    # enforced by check_buy_signal / check_easy_market_entry:
+                    #   BOUNCE: score may legitimately be 0-5 (dip-buy design)
+                    #   FAST_SCALP: primary gate already enforced >= 3
+                    #   DEFAULT: require >= MIN_SIGNAL_SCORE (6)
+                    if state.hold_active:
+                        _min_score_lock = 0   # BOUNCE — low score is intentional
+                    elif get_current_mode() == "FAST_SCALP":
+                        _min_score_lock = FAST_SCALP_MIN_SIGNAL_SCORE  # 3
+                    else:
+                        _min_score_lock = MIN_SIGNAL_SCORE  # 6
+                    if score < _min_score_lock:
+                        logger.info(f"[SCORE_GATE] Blocked: {score}/10 < {_min_score_lock} (mode={get_current_mode()}, bounce={state.hold_active})")
                         return
 
                     # Determine the REAL entry reason for transparency.
