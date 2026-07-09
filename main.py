@@ -4306,6 +4306,7 @@ async def cmd_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if candles:
         analysis = analyze_market(candles)
         if "error" not in analysis:
+            analysis["rsi"] = calculate_rsi([c["close"] for c in candles])
             market_data = {
                 "candles": candles,
                 "ema20": analysis.get("ema_short", 0),
@@ -4334,6 +4335,7 @@ async def cmd_recommend(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.message.reply_text("❌ خطأ في تحليل السوق")
         return
     
+    analysis["rsi"] = calculate_rsi([c["close"] for c in candles])
     market_data = {
         "candles": candles,
         "ema20": analysis.get("ema_short", 0),
@@ -4432,6 +4434,7 @@ async def handle_mode_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         if candles:
             analysis = analyze_market(candles)
             if "error" not in analysis:
+                analysis["rsi"] = calculate_rsi([c["close"] for c in candles])
                 market_data = {
                     "candles": candles,
                     "ema20": analysis.get("ema_short", 0),
@@ -4621,6 +4624,7 @@ async def cmd_diagnostic(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.callback_query.message.reply_text(msg)
         return
 
+    analysis["rsi"] = calculate_rsi([c["close"] for c in candles])
     score, reasons = calculate_signal_score(analysis, candles)
     ks_block = evaluate_kill_switch()
     
